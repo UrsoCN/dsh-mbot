@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：设计大纲，未实施。实施计划见 [`../TODO.md`](../TODO.md)。
+> 状态：M0 实测完成，待实施 M1 骨架。实施计划见 [`../TODO.md`](../TODO.md)，实测记录见 [`m0-spike.md`](m0-spike.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -42,13 +42,13 @@
 
 | # | 事实 | 对设计的影响 |
 |---|---|---|
-| A | headless：任务来自参数或 **stdin**；`--json` 输出 NDJSON（`session`/`text`/`tool_call`/`tool_result`/`final`）；退出码 0/1 | `mbot` 用 stdin 投喂上下文、用 `--json` 生成 transcript |
+| A | headless：任务来自参数或 **stdin**；`--json` 输出 NDJSON（`session`/`status`/`thinking`/`text`/`tool_call`/`tool_result`/`final`，启动错误可有 `error`）；退出码 0/1 | `mbot` 用 stdin 投喂上下文、用 `--json` 生成 transcript；成功要求退出 0 且 `final.reason.kind = completed` |
 | B | headless 支持 `--permission-mode`、`--approval-policy ask\|never`、`--add-dir <abs>`；"**Headless has no live approval-response channel**" | 无人值守用 `never` |
 | C | 沙箱 `workspace-write` 下，cwd 内的文件操作**不需要审批**；只有越界后申请提权（escalation）才走 `ctx.approval` | `botctl` 只写工作区 → **不需要任何"免审批白名单"** |
 | D | `dsh-agent-instructions`：从项目根（`.git` 所在）到 cwd 自动加载 `AGENTS.md`/`CLAUDE.md` | 工作区根 `AGENTS.md` = 不变的协议 + `botctl` 用法 |
 | E | Skills：`<项目根>/.dsh/skills`、`<项目根>/.agents/skills`、`~/.dsh/skills`、`~/.agents/skills`；目录 `<name>/SKILL.md` 或扁平 `<name>.md`，热加载 | v1 可发一个 `mbot` skill，让人在**任意项目**的 DSH 会话里也能操作看板 |
-| F | `subagent.maxDepth` 默认 **1**；fresh 子代理看不到当前对话 | 星型由运行时强制；交接必须落文件 |
-| G | `send_message`：工作中的目标收到 steer；空闲但常驻可续的目标会恢复一轮；返回只有 `messageId` | 纠偏可用；"回复"靠子代理结果或文件 |
+| F | `subagent.maxDepth` 默认 **1**，`maxActiveSubagents` 默认 **8**；fresh 子代理看不到当前对话，但会加载工作区 `AGENTS.md` | 星型由运行时强制；交接必须落文件；两 Worker 并发已实测 |
+| G | `send_message`：工作中的目标收到 steer；已完成的本地子代理可恢复一轮；模型工具返回 `message delivered to agent <name>` | 纠偏可用；"回复"靠子代理结果或文件；`interrupt_agent` 默认关闭，需 patch 开启 |
 | H | headless 凭据：启动环境 → `<cwd>/.env` → `$DSH_HOME/.env`；忽略 GUI 登录 | cron 需显式 `DEEPSEEK_API_KEY`；`.env` 必须 gitignore |
 | I | DSH 设置页只编辑**插件用 `.volatile()` 声明**的配置字段，持久化到 profile 的 Cordis patch | "在 DSH 设置里配数据目录"必须写一个小 TS 插件 → 放 backlog |
 | J | `sdk-minimal` profile：只给持久 shell 等少数工具，**排除** subagent、AGENTS.md、skills，且为 `danger-full-access` | 不适合本项目；我们用标准 `headless` profile |
@@ -308,7 +308,7 @@ sequenceDiagram
 | 角色 | 形态 | 能做 | 不能做 |
 |---|---|---|---|
 | **Chief** | headless 顶层会话 | `botctl board *`、建任务、`subagent` 派活、`send_message`/`interrupt_agent` 纠偏、`remember` | 写记忆、改 SOUL/AGENTS、调 `mbot` |
-| **Worker** | Chief 派出的 fresh 子代理（depth 1） | `botctl boot/task/remember`；在 grant 的外部目录干活 | 再派子代理、改看板、互相聊天 |
+| **Worker** | Chief 派出的 fresh 子代理（depth 1） | `botctl boot/task/remember`；在 grant 的外部目录干活 | 再派子代理、改看板、互相聊天（后两项由协议约束，消息工具本身允许同树跨分支通信） |
 | **Dreaming** | 独立 headless 运行 | 读 transcripts/inbox/tasks/wiki，写记忆与报告 | 改看板、任务、SOUL |
 
 ### 10.2 看板与任务单
@@ -344,6 +344,14 @@ Chief: botctl board add "给 mbot 加 lint" --owner coder   → 007
 ```
 
 外部工作目录由人类在 `.mbot/config` 的 `MBOT_GRANTS` 列出，`mbot` 转成 `--add-dir`；那些仓库的合并由人类负责。
+
+标准 headless 默认不暴露 `interrupt_agent`。M4 由宿主追加框架内的 patch（不得修改用户的全局 DSH profile），启用中断工具：
+
+```yaml
+- id: tool-subagent-control
+  config:
+    interrupt: true
+```
 
 ---
 
@@ -401,7 +409,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 
 | 项 | 设计 |
 |---|---|
-| 沙箱 | `workspace-write`，cwd = `~/.mbot-ws`；外部目录只经 `--add-dir`（人类维护 grants） |
+| 沙箱 | `workspace-write`，cwd = `~/.mbot-ws`；外部业务目录经 `--add-dir`（人类维护 grants）；DSH 的临时目录仍可写，不能把 `/tmp` 当作拒绝测试目标或工具防篡改边界 |
 | 审批 | `--approval-policy never`；工作区内操作本就无需审批，越界提权直接被拒并进 transcript |
 | 工具防篡改 | `mbot`/`botctl`/`lib` 在框架仓库（工作区外），Bot 只读可执行；**不要**把工具放进工作区 |
 | 防递归 | `MBOT_RUN_ID` 存在时 `mbot run/tick/dream` 拒绝执行 |
@@ -426,15 +434,23 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 成本膨胀 | 输入上限、超时、熔断 |
 | 仓库膨胀 | transcripts 按月归档（backlog）；`git gc` |
 
-### 14.2 待验证（对应 TODO M0）
+### 14.2 M0 实测结论（2026-11-25，DSH 0.2.2-rc.5）
 
-- [ ] `--json` 事件是否带 token 用量；`final` 结构
-- [ ] fresh subagent 是否加载工作区 `AGENTS.md`
-- [ ] headless 的 bash 工具与子代理是否继承 `mbot` 导出的 `PATH`、`MBOT_RUN_ID`
-- [ ] 沙箱内执行工作区外的 `botctl`（只读路径）是否正常，`flock` 能否在 `.mbot/` 建锁
-- [ ] `--approval-policy never` 对工作区内读写/bash 无影响
-- [ ] Dreaming 换低成本模型的方式（`--patch` 覆盖 `agentDefaultModel`？）
-- [ ] 冷启动耗时与基线 token；子代理并发上限
+以下每项已得结论；复现步骤、指标和实施影响见 [`m0-spike.md`](m0-spike.md)。
+
+| 验证项 | 结论 | 后续实现 |
+|---|---|---|
+| cron 凭据 | `env -i` 下，仅 `$DSH_HOME/.env` 有 key 时成功；未改动真实 `~/.dsh/.env` | cron 使用默认 `~/.dsh/.env`；不把 key 写进参数或日志 |
+| NDJSON / final / token | 7 类常规事件；`final = {type, sessionId, reason, text}`；token 在 `status.phase = step_end` 的 `usage` | 检查退出码及 `final.reason`；逐步求和，缓存 token 单列；顶层流不含 Worker 的完整日志/用量，不宣称总树成本 |
+| AGENTS.md | 顶层、两 fresh Worker 的最终答复均含仅定义在根 `AGENTS.md` 的口令 | 根协议原生注入；Worker 仍显式 `botctl boot` 读取角色与任务 |
+| 环境继承 | bash 和 Worker 均见 `MBOT_RUN_ID=M0_RUN_7C91`、外置脚本 PATH | 按设计导出 `MBOT_RUN_ID/MBOT_BOT/PATH`；Worker 使用 `--as` 标识作者 |
+| 外置脚本 / flock | 工作区外脚本能执行，`.mbot/botctl.lock` 和日志创建成功 | `botctl` 安装在正常工作区外，脚本库无需 grant；不得放在默认可写的临时区 |
+| workspace-write + never | 内部 `read/write/bash` 正常；真正越界 `write` 报 `FS_SANDBOX_DENIED`，bash 返回 `Permission denied` 和 shell exit 1；临时区仍可写 | shell 失败不能仅看 `tool_result.status`，本次 bash 事件仍为 `completed`；文件 guard 必须保留 |
+| 并发 / 深度 | 两 Worker 同时 `running`；孙代理创建返回 `Error: subagent depth 2 exceeds maxDepth 1` | 默认并发上限 8 来自源码，未做 8 路饱和压测；v0 两 Worker 可用 |
+| 完成后恢复 | `send_message` 唤醒已完成 Worker，新轮写 `resumed.txt` 成功 | 纠偏/补充任务可复用同树中的本地子代理 |
+| 中断 | 默认关闭；patch `tool-subagent-control.config.interrupt: true` 后，运行中的 Worker 变 `inactive` | M4 提供框架 patch；不依赖用户 profile 自行开启 |
+| 模型覆盖 | `--patch` 覆盖 `agent-default-model.config`，持久响应源确认 `deepseek-v4-pro`；默认 `deepseek-flash` | Dreaming 使用明确的 `deepseek-official/deepseek-flash` overlay，保留用户配置 |
+| 冷启动基线 | 首次“pwd + ls”调用总耗时 7.168 s（含网络/推理，两步）；总 token 12,398，缓存读 11,648，输入未命中 572，输出 178 | 这是单机单次端到端样本，非纯启动开销或容量指标；不据此承诺固定延迟 |
 
 ---
 
@@ -447,6 +463,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-25 | 框架代码在本仓库；数据仓库默认 `~/.mbot-ws`，后续支持首次启动询问 / DSH 设置页配置 |
 | 2026-11-25 | Dreaming 只用单阶段 |
 | 2026-11-25 | 纯 Bash，不写 TS 插件；`mbot` + `botctl` 双入口 |
+| 2026-11-25 | M0 通过；M2 验收需检查 `final.reason` 并区分顶层 token 与子代理成本；M4 显式 patch 开启 `interrupt_agent`；临时目录不作为工具防篡改边界 |
 
 ### 15.2 对 `botctl` 草案的取舍
 

@@ -4,25 +4,27 @@
 > 每个里程碑有**验收**，没过不进下一步。估时按业余投入粗估。
 > 已定：纯 Bash、`mbot` + `botctl` 双入口、数据仓库默认 `~/.mbot-ws`、Dreaming 单阶段。
 
-## M0 · Spike：核实 DSH 行为（0.5 天）
+## M0 · Spike：核实 DSH 行为
 
 在临时 git 目录里手动跑，结论回填 `docs/design.md` §14.2。
 
-- [ ] 凭据：`DEEPSEEK_API_KEY` 放 `~/.dsh/.env`，验证 cron 式空环境下 headless 能跑
-- [ ] `dsh --profile headless --json "列出当前目录" > run.jsonl`：事件类型、`final` 结构、有无 token 用量
-- [ ] `--permission-mode workspace-write --approval-policy never`：工作区内读写/bash 正常；越界写被拒的表现
-- [ ] 工作区根 `AGENTS.md`：顶层会话与 **fresh subagent** 是否都加载
-- [ ] 环境继承：bash 工具和子代理里能否看到 `mbot` 导出的 `PATH`、`MBOT_RUN_ID`
-- [ ] 沙箱内执行工作区外的脚本（模拟 `botctl`），并在 `.mbot/` 下 `flock`
-- [ ] 并行派 2 个 subagent：并发上限；depth=1 时 Worker 再调 `subagent` 的报错
-- [ ] `send_message` 给已完成的子代理能否恢复一轮
-- [ ] `--patch` 覆盖默认模型（Dreaming 用低成本模型）
-- [ ] 冷启动耗时与基线 token
+- [x] 凭据：`DEEPSEEK_API_KEY` 放 `$DSH_HOME/.env`（默认 `~/.dsh/.env`），在 `/tmp` 隔离验证 cron 式空环境下 headless 能跑
+- [x] `dsh --profile headless --json "列出当前目录" > run.jsonl`：事件类型、`final` 结构、有无 token 用量
+- [x] `--permission-mode workspace-write --approval-policy never`：工作区内读写/bash 正常；越界写被拒的表现
+- [x] 工作区根 `AGENTS.md`：顶层会话与 **fresh subagent** 是否都加载
+- [x] 环境继承：bash 工具和子代理里能否看到 `mbot` 导出的 `PATH`、`MBOT_RUN_ID`
+- [x] 沙箱内执行工作区外的脚本（模拟 `botctl`），并在 `.mbot/` 下 `flock`
+- [x] 并行派 2 个 subagent：并发上限；depth=1 时 Worker 再调 `subagent` 的报错
+- [x] `send_message` 给已完成的子代理能否恢复一轮
+- [x] `--patch` 覆盖默认模型（Dreaming 用低成本模型）
+- [x] 冷启动耗时与基线 token
 - [x] 依赖：`jq`、`flock`、`git`、`dsh 0.2.2-rc.5` 本机可用
 
 **验收**：§14.2 每项有结论（"不支持 → 改设计"也算）。
 
-## M1 · 骨架、配置与 `botctl`（1–2 天）
+2026-11-25 已通过：`bash tests/m0-spike.sh all`，5 个真实 DSH 场景，0 个探针失败。结论与复现见 [`docs/m0-spike.md`](docs/m0-spike.md)；追加核实了显式开启 `interrupt_agent` 后的中断行为。
+
+## M1 · 骨架、配置与 `botctl`
 
 - [ ] `git init`；`README.md`（定位 + 快速开始）、`LICENSE`、`.editorconfig`、`.gitignore`
 - [ ] `lib/config.sh`：工作区解析 `-C` → `MBOT_WS` → `~/.config/mbot/config` → `~/.mbot-ws`；交互终端首次询问并写配置，非交互直接报错；拒绝 `~/.dsh` 下及与框架仓库重叠的路径
@@ -43,7 +45,7 @@
 
 **验收**：`mbot init /tmp/ws` → `botctl -C /tmp/ws board add "试试"` 生成 `001` 与任务单并提交 → `board set 001 blocked` 无 `--reason` 被拒 → 把 MEMORY 写超后 `botctl lint` 报出文件与超限量。
 
-## M2 · 单次运行闭环 `mbot run`（1–2 天）
+## M2 · 单次运行闭环 `mbot run`
 
 - [ ] 入口检查：`PAUSED` → 退出 0；`MBOT_RUN_ID` 已设 → 拒绝；`flock -n`；工作树干净；记录 `HEAD`
 - [ ] run-id；prompt = `botctl boot <bot> [--task]` + 边界声明 + `<request>`
@@ -56,7 +58,7 @@
 
 **验收**：真 dsh 跑 `mbot run chief "在看板上加一个任务：整理 README"` → Chief 通过 `botctl board add` 加行，transcript 可读，`git log` 一个干净 commit，MEMORY 未变。
 
-## M3 · Dreaming 与记忆闭环（1–2 天）
+## M3 · Dreaming 与记忆闭环
 
 - [ ] `prompts/dream.md`：Analyze（inbox 优先）→ Merge → Rewrite → Report；条目格式、`disputed` 规则
 - [ ] `mbot dream`：找上一个 `dream:`（首次 `human: init`）→ 新增 `transcripts/ inbox/ tasks/archive/` 清单 → 按 `MBOT_DREAM_MAX_BYTES` 截断 → 调 dsh
@@ -66,7 +68,7 @@
 
 **验收（记忆闭环）**：`mbot run chief "以后周报一律用中文，记住这条"` → Chief 调 `botctl remember`，MEMORY 不变 → `mbot dream` → 规则进 `MEMORY.md`，有 report 与 `dream:` commit → 下一次 `mbot run` 按规则行事 → `git revert` 后规则消失。
 
-## M4 · 星型调度（2–3 天）
+## M4 · 星型调度
 
 - [ ] `bots/chief/SOUL.md`：拆解 → `board add` → 派活 prompt 模板（design §10.3）→ 纠偏/中断 → `board set`
 - [ ] `bots/coder/SOUL.md`（+ 可选 `researcher`）：第一步 `botctl boot`，结果 `task result`，值得记的 `remember`
@@ -76,7 +78,7 @@
 
 **验收**：复杂需求 → Chief 拆成 ≥2 个任务、并行派 2 个 Worker → 结果落在各自任务单 → 看板状态正确 → 无越权记录；人为卡住一个 Worker，Chief 能 `interrupt_agent` 并标 `blocked`。
 
-## M5 · 无人值守（1 天搭建 + 7 天观察）
+## M5 · 无人值守
 
 - [ ] `cron/mbot.crontab.example`：`PATH`、每 2h `tick`、03:17 `archive && dream`；凭据走 `~/.dsh/.env`
 - [ ] dream 成功后可选 `git push`
