@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0–M2 已完成，下一阶段 M3 Dreaming。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，M2 验收见 [`m2-run.md`](m2-run.md)。
+> 状态：M0–M3 已完成，下一阶段 M4 星型调度。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，运行与记忆验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -20,7 +20,7 @@
 | **调度** | 系统 cron：每 2h `mbot tick`；每天 **03:17** `mbot dream`（**单阶段**：直接写 + lint 闸门 + 可 `git revert`）。全局 `flock` 串行，`PAUSED` 急停 |
 | **权限** | headless 无在线审批通道 → `--permission-mode workspace-write --approval-policy never`。`botctl` 放在**工作区之外**（Bot 可执行、不可改）；运行后 `mbot` 按路径归属表验收，越权改动回滚 |
 | **审计** | 一次运行一个语义化 commit；Dreaming 写坏就 `git revert` |
-| **最小化指标** | 依赖仅 `bash / git / flock / jq / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤ 800 行 |
+| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；当前 975 行，含注释/空行） |
 
 ---
 
@@ -181,7 +181,7 @@ M1 实现补充：用户配置遵循 `XDG_CONFIG_HOME`（默认 `~/.config`）�
 │   ├── chief/{SOUL.md,MEMORY.md}
 │   └── coder/{SOUL.md,MEMORY.md}
 ├── wiki/                        # 小文件（≤200 行）+ _index.md
-├── dream-reports/2026-11-26.md
+├── dream-reports/<run-id>.md + .meta.json
 ├── transcripts/2026-11-25/<run-id>.md + .meta.json
 └── .mbot/                       # config 入库；lock、PAUSED、runs/、failures 不入库
 ```
@@ -380,8 +380,10 @@ Chief: botctl board add "给 mbot 加 lint" --owner coder   → 007
 ### 11.1 触发与输入
 
 - cron `17 3 * * *` → `mbot archive && mbot dream`。
-- 增量输入靠 Git：取最近一个 `dream:` commit（首次用 `human: init`），`git diff --name-only <sha>..HEAD -- transcripts/ inbox/ tasks/archive/` 得到新增文件；按 `MBOT_DREAM_MAX_BYTES` 截断，剩余下一晚继续。
-- prompt = `botctl boot`（Dreaming 视角）+ 路径清单 + `prompts/dream.md`。
+- 增量输入靠 Git：取最近一个仍保留 checkpoint 的 `dream:` commit（首次用 `human: init`），比较 inbox / transcripts / tasks/archive 的 Markdown；关闭 rename 折叠，避免文件移动漏读。
+- 报告 `.meta.json.checkpoint` 保存 source_head、limit、bytes、processed 和 pending；条目记录 path、blob、offset、size。先续读旧片段，再读取新尾部；失败报告不作为 checkpoint。输入被替换或删除时不恢复旧版本事实，重命名按当前文件重新读取；revert 一并回滚 checkpoint。
+- 顺序是 inbox → transcripts → archive，预算只计新增材料 payload。按完整行分片，保持 UTF-8/记录边界；单行无法放进预算且没有其他可读材料时直接失败，不调用模型，待提高预算重试。
+- prompt = `prompts/dream.md` + 当前共享/私有 MEMORY、wiki 入口 + 本次片段；明确禁读未选中的整份历史输入。本地 added 日期由宿主提供，run-id 保持 UTC。
 
 ### 11.2 流程（`prompts/dream.md`）
 
@@ -396,12 +398,14 @@ Chief: botctl board add "给 mbot 加 lint" --owner coder   → 007
 |---|---|
 | 路径归属 | 只接受 dream 列为 ✓ 的路径 |
 | 预算 lint | 超预算 / 链接失效 → 回滚记忆改动，只提交报告为 `dream(failed):` |
-| 删除依据 | 有删除行但报告无「删除」段 → 视为失败 |
-| 成本 | 输入字节上限 + `timeout`；可选低成本模型（待验证） |
+| 删除依据 | 每个删旧行的文件都须在「删除」段以相对路径开头，同一行给出非空 `依据：`；结构闸门不代替来源内容审阅 |
+| 成本 | 新材料字节上限 + `timeout`；框架 overlay 固定 `deepseek-official/deepseek-flash`，不修改用户 profile |
 | 回滚 | 每晚一个 commit，`git revert <sha>` |
 | 互斥 | 与 tick 共用 `flock` |
 
 **已决定只用单阶段**（不做 proposals 两阶段），可靠性靠 lint 闸门 + report + git 回滚。
+
+M3 实现补充：run/dream 共享调用、审计与失败计数。dream 只接受已有角色记忆、wiki Markdown 和本次唯一报告；MEMORY 与 wiki/_index 必须保留。任何模型失败、越权、lint 或删除依据失败都会恢复所有记忆，提交报告与元数据为 `dream(failed):`；成功将记忆与 checkpoint 同时提交为 `dream:`。旧报告只读，按 run-id 命名，避免同日补跑覆盖；不把 Dreaming 自己的审计材料放进 transcripts 输入。`mbot status` 也显示最近的 dream。
 
 ---
 
@@ -486,6 +490,8 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-25 | M0 通过；M2 验收需检查 `final.reason` 并区分顶层 token 与子代理成本；M4 显式 patch 开启 `interrupt_agent`；临时目录不作为工具防篡改边界 |
 | 2026-11-26 | M1 通过；配置静态解析，人类提交仅包含目标文件，拒绝脏目标，命令失败用快照恢复；归档 ID 不复用，托管路径不允许软链 |
 | 2026-11-26 | M2 通过；完整运行与失败审计、越权/非追加恢复、三次熔断已实现；HEAD/控制路径异常立即暂停；无效看板连同任务回滚；原始流在宿主验收后归档 |
+| 2026-11-26 | M3 通过；成功报告持久化输入 checkpoint，失败不推进；单阶段记忆改动原子验收；Flash overlay 与本地 added 日期明确；子命令帮助只读 |
+| 2026-11-26 | 为显式保留续读队列、回滚与报告验收，将框架体积目标从 800 行调整为 1200 行；M3 当前 975 行，不增加插件、数据库或第三方运行依赖 |
 
 ### 15.2 对 `botctl` 草案的取舍
 

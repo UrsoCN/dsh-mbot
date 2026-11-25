@@ -10,6 +10,9 @@ if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2
 fi
+for arg in "$@"; do
+  if [[ $arg == --help || $arg == -h ]]; then set -- --help; break; fi
+done
 case ${1:---help} in
   -h|--help)
     printf '%s\n' 'Usage: botctl [-C dir] boot <bot> [--task id]' \

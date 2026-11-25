@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s nullglob
-[[ $* == '--profile headless --json --permission-mode workspace-write --approval-policy never -' ]]
+framework=${MBOT_DSH%/tests/fake-dsh}
+if [[ ${MBOT_MODE:-run} == dream ]]; then
+  [[ $* == "--profile headless --patch $framework/patches/dream.yml --json --permission-mode workspace-write --approval-policy never -" ]]
+else [[ $* == '--profile headless --json --permission-mode workspace-write --approval-policy never -' ]]; fi
 [[ -n ${MBOT_RUN_ID:-} && -n ${MBOT_BOT:-} && $MBOT_WS == "$(pwd -P)" ]]
 prompt=$(cat)
-[[ $prompt == *'<request>'* && $prompt == *'MEMORY.md'* ]]
+[[ $prompt == *'MEMORY.md'* ]]
+[[ ${MBOT_MODE:-run} == dream || $prompt == *'<request>'* ]]
 [[ $(command -v botctl) == "${MBOT_DSH%/tests/fake-dsh}/bin/botctl" ]]
 [[ ${MBOT_FAKE_ARTIFACTS:-} == /tmp/* ]]
 mkdir -p "$MBOT_FAKE_ARTIFACTS"
@@ -12,6 +16,53 @@ printf '%s\n' "$prompt" > "$MBOT_FAKE_ARTIFACTS/prompt"
 printf '%s\n' "$MBOT_RUN_ID" >> "$MBOT_FAKE_ARTIFACTS/invocations"
 printf '{"type":"session","sessionId":"fake-session"}\n'
 text='fake completed'
+if [[ ${MBOT_MODE:-run} == dream ]]; then
+  report=$(sed -n 's/^本次唯一报告路径：//p' <<< "$prompt")
+  [[ $report == dream-reports/*-dream-*.md && $report != *$'\n'* ]]
+  mkdir -p dream-reports
+  case ${MBOT_FAKE_MODE:-dream-normal} in
+    dream-normal|dream-board|dream-secret)
+      printf '\n- 周报一律使用中文 [source: inbox/%s.md; added: %s]\n' "$(date +%F)" "$(date +%F)" >> MEMORY.md
+      ;;
+    dream-private-large) printf '%s\n' {1..151} > bots/coder/MEMORY.md ;;
+    dream-wiki-large) printf '%s\n' {1..201} > wiki/large.md ;;
+    dream-wiki-no-basis) rm wiki/obsolete.md ;;
+    dream-large) printf '%s\n' {1..151} > MEMORY.md ;;
+    dream-link) printf '\n- [[wiki/missing.md]]\n' >> MEMORY.md ;;
+    dream-delete|dream-no-basis|dream-empty-basis|dream-wrong-basis|dream-index-delete)
+      printf '# 共享记忆\n\n- 周报一律使用中文 [source: inbox/%s.md; added: %s]\n' "$(date +%F)" "$(date +%F)" > MEMORY.md
+      ;;
+    dream-missing|dream-directory|dream-error) printf '\n- failed candidate\n' >> MEMORY.md ;;
+    dream-noop|slow) ;;
+    *) exit 8 ;;
+  esac
+  if [[ ${MBOT_FAKE_MODE:-} == dream-normal ]]; then
+    printf '\n- 编码结果附验收证据 [source: inbox/%s.md; added: %s]\n' "$(date +%F)" "$(date +%F)" >> bots/coder/MEMORY.md
+    printf '# 周报格式\n\n周报一律使用中文。\n' > wiki/weekly.md
+    printf '\n- 周报格式见 [[wiki/weekly.md]]\n' >> wiki/_index.md
+  fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-delete ]]; then rm -f wiki/obsolete.md; fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-index-delete ]]; then rm wiki/_index.md; fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-board ]]; then botctl board add 'dream must not touch board' >/dev/null; fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-directory ]]; then mkdir -p "$report"; fi
+  if [[ ${MBOT_FAKE_MODE:-} != dream-missing && ${MBOT_FAKE_MODE:-} != dream-directory ]]; then
+    printf '# Dreaming\n\n## 新增\n- MEMORY.md：中文周报，来源：inbox/%s.md\n## 修改\n无\n## 删除\n' "$(date +%F)" > "$report"
+    case ${MBOT_FAKE_MODE:-} in
+      dream-delete) printf -- '- MEMORY.md：整理旧说明；依据：inbox/%s.md 的用户偏好\n- wiki/obsolete.md：删除过时页面；依据：MEMORY.md 已整理规则\n' "$(date +%F)" >> "$report" ;;
+      dream-empty-basis) printf -- '- MEMORY.md：删除旧说明；依据：\n' >> "$report" ;;
+      dream-wrong-basis) printf -- '- bots/coder/MEMORY.md：另一文件的说明；依据：inbox 候选\n' >> "$report" ;;
+      dream-index-delete) printf -- '- MEMORY.md：替换旧说明；依据：inbox 用户偏好\n- wiki/_index.md：删除空索引；依据：MEMORY.md 不再引用\n' >> "$report" ;;
+      *) printf '无\n' >> "$report" ;;
+    esac
+    printf '## 丢弃的候选\n无\n## 待裁决\n无\n' >> "$report"
+    [[ ${MBOT_FAKE_MODE:-} != dream-secret ]] || printf '%s\n' "$MBOT_TEST_SECRET" >> "$report"
+  fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-error ]]; then printf '{"type":"final","reason":{"kind":"error"},"text":"dream failed"}\n'; exit 1; fi
+  if [[ ${MBOT_FAKE_MODE:-} == slow ]]; then printf 'started\n' > "$MBOT_FAKE_ARTIFACTS/started"; sleep 2; fi
+  printf '{"type":"status","phase":"step_end","usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":50,"totalTokens":65}}\n'
+  printf '{"type":"final","sessionId":"fake-dream","reason":{"kind":"completed"},"text":"dream complete"}\n'
+  exit 0
+fi
 case ${MBOT_FAKE_MODE:-add} in
   add)
     printf '{"type":"tool_call","callId":"add","tool":"bash","input":{"command":"botctl board add"}}\n'
@@ -73,6 +124,10 @@ case ${MBOT_FAKE_MODE:-add} in
     printf '{"type":"final","sessionId":"fake-session","reason":{"kind":"error","code":"FAKE_FAILURE"},"text":"failed"}\n'
     exit 1 ;;
   noop) ;;
+  respect)
+    if [[ ${MBOT_TEST_EXPECT_RULE:-1} == 1 ]]; then [[ $prompt == *'周报一律使用中文'* ]]; else [[ $prompt != *'周报一律使用中文'* ]]; fi
+    text='memory expectation verified'
+    ;;
   *) exit 8 ;;
 esac
 printf '{"type":"status","phase":"step_end","usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":50,"cacheWriteTokens":0,"totalTokens":65}}\n'

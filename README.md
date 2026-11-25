@@ -2,7 +2,7 @@
 
 基于 DeepSeek Harness（DSH）的最小 Bot 系统：纯 Bash 编排，Markdown 保存任务与记忆，Git 保存审计与回滚点。框架仓库与数据仓库分开；Chief 管看板，Worker 执行任务，Dreaming 整理长期记忆。
 
-当前完成 **M0–M2**：工作区初始化、配置、角色模板、`botctl` 和单次 `mbot run` 已可用。Dreaming 和定时调度按 [TODO](TODO.md) 的后续里程碑实现。完整边界见 [设计稿](docs/design.md)。
+当前完成 **M0–M3**：工作区初始化、配置、`botctl`、单次运行和 Dreaming 记忆闭环已可用。星型调度和无人值守按 [TODO](TODO.md) 的后续里程碑实现。完整边界见 [设计稿](docs/design.md)。
 
 ## 快速开始
 
@@ -62,11 +62,13 @@ MBOT_WS=/absolute/path/to/workspace
 | `MBOT_GRANTS` | 空 |
 | `MBOT_DSH` | dsh |
 
-`mbot run` 已使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；Dreaming 字节预算与目录 grants 在后续阶段启用，当前 run 要求 `MBOT_GRANTS` 为空。密钥放在被 Git 忽略的 `.env` 中，真实无人值守运行使用 `$DSH_HOME/.env`。
+run/dream 使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；`MBOT_DREAM_MAX_BYTES` 控制本次整理的新输入字节数。目录 grants 在 M4 启用，当前 run 要求 `MBOT_GRANTS` 为空，dream 不授予外部目录。密钥放在被 Git 忽略的 `.env` 中，真实无人值守运行使用 `$DSH_HOME/.env`。
 
 ## botctl
 
 所有命令支持前置 `-C <dir>`；其他参数见 `botctl --help` 和工作区 `AGENTS.md`。
+
+`-h` / `--help` 在子命令中也只显示帮助，不创建任务或记忆候选。
 
 | 命令 | 行为 |
 |---|---|
@@ -113,13 +115,34 @@ mbot resume
 
 入库记录、提交摘要和终端回答会脱敏已知环境/凭据文件中的密钥及常见 `sk-`、Bearer 形式；原始日志保留原样。宿主 Git 操作固定工作区与元数据目录，提交时禁用 hooks/fsmonitor；人类直接使用 botctl 的提交仍遵循原有 Git hooks。
 
+## Dreaming 记忆闭环
+
+```bash
+mbot run chief "以后周报一律用中文，记住这条"
+mbot dream
+mbot run chief "Draft a short weekly report."
+mbot status
+```
+
+工作 Bot 将候选追加到 inbox；`mbot dream` 是独立会话，以 `deepseek-official/deepseek-flash` overlay 执行 Analyze → Merge → Rewrite → Report。用户偏好进入共享 MEMORY，角色经验进入私有 MEMORY，长说明进入 wiki。事实附来源与本地 added 日期；有来源的冲突保留双方并标 `(disputed)`。overlay 不修改用户 DSH profile。
+
+输入以最后一个仍存在的成功 dream checkpoint 为基准，首次用 `human: init`。依次选 inbox、transcript Markdown 和归档任务；只把限定字节数的新材料放入 prompt。按完整行分片，避免切开 UTF-8 和记录。指令、当前记忆及模型工具请求不计入这个材料字节预算。
+
+成功报告的 `.meta.json` 保存输入路径、Git blob、偏移、已选字节和 pending 队列。下一次继续未读片段；文件只追加时只读取新尾部，替换或重命名时重新检查当前版本。失败不推进进度。如果任何待读完整行都装不进预算，直接生成失败报告，不调用模型；提高 `MBOT_DREAM_MAX_BYTES` 后重试。没有新输入也生成一次整理报告。
+
+dream 只接受共享/已有角色 MEMORY、wiki Markdown 和本次报告。必需的 MEMORY 与 wiki/_index 可改写但不可删除；旧报告只读。所有预算与链接必须通过 lint；删除旧行时，「删除」段要以每个文件的相对路径开头，同一行写 `依据：` 和非空理由。该检查验证记录结构，来源内容可通过报告复核。
+
+成功提交 `dream: <run-id> …`，包含记忆改动、报告和 checkpoint；失败恢复全部记忆，仅提交 `dream(failed): …` 的报告及元数据。两类都保留忽略目录中的原始流，共用 run 的锁、暂停和失败计数。报告在 `dream-reports/<run-id>.md`，同名 `.meta.json` 保存审计；`mbot status` 包含最近的 dream。
+
+在实际数据仓库中用 `git revert <dream commit>` 回滚记忆和 checkpoint。候选和历史 transcript 保持原样；后续从仍可用的上一个成功 checkpoint 继续整理。真实闭环见 [M3 验收记录](docs/m3-dream.md)。
+
 ## 验证
 
 ```bash
 bash tests/run.sh
 ```
 
-16 组基础检查和 15 组运行检查涵盖命令、配置、并发、提交隔离/回滚、越权恢复、脱敏、超时与熔断。运行检查使用 `tests/fake-dsh`；测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
+16 组基础、15 组运行和 11 组 Dreaming 检查涵盖命令、并发、回滚、脱敏、熔断、记忆闭环和输入续读。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
 
 真实 M2 验收会使用仓库 `.env` 或环境中的 DeepSeek key，并创建独立临时工作区和 DSH 数据目录：
 
@@ -128,6 +151,14 @@ bash tests/real-run.sh
 ```
 
 它验证真实 DSH 建任务、记忆不变、transcript 成功、一次运行一个干净 commit。结果见 [M2 验收记录](docs/m2-run.md)。
+
+真实记忆闭环（同样使用隔离临时目录）：
+
+```bash
+bash tests/real-dream.sh
+```
+
+它验证候选先不改 MEMORY，dream 正式合并，下一轮按中文规则回复，revert 恢复原记忆。
 
 DSH 行为探针会调用真实 API；复现见 [M0 实测记录](docs/m0-spike.md)。
 

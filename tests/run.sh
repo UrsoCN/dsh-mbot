@@ -29,6 +29,9 @@ head_id() { git -C "$ws" rev-parse HEAD; }
 for file in "$repo/bin/mbot" "$repo/bin/botctl" "$repo/install.sh" "$repo/lib/"*.sh; do bash -n "$file"; done
 "$mbot" --help >/dev/null
 "$botctl" --help >/dev/null
+"$botctl" remember --help >/dev/null
+"$botctl" board add --help >/dev/null
+"$botctl" task result --help >/dev/null
 fail_with 'workspace not found' "$botctl" -C "$ws" board show
 [[ ! -e $ws ]]
 "$mbot" init "$ws"
@@ -45,6 +48,8 @@ clean
 ok 'board add allocates 001, creates task and commits'
 
 before=$(head_id)
+"$botctl" -C "$ws" remember --help >/dev/null
+[[ $(head_id) == "$before" && ! -f $ws/inbox/$(date +%F).md ]]
 cp "$ws/BOARD.md" "$test_root/board.before"
 fail_with 'blocked requires --reason' "$botctl" -C "$ws" board set 001 blocked
 fail_with 'invalid state' "$botctl" -C "$ws" board set 001 unknown
@@ -238,3 +243,4 @@ clean
 ok 'config validation, installation symlink entrypoints, collision protection and paths with spaces'
 printf '%s integration checks passed\n' "$count"
 bash "$repo/tests/run-runtime.sh"
+bash "$repo/tests/run-dream.sh"

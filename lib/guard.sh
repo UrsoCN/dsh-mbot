@@ -47,6 +47,18 @@ mbot_guard_snapshot() {
 }
 mbot_guard_allowed() {
   local rel=$1
+  if [[ ${MBOT_MODE:-run} == dream ]]; then
+    case $rel in
+      MEMORY.md|bots/*/MEMORY.md|wiki/*.md) ;;
+      "$MBOT_DREAM_REPORT") mbot_path "$rel" >/dev/null 2>&1 && [[ -f $MBOT_WS/$rel ]]; return ;;
+      *) return 1 ;;
+    esac
+    [[ $rel != bots/*/MEMORY.md ]] || mbot_git cat-file -e "$MBOT_BASE:$rel" 2>/dev/null || return 1
+    mbot_path "$rel" >/dev/null 2>&1 || return 1
+    if [[ -f $MBOT_WS/$rel ]]; then return 0; fi
+    [[ $rel == wiki/* && $rel != wiki/_index.md && ! -e $MBOT_WS/$rel && ! -L $MBOT_WS/$rel ]] && mbot_git cat-file -e "$MBOT_BASE:$rel" 2>/dev/null
+    return
+  fi
   case $rel in
     tasks/_template.md) return 1 ;;
     BOARD.md|tasks/*|inbox/*) ;;

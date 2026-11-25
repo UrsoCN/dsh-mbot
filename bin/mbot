@@ -10,16 +10,17 @@ source "$MBOT_ROOT/lib/board.sh"
 source "$MBOT_ROOT/lib/guard.sh"
 source "$MBOT_ROOT/lib/render.sh"
 source "$MBOT_ROOT/lib/run.sh"
+source "$MBOT_ROOT/lib/dream.sh"
 if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2
 fi
 case ${1:---help} in
-  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\n       mbot [-C dir] run [bot] "request" [--task id]\n       mbot [-C dir] status|pause [reason]|resume\n' ;;
+  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\n       mbot [-C dir] run [bot] "request" [--task id]\n       mbot [-C dir] dream|status|pause [reason]|resume\n' ;;
   init) shift; mbot_init "$@" ;;
-  run|status|pause|resume)
+  run|dream|status|pause|resume)
     command=$1; shift
-    if [[ $command == run && -v MBOT_RUN_ID ]]; then mbot_error 'nested mbot run is forbidden (MBOT_RUN_ID is set)'; exit 1; fi
+    if [[ ( $command == run || $command == dream ) && -v MBOT_RUN_ID ]]; then mbot_error "nested mbot $command is forbidden (MBOT_RUN_ID is set)"; exit 1; fi
     mbot_load_workspace
     "mbot_$command" "$@" ;;
   *) mbot_error "unknown command: $1 (use --help)"; exit 2 ;;

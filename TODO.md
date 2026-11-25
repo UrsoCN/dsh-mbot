@@ -64,13 +64,15 @@
 
 ## M3 · Dreaming 与记忆闭环
 
-- [ ] `prompts/dream.md`：Analyze（inbox 优先）→ Merge → Rewrite → Report；条目格式、`disputed` 规则
-- [ ] `mbot dream`：找上一个 `dream:`（首次 `human: init`）→ 新增 `transcripts/ inbox/ tasks/archive/` 清单 → 按 `MBOT_DREAM_MAX_BYTES` 截断 → 调 dsh
-- [ ] guard（dream）：只允许 `MEMORY.md`、`bots/*/MEMORY.md`、`wiki/**`、`dream-reports/**`
-- [ ] 失败：lint 不过 / 有删除但报告无依据 → 回滚记忆改动，只提交报告 `dream(failed): …`
-- [ ] fake-dsh 用例：正常 → `dream:`；超预算 → `dream(failed)`；偷改 BOARD → 回滚
+- [x] `prompts/dream.md`：Analyze（inbox 优先）→ Merge → Rewrite → Report；条目格式、`disputed` 规则
+- [x] `mbot dream`：找上一个 `dream:`（首次 `human: init`）→ 新增 `transcripts/ inbox/ tasks/archive/` 清单 → 按 `MBOT_DREAM_MAX_BYTES` 截断 → 调 dsh（成功报告保存 pending/blob/offset，保证下一轮续读）
+- [x] guard（dream）：只允许 `MEMORY.md`、已有 `bots/*/MEMORY.md`、wiki Markdown、本次 `dream-reports` 报告；必需的记忆/索引文件不允许删除
+- [x] 失败：lint 不过 / 有删除但报告无依据 → 回滚记忆改动，只提交报告及元数据 `dream(failed): …`
+- [x] fake-dsh 用例：正常 → `dream:`；超预算 → `dream(failed)`；偷改 BOARD → 回滚
 
 **验收（记忆闭环）**：`mbot run chief "以后周报一律用中文，记住这条"` → Chief 调 `botctl remember`，MEMORY 不变 → `mbot dream` → 规则进 `MEMORY.md`，有 report 与 `dream:` commit → 下一次 `mbot run` 按规则行事 → `git revert` 后规则消失。
+
+2026-11-26 已通过：`bash tests/run.sh` 共 42 组离线检查；`bash tests/real-dream.sh` 真实跑通候选 → 合并 → 英文请求得到中文周报 → revert 恢复旧记忆。新增输入续读、失败重试、替换/重命名、UTF-8 行边界及逐文件删除依据检查；实测修复了子命令 `--help` 误入 inbox 与 added 日期误用 UTC 的问题。见 [`docs/m3-dream.md`](docs/m3-dream.md)。
 
 ## M4 · 星型调度
 

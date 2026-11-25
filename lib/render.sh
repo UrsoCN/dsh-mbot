@@ -44,13 +44,13 @@ mbot_render() {
   done
   jq -Rs . < "$MBOT_SCRATCH/remembers.txt" | mbot_scrub > "$MBOT_SCRATCH/remembers.json"
   jq -Rs . < "$MBOT_SCRATCH/stderr" | mbot_scrub > "$MBOT_SCRATCH/diagnostics.json"
-  jq -n --arg id "$MBOT_RUN_ID" --arg bot "$bot" --arg task "$task" --arg base "$MBOT_BASE" \
+  jq -n --arg id "$MBOT_RUN_ID" --arg mode "${MBOT_MODE:-run}" --arg bot "$bot" --arg task "$task" --arg base "$MBOT_BASE" \
     --arg observed "$MBOT_OBSERVED_HEAD" --arg started "$MBOT_STARTED" --argjson elapsed "$elapsed" --argjson rc "$rc" \
     --slurpfile events "$MBOT_SCRATCH/clean-events.json" --slurpfile violations "$MBOT_SCRATCH/violations.json" \
     --slurpfile request "$MBOT_SCRATCH/clean-request.json" '
       ($events[0] | map(select(type == "object" and .type == "final")) | last) as $f |
       ($events[0] | map(select(type == "object" and .type == "status" and .phase == "step_end") | .usage | select(type=="object"))) as $u |
-      {run_id:$id, mode:"run", bot:$bot, task:(if $task=="" then null else $task end), started_at:$started,
+      {run_id:$id, mode:$mode, bot:$bot, task:(if $task=="" then null else $task end), started_at:$started,
        elapsed_ms:$elapsed, dsh_exit_code:$rc, base_head:$base, observed_head:$observed,
        session_id:($f.sessionId // null), reason:($f.reason // null),
        success:($rc==0 and ($f.reason.kind? // "")=="completed" and ($events[0]|last|.type)=="final" and ($violations[0]|length)==0),
