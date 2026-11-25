@@ -26,24 +26,26 @@
 
 ## M1 · 骨架、配置与 `botctl`
 
-- [ ] `git init`；`README.md`（定位 + 快速开始）、`LICENSE`、`.editorconfig`、`.gitignore`
-- [ ] `lib/config.sh`：工作区解析 `-C` → `MBOT_WS` → `~/.config/mbot/config` → `~/.mbot-ws`；交互终端首次询问并写配置，非交互直接报错；拒绝 `~/.dsh` 下及与框架仓库重叠的路径
-- [ ] `install.sh`：`bin/*` 软链到 `~/.local/bin`，可选写 `~/.config/mbot/config`
-- [ ] `templates/workspace/`：
-  - [ ] `AGENTS.md`：角色、写入归属、看板只能经 `botctl`、`botctl` 命令速查、禁止自行 `git commit` 与调用 `mbot`
-  - [ ] `MEMORY.md`、`bots/{chief,coder}/{SOUL.md,MEMORY.md}`、`BOARD.md`、`tasks/_template.md`、`wiki/_index.md`、`inbox/.gitkeep`
-  - [ ] `.mbot/config`（预算、超时、`MBOT_GRANTS`、dsh 路径）、`.gitignore`（`.env`、`.mbot/{runs,lock,botctl.lock,PAUSED,failures}`）
-- [ ] `mbot init [dir]`：校验 → 拷模板 → `git init` → `human: init`
-- [ ] `botctl`（`lib/board.sh`、`lib/lint.sh`）：
-  - [ ] `boot <bot> [--task id]`
-  - [ ] `board show|add|set`（id 分配、模板建任务单、`blocked` 必须 `--reason`）
-  - [ ] `task show|result`（只追加到「执行记录 / 结果」段）
-  - [ ] `remember "<事实>" [--as r] [--task id]` → `inbox/<date>.md`
-  - [ ] `lint`：MEMORY 行数/字符数（`wc -m`）、SOUL ≤5k、wiki ≤200 行、BOARD ≤80 行 + 表格式 + 状态枚举、`[[链接]]` 存在
-  - [ ] 变更类命令 `flock .mbot/botctl.lock`；`MBOT_RUN_ID` 已设时不提交，否则提交 `human: …`
-- [ ] `tests/run.sh`：对 `botctl` 各命令做断言（纯 bash，不引入 bats）
+- [x] `git init`；`README.md`（定位 + 快速开始）、`LICENSE`、`.editorconfig`、`.gitignore`
+- [x] `lib/config.sh`：工作区解析 `-C` → `MBOT_WS` → `~/.config/mbot/config` → `~/.mbot-ws`；交互终端首次询问并写配置，非交互直接报错；拒绝 `~/.dsh` 下及与框架仓库重叠的路径
+- [x] `install.sh`：`bin/*` 软链到 `~/.local/bin`，可选写 `~/.config/mbot/config`
+- [x] `templates/workspace/`：
+  - [x] `AGENTS.md`：角色、写入归属、看板只能经 `botctl`、`botctl` 命令速查、禁止自行 `git commit` 与调用 `mbot`
+  - [x] `MEMORY.md`、`bots/{chief,coder}/{SOUL.md,MEMORY.md}`、`BOARD.md`、`tasks/_template.md`、`wiki/_index.md`、`inbox/.gitkeep`
+  - [x] `.mbot/config`（预算、超时、`MBOT_GRANTS`、dsh 路径）、`.gitignore`（`.env`、`.mbot/{runs,lock,botctl.lock,PAUSED,failures}`）
+- [x] `mbot init [dir]`：校验 → 拷模板 → `git init` → `human: init`
+- [x] `botctl`（`lib/board.sh`、`lib/lint.sh`）：
+  - [x] `boot <bot> [--task id]`
+  - [x] `board show|add|set`（id 分配、模板建任务单、`blocked` 必须 `--reason`）
+  - [x] `task show|result`（只追加到「执行记录 / 结果」段）
+  - [x] `remember "<事实>" [--as r] [--task id]` → `inbox/<date>.md`
+  - [x] `lint`：MEMORY 行数/字符数（`wc -m`）、SOUL ≤5k、wiki ≤200 行、BOARD ≤80 行 + 表格式 + 状态枚举、`[[链接]]` 存在
+  - [x] 变更类命令 `flock .mbot/botctl.lock`；`MBOT_RUN_ID` 已设时不提交，否则提交 `human: …`
+- [x] `tests/run.sh`：对 `botctl` 各命令做断言（纯 bash，不引入 bats）
 
 **验收**：`mbot init /tmp/ws` → `botctl -C /tmp/ws board add "试试"` 生成 `001` 与任务单并提交 → `board set 001 blocked` 无 `--reason` 被拒 → 把 MEMORY 写超后 `botctl lint` 报出文件与超限量。
+
+2026-11-26 已通过：`bash tests/run.sh` 共 16 组离线集成检查（含八路并发、提交隔离/失败回滚、UTF-8 预算与链接边界）；另用真实 PTY 验证首次询问、保存带空格路径、缺失工作区不自动创建。使用方法见 [`README.md`](README.md)。
 
 ## M2 · 单次运行闭环 `mbot run`
 

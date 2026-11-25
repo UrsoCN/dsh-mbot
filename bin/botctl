@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s nullglob globstar
+MBOT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
+source "$MBOT_ROOT/lib/config.sh"
+source "$MBOT_ROOT/lib/ws.sh"
+source "$MBOT_ROOT/lib/lint.sh"
+source "$MBOT_ROOT/lib/board.sh"
+if [[ ${1:-} == -C ]]; then
+  [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
+  MBOT_CLI_WS=$2; shift 2
+fi
+case ${1:---help} in
+  -h|--help)
+    printf '%s\n' 'Usage: botctl [-C dir] boot <bot> [--task id]' \
+      '       botctl [-C dir] board show|add|set ...' \
+      '       botctl [-C dir] task show|result ...' \
+      '       botctl [-C dir] remember "fact" [--as bot] [--task id]' \
+      '       botctl [-C dir] lint'
+    exit 0 ;;
+esac
+mbot_load_workspace
+lock=$(mbot_path .mbot/botctl.lock)
+exec 9> "$lock"
+flock 9
+command=${1:-}; shift || true
+case $command in
+  boot) mbot_boot "$@" ;;
+  lint) [[ $# == 0 ]] || { mbot_error 'usage: botctl lint'; exit 2; }; mbot_lint ;;
+  board|task|remember)
+    case $command in
+      board) mbot_board "$@" ;;
+      task) mbot_task "$@" ;;
+      remember) mbot_remember "$@" ;;
+    esac ;;
+  *) mbot_error "unknown command: $command (use --help)"; exit 2 ;;
+esac

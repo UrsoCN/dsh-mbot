@@ -1,0 +1,11 @@
+.env
+.env.*
+.mbot/runs/
+.mbot/lock
+.mbot/botctl.lock
+.mbot/init.lock
+.mbot/PAUSED
+.mbot/failures
+.mbot/txn.*
+.mbot/board.*
+.mbot/task.*

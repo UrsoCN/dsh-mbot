@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0 实测完成，待实施 M1 骨架。实施计划见 [`../TODO.md`](../TODO.md)，实测记录见 [`m0-spike.md`](m0-spike.md)。
+> 状态：M0 实测与 M1 骨架/配置/botctl 已完成，下一阶段 M2 单次运行闭环。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -151,6 +151,8 @@ dsh-mbot/
 3. `~/.config/mbot/config` 中的 `MBOT_WS=`
 4. 默认 `~/.mbot-ws`
 
+M1 实现补充：用户配置遵循 `XDG_CONFIG_HOME`（默认 `~/.config`）。配置是静态 `KEY=value` 数据，可选成对引号，不执行 shell、不展开变量或命令替换。工作区预算配置也按此方式读取，环境变量优先。空路径报错。
+
 首次运行：解析出的目录不存在时——
 
 - **交互终端**：询问路径（回车用默认），写入 `~/.config/mbot/config`，并提示执行 `mbot init`；
@@ -158,6 +160,8 @@ dsh-mbot/
 
 约束：不得位于 `~/.dsh` 下，也不得与框架仓库重叠（`mbot init` 校验）。
 后续（backlog）：一个只声明 `mbotWorkspace` 设置项的极小 Cordis 插件，让用户在 DSH 设置页修改，`mbot` 读取该值作为第 3.5 级来源。
+
+`mbot init` 是显式创建入口，只接受不存在或空目录，并拒绝嵌套 Git 仓库；已有软链路径先解析到物理路径。工作区内部由 botctl 读写的托管文件和目录禁止软链，防止路径重定向。
 
 ---
 
@@ -216,6 +220,13 @@ dsh-mbot/
 - **不提供 `mem append`**：记忆只由 Dreaming 写；Bot 想记东西就 `remember`，次日凌晨被整理进 `MEMORY.md`/`wiki/`。
 - `MBOT_RUN_ID`、`MBOT_BOT` 由 `mbot` 导出给 headless 进程；Worker 用 `--as` 标识自己（待验证子代理是否继承环境变量与 PATH）。
 - 输出面向模型：短、纯文本、出错时一句话说明原因与正确用法。
+
+M1 实现约定：
+
+- 看板 ID 从 `001` 起，扫描当前与归档任务取最大值加一；默认 owner 为 chief，角色对应 `bots/<name>`。
+- 摘要、候选和受阻原因须为非空单行；表格摘要中的 `|` 用 `&#124;` 保存。结果段必须是任务最后一个二级段落，多行产出以引用追加，保留此前内容。
+- 读写命令共用 botctl 锁。人类修改只提交本次目标路径，保留其他暂存；目标已有未提交改动则拒绝。快照恢复命令失败或提交失败时的目标文件，看板超预算也回滚新增任务；Bot 运行内不提交。
+- `lint` 检查看板与任务 owner/状态一致、预算和链接；链接以工作区根为基准，允许锚点/显示名，校验文件而非段落。transcripts/dream-reports 是原始材料，排除于链接检查。
 
 ---
 
@@ -464,6 +475,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-25 | Dreaming 只用单阶段 |
 | 2026-11-25 | 纯 Bash，不写 TS 插件；`mbot` + `botctl` 双入口 |
 | 2026-11-25 | M0 通过；M2 验收需检查 `final.reason` 并区分顶层 token 与子代理成本；M4 显式 patch 开启 `interrupt_agent`；临时目录不作为工具防篡改边界 |
+| 2026-11-26 | M1 通过；配置静态解析，人类提交仅包含目标文件，拒绝脏目标，命令失败用快照恢复；归档 ID 不复用，托管路径不允许软链 |
 
 ### 15.2 对 `botctl` 草案的取舍
 
