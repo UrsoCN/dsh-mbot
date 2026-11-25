@@ -49,16 +49,18 @@
 
 ## M2 · 单次运行闭环 `mbot run`
 
-- [ ] 入口检查：`PAUSED` → 退出 0；`MBOT_RUN_ID` 已设 → 拒绝；`flock -n`；工作树干净；记录 `HEAD`
-- [ ] run-id；prompt = `botctl boot <bot> [--task]` + 边界声明 + `<request>`
-- [ ] 调用：导出 `MBOT_RUN_ID/MBOT_BOT/PATH` → `timeout $MBOT_TIMEOUT dsh --profile headless --json --permission-mode workspace-write --approval-policy never [--add-dir …]`；原始流存 `.mbot/runs/`
-- [ ] `lib/render.sh`：NDJSON → `transcripts/<date>/<run-id>.md`（请求摘要、工具调用、最终回答、本次 `remember` 条目）+ `.meta.json`；脱敏
-- [ ] `lib/guard.sh`：归属表回滚、`inbox/` 只追加校验、BOARD lint 失败还原、HEAD 比对、违规写 meta
-- [ ] commit `run(<bot>): <run-id> <摘要>`；失败计数，连续 3 次自动 PAUSED
-- [ ] `mbot status`、`pause`、`resume`
-- [ ] `tests/fake-dsh` + 用例：正常改看板 → 提交；偷改 MEMORY → 回滚记违规；删 inbox 行 → 回滚；dsh 退出 1 → 计数 +1；并发两个 run → 第二个跳过；运行内调 `mbot run` → 拒绝
+- [x] 入口检查：`PAUSED` → 退出 0；`MBOT_RUN_ID` 已设 → 拒绝；`flock -n`；工作树干净；记录 `HEAD`
+- [x] run-id；prompt = `botctl boot <bot> [--task]` + 边界声明 + `<request>`
+- [x] 调用：导出 `MBOT_RUN_ID/MBOT_BOT/MBOT_WS/PATH` → `timeout $MBOT_TIMEOUT dsh --profile headless --json --permission-mode workspace-write --approval-policy never`；原始流存 `.mbot/runs/`（`--add-dir` 按 M4 实现）
+- [x] `lib/render.sh`：NDJSON → `transcripts/<date>/<run-id>.md`（请求摘要、工具调用、最终回答、本次 `remember` 条目）+ `.meta.json`；脱敏
+- [x] `lib/guard.sh`：归属表回滚、`inbox/` 只追加校验、BOARD lint 失败还原、HEAD 比对、违规写 meta
+- [x] commit `run(<bot>): <run-id> <摘要>`；失败计数，连续 3 次自动 PAUSED
+- [x] `mbot status`、`pause`、`resume`
+- [x] `tests/fake-dsh` + 用例：正常改看板 → 提交；偷改 MEMORY → 回滚记违规；删 inbox 行 → 回滚；dsh 退出 1 → 计数 +1；并发两个 run → 第二个跳过；运行内调 `mbot run` → 拒绝
 
 **验收**：真 dsh 跑 `mbot run chief "在看板上加一个任务：整理 README"` → Chief 通过 `botctl board add` 加行，transcript 可读，`git log` 一个干净 commit，MEMORY 未变。
+
+2026-11-26 已通过：16 组基础 + 15 组运行检查；`bash tests/real-run.sh` 使用真实 DSH 生成 `001`，MEMORY 不变，无违规，数据仓库仅有初始化和一次 run 提交且工作树干净。实测与恢复行为见 [`docs/m2-run.md`](docs/m2-run.md)。
 
 ## M3 · Dreaming 与记忆闭环
 

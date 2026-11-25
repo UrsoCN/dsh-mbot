@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s nullglob
+[[ $* == '--profile headless --json --permission-mode workspace-write --approval-policy never -' ]]
+[[ -n ${MBOT_RUN_ID:-} && -n ${MBOT_BOT:-} && $MBOT_WS == "$(pwd -P)" ]]
+prompt=$(cat)
+[[ $prompt == *'<request>'* && $prompt == *'MEMORY.md'* ]]
+[[ $(command -v botctl) == "${MBOT_DSH%/tests/fake-dsh}/bin/botctl" ]]
+[[ ${MBOT_FAKE_ARTIFACTS:-} == /tmp/* ]]
+mkdir -p "$MBOT_FAKE_ARTIFACTS"
+printf '%s\n' "$prompt" > "$MBOT_FAKE_ARTIFACTS/prompt"
+printf '%s\n' "$MBOT_RUN_ID" >> "$MBOT_FAKE_ARTIFACTS/invocations"
+printf '{"type":"session","sessionId":"fake-session"}\n'
+text='fake completed'
+case ${MBOT_FAKE_MODE:-add} in
+  add)
+    printf '{"type":"tool_call","callId":"add","tool":"bash","input":{"command":"botctl board add"}}\n'
+    id=$(botctl board add '整理 README')
+    printf '%s' "$id" | jq -Rs '{type:"tool_result",callId:"add",status:"completed",result:.}'
+    ;;
+  memory)
+    botctl board add '合法任务' >/dev/null
+    printf 'rogue\n' >> MEMORY.md
+    printf 'rogue\n' >> bots/coder/MEMORY.md
+    printf 'rogue\n' >> bots/chief/SOUL.md
+    printf 'rogue\n' >> AGENTS.md
+    printf 'rogue\n' > wiki/rogue.md
+    printf 'rogue\n' > unexpected.txt
+    ;;
+  inbox-delete) printf 'rewritten\n' > "inbox/$(date +%F).md" ;;
+  remember) botctl remember '中文周报' --as chief --task 001 >/dev/null ;;
+  bad-board)
+    botctl board add '应回滚的任务' >/dev/null
+    printf '| bogus | oops |\n' >> BOARD.md
+    ;;
+  history)
+    for file in transcripts/*/*.md; do printf 'forged\n' > "$file"; done
+    mkdir -p transcripts/2000-01-01
+    printf 'forged\n' > transcripts/2000-01-01/forged.md
+    for file in .mbot/runs/*.jsonl; do printf 'forged\n' > "$file"; done
+    printf '999\n' > .mbot/failures
+    printf 'rogue\n' > .env.rogue
+    ;;
+  symlink)
+    mkdir -p "$MBOT_FAKE_ARTIFACTS/outside"
+    printf 'outside-original\n' > "$MBOT_FAKE_ARTIFACTS/outside/001.md"
+    mv tasks tasks-rogue
+    ln -s "$MBOT_FAKE_ARTIFACTS/outside" tasks
+    ;;
+  head)
+    printf 'rogue\n' >> MEMORY.md
+    git add MEMORY.md
+    git commit -qm 'rogue agent commit'
+    ;;
+  control)
+    printf 'outside-original\n' > "$MBOT_FAKE_ARTIFACTS/control-target"
+    ln -s "$MBOT_FAKE_ARTIFACTS/control-target" .mbot/PAUSED
+    ;;
+  git-destroy) mv .git .git.broken ;;
+  nested)
+    if mbot run chief 'nested forbidden' > "$MBOT_FAKE_ARTIFACTS/nested" 2>&1; then exit 9; fi
+    ;;
+  slow) printf 'started\n' > "$MBOT_FAKE_ARTIFACTS/started"; sleep 2 ;;
+  timeout) sleep 10 ;;
+  secret)
+    printf '%s\n' "$MBOT_TEST_SECRET" >&2
+    text="done $MBOT_TEST_SECRET sk-TESTPATTERN12345678901234567890 Bearer testbearersecret123456"
+    ;;
+  incomplete) exit 0 ;;
+  wrong-final) printf '{"type":"final","reason":"invalid reason","text":"failed"}\n'; exit 0 ;;
+  malformed) printf 'invalid JSON\n'; exit 0 ;;
+  error)
+    printf '{"type":"final","sessionId":"fake-session","reason":{"kind":"error","code":"FAKE_FAILURE"},"text":"failed"}\n'
+    exit 1 ;;
+  noop) ;;
+  *) exit 8 ;;
+esac
+printf '{"type":"status","phase":"step_end","usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":50,"cacheWriteTokens":0,"totalTokens":65}}\n'
+printf '%s' "$text" | jq -Rs '{type:"final",sessionId:"fake-session",reason:{kind:"completed"},text:.}'

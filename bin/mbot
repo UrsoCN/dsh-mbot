@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s nullglob globstar
+umask 077
 MBOT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
 source "$MBOT_ROOT/lib/config.sh"
 source "$MBOT_ROOT/lib/ws.sh"
+source "$MBOT_ROOT/lib/lint.sh"
+source "$MBOT_ROOT/lib/board.sh"
+source "$MBOT_ROOT/lib/guard.sh"
+source "$MBOT_ROOT/lib/render.sh"
+source "$MBOT_ROOT/lib/run.sh"
 if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2
 fi
 case ${1:---help} in
-  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\nM1 provides init. run/status/dream/tick will follow in later milestones.\n' ;;
+  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\n       mbot [-C dir] run [bot] "request" [--task id]\n       mbot [-C dir] status|pause [reason]|resume\n' ;;
   init) shift; mbot_init "$@" ;;
+  run|status|pause|resume)
+    command=$1; shift
+    if [[ $command == run && -v MBOT_RUN_ID ]]; then mbot_error 'nested mbot run is forbidden (MBOT_RUN_ID is set)'; exit 1; fi
+    mbot_load_workspace
+    "mbot_$command" "$@" ;;
   *) mbot_error "unknown command: $1 (use --help)"; exit 2 ;;
 esac

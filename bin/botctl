@@ -20,6 +20,10 @@ case ${1:---help} in
     exit 0 ;;
 esac
 mbot_load_workspace
+if [[ ! -v MBOT_RUN_ID && ( ${1:-} == remember || ( ${1:-} == board && ${2:-} != show ) || ( ${1:-} == task && ${2:-} == result ) ) ]]; then
+  exec 8> "$(mbot_path .mbot/lock)"
+  flock -n 8 || { mbot_error 'a run is active; retry this human mutation after it finishes'; exit 1; }
+fi
 lock=$(mbot_path .mbot/botctl.lock)
 exec 9> "$lock"
 flock 9

@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0 实测与 M1 骨架/配置/botctl 已完成，下一阶段 M2 单次运行闭环。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)。
+> 状态：M0–M2 已完成，下一阶段 M3 Dreaming。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，M2 验收见 [`m2-run.md`](m2-run.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -268,6 +268,15 @@ sequenceDiagram
 - run-id：`<UTC 时间>-<mode>-<4 位随机>`，如 `20261125T191700Z-dream-a1b2`。
 - Commit 前缀：`run(<bot>):` / `dream:` / `dream(failed):` / `chore(archive):` / `human:`。
 
+M2 实现补充：
+
+- stdin 投喂请求并导出 `MBOT_WS`；原始流先写宿主 `/tmp` 私有目录，验收后归档 `.mbot/runs/`，防止运行中的 Bot 混入宿主产物。当前不接收 grants，M4 再实现。
+- 人类 botctl 变更也获取全局锁；Bot 只获取工具锁，DSH 不继承宿主锁描述符。pause 不终止当前调用；resume 在运行中报忙。
+- guard 以运行前 Git 内容与忽略文件快照为基准；inbox 校验字节前缀；任务模板不可写；无效 BOARD 连同本次任务变更一起回滚。还原父目录时不跟随新软链。
+- 成功必须满足退出 0、最后一个事件为 completed final、无护栏违规；错误/缺失 JSON 与超时也生成失败审计。连续三次失败触发 PAUSED，成功重置失败计数。
+- HEAD 移动或控制路径替换立即 PAUSED；普通 HEAD 移动恢复原父节点后提交审计。Git 目录损坏或宿主验收失败时，保留原始流、计一次失败并暂停，不强行提交；人工修复后再恢复。
+- Git 工作区与元数据目录固定，宿主 Git 禁用 hooks/fsmonitor。入库记录、终端回答和 commit 摘要脱敏；原始流私有且不入库。meta 的 token 只覆盖顶层，耗时只覆盖 DSH 调用。
+
 ### 8.3 Prompt 组装（稳定 → 易变）
 
 ```text
@@ -476,6 +485,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-25 | 纯 Bash，不写 TS 插件；`mbot` + `botctl` 双入口 |
 | 2026-11-25 | M0 通过；M2 验收需检查 `final.reason` 并区分顶层 token 与子代理成本；M4 显式 patch 开启 `interrupt_agent`；临时目录不作为工具防篡改边界 |
 | 2026-11-26 | M1 通过；配置静态解析，人类提交仅包含目标文件，拒绝脏目标，命令失败用快照恢复；归档 ID 不复用，托管路径不允许软链 |
+| 2026-11-26 | M2 通过；完整运行与失败审计、越权/非追加恢复、三次熔断已实现；HEAD/控制路径异常立即暂停；无效看板连同任务回滚；原始流在宿主验收后归档 |
 
 ### 15.2 对 `botctl` 草案的取舍
 

@@ -237,3 +237,4 @@ fail_with 'will not overwrite' bash "$repo/install.sh" --bin-dir "$test_root/col
 clean
 ok 'config validation, installation symlink entrypoints, collision protection and paths with spaces'
 printf '%s integration checks passed\n' "$count"
+bash "$repo/tests/run-runtime.sh"
