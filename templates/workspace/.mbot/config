@@ -6,5 +6,6 @@ MBOT_WIKI_MAX_LINES=200
 MBOT_BOARD_MAX_LINES=80
 MBOT_TIMEOUT=300
 MBOT_DREAM_MAX_BYTES=64000
+# Colon-separated physical absolute project directories; empty means none.
 MBOT_GRANTS=
 MBOT_DSH=dsh

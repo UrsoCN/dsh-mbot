@@ -1,0 +1,23 @@
+- id: subagent
+  config:
+    maxDepth: 1
+    maxActiveSubagents: 2
+- id: tool-subagent-control
+  disabled: false
+  config:
+    interrupt: true
+- id: subagent-spawn-in-process
+  disabled: false
+  config:
+    providerName: spawn
+- id: tool-subagent
+  disabled: false
+  config:
+    provider: spawn
+    toolName: subagent
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-agent-team
+  disabled: true
+- id: tool-workflow
+  disabled: true

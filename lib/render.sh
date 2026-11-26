@@ -47,14 +47,14 @@ mbot_render() {
   jq -n --arg id "$MBOT_RUN_ID" --arg mode "${MBOT_MODE:-run}" --arg bot "$bot" --arg task "$task" --arg base "$MBOT_BASE" \
     --arg observed "$MBOT_OBSERVED_HEAD" --arg started "$MBOT_STARTED" --argjson elapsed "$elapsed" --argjson rc "$rc" \
     --slurpfile events "$MBOT_SCRATCH/clean-events.json" --slurpfile violations "$MBOT_SCRATCH/violations.json" \
-    --slurpfile request "$MBOT_SCRATCH/clean-request.json" '
+    --slurpfile request "$MBOT_SCRATCH/clean-request.json" --slurpfile grants "$MBOT_SCRATCH/grants.json" '
       ($events[0] | map(select(type == "object" and .type == "final")) | last) as $f |
       ($events[0] | map(select(type == "object" and .type == "status" and .phase == "step_end") | .usage | select(type=="object"))) as $u |
       {run_id:$id, mode:$mode, bot:$bot, task:(if $task=="" then null else $task end), started_at:$started,
        elapsed_ms:$elapsed, dsh_exit_code:$rc, base_head:$base, observed_head:$observed,
        session_id:($f.sessionId // null), reason:($f.reason // null),
        success:($rc==0 and ($f.reason.kind? // "")=="completed" and ($events[0]|last|.type)=="final" and ($violations[0]|length)==0),
-       summary:($request[0] | split("\n")[0] | .[0:72]), violations:$violations[0],
+       summary:($request[0] | split("\n")[0] | .[0:72]), violations:$violations[0], grants:$grants[0],
        usage:{scope:"top-level", input_tokens:([$u[].inputTokens|numbers]|add // 0),
         output_tokens:([$u[].outputTokens|numbers]|add // 0), cache_read_tokens:([$u[].cacheReadTokens|numbers]|add // 0),
         cache_write_tokens:([$u[].cacheWriteTokens|numbers]|add // 0), total_tokens:([$u[].totalTokens|numbers]|add // 0)}}' > "$MBOT_SCRATCH/meta.json"

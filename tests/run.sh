@@ -244,3 +244,4 @@ ok 'config validation, installation symlink entrypoints, collision protection an
 printf '%s integration checks passed\n' "$count"
 bash "$repo/tests/run-runtime.sh"
 bash "$repo/tests/run-dream.sh"
+bash "$repo/tests/run-schedule.sh"

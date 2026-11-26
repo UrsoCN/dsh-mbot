@@ -2,7 +2,7 @@
 
 基于 DeepSeek Harness（DSH）的最小 Bot 系统：纯 Bash 编排，Markdown 保存任务与记忆，Git 保存审计与回滚点。框架仓库与数据仓库分开；Chief 管看板，Worker 执行任务，Dreaming 整理长期记忆。
 
-当前完成 **M0–M3**：工作区初始化、配置、`botctl`、单次运行和 Dreaming 记忆闭环已可用。星型调度和无人值守按 [TODO](TODO.md) 的后续里程碑实现。完整边界见 [设计稿](docs/design.md)。
+当前完成 **M0–M4**：工作区、`botctl`、单次运行、Dreaming、星型调度和归档已可用。无人值守按 [TODO](TODO.md) 的 M5 推进。完整边界见 [设计稿](docs/design.md)。
 
 ## 快速开始
 
@@ -62,7 +62,7 @@ MBOT_WS=/absolute/path/to/workspace
 | `MBOT_GRANTS` | 空 |
 | `MBOT_DSH` | dsh |
 
-run/dream 使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；`MBOT_DREAM_MAX_BYTES` 控制本次整理的新输入字节数。目录 grants 在 M4 启用，当前 run 要求 `MBOT_GRANTS` 为空，dream 不授予外部目录。密钥放在被 Git 忽略的 `.env` 中，真实无人值守运行使用 `$DSH_HOME/.env`。
+run/dream 使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；`MBOT_DREAM_MAX_BYTES` 控制本次整理的新输入字节数。`MBOT_GRANTS` 向 run/tick 授予外部项目目录，dream 不授予外部目录。密钥放在被 Git 忽略的 `.env` 中，真实无人值守运行使用 `$DSH_HOME/.env`。
 
 ## botctl
 
@@ -85,7 +85,7 @@ run/dream 使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；`MBOT_DREAM_MAX_BYTES` 控制�
 
 命令共用 `.mbot/botctl.lock`。人类修改成功后只提交本次目标文件，保留其他暂存；目标已有未提交改动时先报错。命令或提交失败会恢复本次涉及的文件。`MBOT_RUN_ID` 已设时，所有 Bot 变更只改文件，由宿主统一验收提交。
 
-`lint` 用 UTF-8 字符数约束 MEMORY/SOUL，实际行数约束 MEMORY/wiki/BOARD，报出文件及超限量。`[[wiki/file.md]]` 链接以工作区根为基准，支持 `#anchor` 和 `|label`，检查目标文件存在且未越界；不检查段落锚点。历史 transcripts 和 dream-reports 是原始材料，不参与该链接检查。托管文件及目录不允许软链。
+`lint` 用 UTF-8 字符数约束 MEMORY/SOUL，实际行数约束 MEMORY/wiki/BOARD，报出文件及超限量。`[[wiki/file.md]]` 链接以工作区根为基准，支持 `#anchor` 和 `|label`，检查目标文件存在且未越界；不检查段落锚点。历史 transcripts、dream-reports 和归档任务是原始材料，不参与该链接检查。托管文件及目录不允许软链。
 
 ## 单次运行与恢复
 
@@ -136,13 +136,38 @@ dream 只接受共享/已有角色 MEMORY、wiki Markdown 和本次报告。必�
 
 在实际数据仓库中用 `git revert <dream commit>` 回滚记忆和 checkpoint。候选和历史 transcript 保持原样；后续从仍可用的上一个成功 checkpoint 继续整理。真实闭环见 [M3 验收记录](docs/m3-dream.md)。
 
+## 星型调度、tick 与归档
+
+Chief 通过 `board add` 分配 ID，并用 `task result --as chief` 在每个任务单中追加目标、输入、文件范围和验收标准。Worker 的第一条工具操作是 `botctl boot coder --task <id>`；结果和验收证据用 `task result --as coder` 写回。Chief 收结果验证后标 done；纠偏用 send_message，中断后确认停止并标 blocked、记录原因。
+
+run/tick 的框架 overlay 固定 fresh spawn、深度 1、最多两个活跃 Worker，开启 interrupt_agent，关闭 fork、Agent Teams 和 workflow 派活工具；保留用户默认模型。跨次运行只依赖看板和任务记录，不假设旧 agent 仍在线。现有工作区可对照 `templates/workspace/` 手动合并人类维护的 AGENTS/SOUL；框架升级不会覆盖自定义角色。
+
+外部目录按冒号分隔配置，例如：
+
+```text
+MBOT_GRANTS=/physical/project-a:/physical/project-b
+```
+
+也可从环境提供。每项必须是已存在目录的物理绝对路径（可用 `pwd -P` 获取）；支持空格，拒绝相对路径、软链别名、空项、重复项及多余末尾斜杠。路径不得与框架、数据仓库或 DSH_HOME 重叠，根目录也被拒绝。宿主逐项传为 `--add-dir`，在 prompt/metadata 中记录；所有 Worker 继承这些目录，但各自仍须遵守任务中的文件范围。外部项目的提交与合并由人类处理。
+
+```bash
+mbot tick
+mbot archive
+```
+
+tick 先选择看板中的 doing，否则选第一个 todo，完整任务单注入上下文；无可做任务时不调用模型、不提交。一次只推进一个线程，其他任务留待下一次。blocked/done 不会自动重置。
+
+archive 是纯脚本：把 done 任务原样移到 `tasks/archive/YYYY-MM/`，删除对应看板行，提交 `chore(archive): …`；doing/todo/blocked 保留，归档 ID 不复用。它检查目的文件冲突，失败恢复文件和索引；没有 done 时跳过。tick/archive 共用全局锁、PAUSED 与运行内禁用规则。归档后可接 `mbot dream` 整理新增材料。
+
+完整的真实并行与中断验收见 [M4 记录](docs/m4-schedule.md)。
+
 ## 验证
 
 ```bash
 bash tests/run.sh
 ```
 
-16 组基础、15 组运行和 11 组 Dreaming 检查涵盖命令、并发、回滚、脱敏、熔断、记忆闭环和输入续读。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
+16 组基础、15 组运行、11 组 Dreaming 和 8 组调度检查，共 50 组，涵盖命令、并发、回滚、脱敏、熔断、记忆、输入续读、grants 与归档。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
 
 真实 M2 验收会使用仓库 `.env` 或环境中的 DeepSeek key，并创建独立临时工作区和 DSH 数据目录：
 
@@ -159,6 +184,12 @@ bash tests/real-dream.sh
 ```
 
 它验证候选先不改 MEMORY，dream 正式合并，下一轮按中文规则回复，revert 恢复原记忆。
+
+真实并行与中断（用 zstd 解压持久会话核实 Worker 的第一条工具命令）：
+
+```bash
+bash tests/real-schedule.sh
+```
 
 DSH 行为探针会调用真实 API；复现见 [M0 实测记录](docs/m0-spike.md)。
 

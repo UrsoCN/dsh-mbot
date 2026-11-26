@@ -76,13 +76,15 @@
 
 ## M4 · 星型调度
 
-- [ ] `bots/chief/SOUL.md`：拆解 → `board add` → 派活 prompt 模板（design §10.3）→ 纠偏/中断 → `board set`
-- [ ] `bots/coder/SOUL.md`（+ 可选 `researcher`）：第一步 `botctl boot`，结果 `task result`，值得记的 `remember`
-- [ ] `prompts/tick.md`：选一个 `todo` 或推进 `doing`；无事可做立即结束
-- [ ] `mbot tick`；`mbot archive`（纯脚本，`chore(archive)`）
-- [ ] `MBOT_GRANTS` → `--add-dir`（只接受存在的物理绝对路径）
+- [x] `bots/chief/SOUL.md`：拆解 → `board add` → 派活 prompt 模板（design §10.3）→ 纠偏/中断 → `board set`
+- [x] `bots/coder/SOUL.md`（+ 可选 `researcher`）：第一步 `botctl boot`，结果 `task result`，值得记的 `remember`
+- [x] `prompts/tick.md`：选一个 `todo` 或推进 `doing`；无事可做立即结束
+- [x] `mbot tick`；`mbot archive`（纯脚本，`chore(archive)`）
+- [x] `MBOT_GRANTS` → `--add-dir`（只接受存在的物理绝对路径）
 
 **验收**：复杂需求 → Chief 拆成 ≥2 个任务、并行派 2 个 Worker → 结果落在各自任务单 → 看板状态正确 → 无越权记录；人为卡住一个 Worker，Chief 能 `interrupt_agent` 并标 `blocked`。
+
+2026-11-26 已通过：`bash tests/run.sh` 共 50 组离线检查；`bash tests/real-schedule.sh` 实测两 fresh Worker 同时 running，分别开发 greet.sh/README、写回任务并标 done；第三个 Worker 进入 sleep 后被中断并标 blocked；两个 done 任务原样归档。记忆未变，无工作区违规，外部项目未被提交，数据仓库干净。见 [`docs/m4-schedule.md`](docs/m4-schedule.md)。
 
 ## M5 · 无人值守
 

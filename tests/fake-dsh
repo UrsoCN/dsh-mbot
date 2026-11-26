@@ -2,9 +2,19 @@
 set -Eeuo pipefail
 shopt -s nullglob
 framework=${MBOT_DSH%/tests/fake-dsh}
-if [[ ${MBOT_MODE:-run} == dream ]]; then
-  [[ $* == "--profile headless --patch $framework/patches/dream.yml --json --permission-mode workspace-write --approval-policy never -" ]]
-else [[ $* == '--profile headless --json --permission-mode workspace-write --approval-policy never -' ]]; fi
+original_args=("$@")
+[[ $1 == --profile && $2 == headless && $3 == --patch ]]
+if [[ ${MBOT_MODE:-run} == dream ]]; then [[ $4 == "$framework/patches/dream.yml" ]]; else [[ $4 == "$framework/patches/run.yml" ]]; fi
+shift 4
+seen_grants=()
+while [[ ${1:-} == --add-dir ]]; do
+  [[ $# -ge 2 && -d $2 && $2 == /* && $2 == "$(realpath -e "$2")" ]]
+  seen_grants+=("$2"); shift 2
+done
+[[ $* == '--json --permission-mode workspace-write --approval-policy never -' ]]
+if [[ ${MBOT_MODE:-run} == dream ]]; then [[ ${#seen_grants[@]} == 0 ]]; else
+  [[ $(IFS=:; printf '%s' "${seen_grants[*]}") == "${MBOT_GRANTS:-}" ]]
+fi
 [[ -n ${MBOT_RUN_ID:-} && -n ${MBOT_BOT:-} && $MBOT_WS == "$(pwd -P)" ]]
 prompt=$(cat)
 [[ $prompt == *'MEMORY.md'* ]]
@@ -12,6 +22,7 @@ prompt=$(cat)
 [[ $(command -v botctl) == "${MBOT_DSH%/tests/fake-dsh}/bin/botctl" ]]
 [[ ${MBOT_FAKE_ARTIFACTS:-} == /tmp/* ]]
 mkdir -p "$MBOT_FAKE_ARTIFACTS"
+printf '%s\0' "${original_args[@]}" > "$MBOT_FAKE_ARTIFACTS/argv"
 printf '%s\n' "$prompt" > "$MBOT_FAKE_ARTIFACTS/prompt"
 printf '%s\n' "$MBOT_RUN_ID" >> "$MBOT_FAKE_ARTIFACTS/invocations"
 printf '{"type":"session","sessionId":"fake-session"}\n'
@@ -124,6 +135,15 @@ case ${MBOT_FAKE_MODE:-add} in
     printf '{"type":"final","sessionId":"fake-session","reason":{"kind":"error","code":"FAKE_FAILURE"},"text":"failed"}\n'
     exit 1 ;;
   noop) ;;
+  tick)
+    id=$(sed -n 's/^<context file="tasks\/\([0-9]*\).md">$/\1/p' <<< "$prompt")
+    [[ -n $id ]]
+    printf 'tick verification passed\n' | botctl task result "$id" --as coder >/dev/null
+    botctl board set "$id" done >/dev/null
+    ;;
+  grant)
+    for dir in "${seen_grants[@]}"; do printf 'grant-used\n' > "$dir/grant-marker"; done
+    ;;
   respect)
     if [[ ${MBOT_TEST_EXPECT_RULE:-1} == 1 ]]; then [[ $prompt == *'周报一律使用中文'* ]]; else [[ $prompt != *'周报一律使用中文'* ]]; fi
     text='memory expectation verified'

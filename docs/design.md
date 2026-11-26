@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0–M3 已完成，下一阶段 M4 星型调度。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，运行与记忆验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)。
+> 状态：M0–M4 已完成，下一阶段 M5 无人值守。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -20,7 +20,7 @@
 | **调度** | 系统 cron：每 2h `mbot tick`；每天 **03:17** `mbot dream`（**单阶段**：直接写 + lint 闸门 + 可 `git revert`）。全局 `flock` 串行，`PAUSED` 急停 |
 | **权限** | headless 无在线审批通道 → `--permission-mode workspace-write --approval-policy never`。`botctl` 放在**工作区之外**（Bot 可执行、不可改）；运行后 `mbot` 按路径归属表验收，越权改动回滚 |
 | **审计** | 一次运行一个语义化 commit；Dreaming 写坏就 `git revert` |
-| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；当前 975 行，含注释/空行） |
+| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；M4 当前 1060 行，含注释/空行） |
 
 ---
 
@@ -327,7 +327,7 @@ M2 实现补充：
 
 | 角色 | 形态 | 能做 | 不能做 |
 |---|---|---|---|
-| **Chief** | headless 顶层会话 | `botctl board *`、建任务、`subagent` 派活、`send_message`/`interrupt_agent` 纠偏、`remember` | 写记忆、改 SOUL/AGENTS、调 `mbot` |
+| **Chief** | headless 顶层会话 | `botctl board *`、建任务、`task result --as chief` 写派活说明、`subagent` 派活、`send_message`/`interrupt_agent` 纠偏、`remember` | 写记忆、改 SOUL/AGENTS、调 `mbot` |
 | **Worker** | Chief 派出的 fresh 子代理（depth 1） | `botctl boot/task/remember`；在 grant 的外部目录干活 | 再派子代理、改看板、互相聊天（后两项由协议约束，消息工具本身允许同树跨分支通信） |
 | **Dreaming** | 独立 headless 运行 | 读 transcripts/inbox/tasks/wiki，写记忆与报告 | 改看板、任务、SOUL |
 
@@ -363,15 +363,17 @@ Chief: botctl board add "给 mbot 加 lint" --owner coder   → 007
   └─ 收结果：botctl board set 007 done
 ```
 
-外部工作目录由人类在 `.mbot/config` 的 `MBOT_GRANTS` 列出，`mbot` 转成 `--add-dir`；那些仓库的合并由人类负责。
+外部工作目录由人类在 `.mbot/config` 的 `MBOT_GRANTS` 列出，`mbot` 转成 `--add-dir`；那些仓库的提交与合并由人类负责。值为冒号分隔的物理绝对目录，支持空格；拒绝空项、重复项、相对/软链别名以及与框架、数据仓库、DSH_HOME 的重叠。run/tick 记录有效 grants，dream 不授予外部目录。
 
-标准 headless 默认不暴露 `interrupt_agent`。M4 由宿主追加框架内的 patch（不得修改用户的全局 DSH profile），启用中断工具：
+标准 headless 默认不暴露 `interrupt_agent`。M4 由宿主追加 `patches/run.yml`（不修改用户的全局 DSH profile），固定 fresh spawn、深度 1、最多两 Worker，开启中断并关闭 fork/Agent Teams/workflow 派活工具；不覆盖用户默认模型。中断配置部分为：
 
 ```yaml
 - id: tool-subagent-control
   config:
     interrupt: true
 ```
+
+M4 实现约定：Chief 先把目标、输入、文件范围及验收写进各任务结果段，再标 doing、并行派活；Worker 第一工具操作是 boot，结果经 task result 写回。跨次 run/tick 不使用旧 agent 名单。tick 在全局锁内优先选 doing，否则看板第一个 todo，完整任务注入；空闲时跳过模型。archive 在全局/工具锁内将 done 文件原样移到年月目录并移除看板行，提交 `chore(archive)`；冲突或提交失败恢复全部目标，ID 不复用。归档任务按历史材料处理，不检查其中的旧链接目标。
 
 ---
 
@@ -492,6 +494,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-26 | M2 通过；完整运行与失败审计、越权/非追加恢复、三次熔断已实现；HEAD/控制路径异常立即暂停；无效看板连同任务回滚；原始流在宿主验收后归档 |
 | 2026-11-26 | M3 通过；成功报告持久化输入 checkpoint，失败不推进；单阶段记忆改动原子验收；Flash overlay 与本地 added 日期明确；子命令帮助只读 |
 | 2026-11-26 | 为显式保留续读队列、回滚与报告验收，将框架体积目标从 800 行调整为 1200 行；M3 当前 975 行，不增加插件、数据库或第三方运行依赖 |
+| 2026-11-26 | M4 通过；两路 fresh Worker、可中断、持久派活说明已实测；tick 空闲不调用模型，归档保留任务字节且失败回滚；grants 按物理目录逐项传递，dream 不继承外部写权限 |
 
 ### 15.2 对 `botctl` 草案的取舍
 

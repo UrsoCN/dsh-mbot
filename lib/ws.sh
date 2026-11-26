@@ -18,11 +18,18 @@ mbot_result_section() {
 
 # Lock spans read/modify/validate/commit; snapshots also work inside a Bot run.
 mbot_transaction() {
+  mbot_transaction_as human "$@"
+}
+mbot_transaction_as() {
+  local prefix=$1
+  shift
   local message=$1 action=$2 rel file snapshot
+  local -a tx_git=(git -C "$MBOT_WS")
+  [[ $prefix == human ]] || tx_git=(git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$MBOT_WS")
   shift 2
   for rel in "${MBOT_CHANGED[@]}"; do
     file=$(mbot_path "$rel")
-    if [[ ! -v MBOT_RUN_ID && -n $(git -C "$MBOT_WS" status --porcelain -- "$rel") ]]; then
+    if [[ ! -v MBOT_RUN_ID && -n $("${tx_git[@]}" status --porcelain -- "$rel") ]]; then
       mbot_error "uncommitted changes in $rel; commit or restore them first"; return 1
     fi
   done
@@ -35,11 +42,11 @@ mbot_transaction() {
   trap 'trap - ERR; for rel in "${MBOT_CHANGED[@]}"; do
     if [[ -f $snapshot/$rel ]]; then cp -p -- "$snapshot/$rel" "$MBOT_WS/$rel";
     else rm -f -- "$MBOT_WS/$rel"; fi
-  done; if [[ ! -v MBOT_RUN_ID ]]; then git -C "$MBOT_WS" reset -q HEAD -- "${MBOT_CHANGED[@]}"; fi; rm -rf -- "$snapshot"' ERR
+  done; if [[ ! -v MBOT_RUN_ID ]]; then "${tx_git[@]}" reset -q HEAD -- "${MBOT_CHANGED[@]}"; fi; rm -rf -- "$snapshot"' ERR
   "$action" "$@"
   if [[ ! -v MBOT_RUN_ID ]]; then
-    git -C "$MBOT_WS" add -- "${MBOT_CHANGED[@]}"
-    git -C "$MBOT_WS" commit -q --only -m "human: $message" -- "${MBOT_CHANGED[@]}"
+    "${tx_git[@]}" add -- "${MBOT_CHANGED[@]}"
+    "${tx_git[@]}" commit -q --only -m "$prefix: $message" -- "${MBOT_CHANGED[@]}"
   fi
   trap - ERR
   rm -rf -- "$snapshot"

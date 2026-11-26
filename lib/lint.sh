@@ -68,7 +68,7 @@ mbot_lint() {
   done
   for file in "$MBOT_WS/"**/*.md; do
     rel=${file#"$MBOT_WS/"}
-    [[ $rel != transcripts/* && $rel != dream-reports/* && $rel != .git/* && $rel != .mbot/* ]] || continue
+    [[ $rel != transcripts/* && $rel != dream-reports/* && $rel != tasks/archive/* && $rel != .git/* && $rel != .mbot/* ]] || continue
     if ! mbot_path "$rel" >/dev/null; then failures=$((failures+1)); continue; fi
     rest=$(cat -- "$file")
     while [[ $rest =~ $link_re ]]; do

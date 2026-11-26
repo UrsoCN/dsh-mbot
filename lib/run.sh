@@ -52,7 +52,7 @@ mbot_run() {
   mbot_execute run "$bot" "$request" "$task"
 }
 mbot_execute() {
-  local mode=$1 bot=$2 request=$3 task=$4 lock base_failures rc=0 start elapsed summary
+  local mode=$1 bot=$2 request=$3 task=$4 purpose=${5:-$1} lock base_failures rc=0 start elapsed summary path
   [[ ! -v MBOT_RUN_ID ]] || { mbot_error "nested mbot $mode is forbidden (MBOT_RUN_ID is set)"; return 1; }
   MBOT_MODE=$mode
   if [[ -f $(mbot_path .mbot/PAUSED) ]]; then printf 'Skipped: workspace is PAUSED.\n'; return 0; fi
@@ -67,7 +67,14 @@ mbot_execute() {
     mbot_role "$bot"
     [[ $bot != human ]] || { mbot_error 'run requires a bot role'; return 1; }
     [[ -z $task ]] || mbot_task_path "$task" >/dev/null
-    [[ -z $MBOT_GRANTS ]] || { mbot_error 'MBOT_GRANTS support arrives in M4; run with empty grants'; return 1; }
+    mbot_grants
+    if [[ $purpose == tick ]]; then
+      mbot_board_check
+      task=$(mbot_rows | awk -F '|' '$2=="doing" {doing=$1;exit} $2=="todo" && todo=="" {todo=$1} END {if(doing!="") print doing;else if(todo!="") print todo}')
+      if [[ -z $task ]]; then printf 'Skipped: no todo or doing tasks.\n'; return 0; fi
+      mbot_task_path "$task" >/dev/null
+    fi
+  else MBOT_GRANTED=()
   fi
   command -v "$MBOT_DSH" >/dev/null || { mbot_error "DSH executable not found: $MBOT_DSH"; return 1; }
   MBOT_DSH=$(command -v "$MBOT_DSH")
@@ -84,11 +91,16 @@ mbot_execute() {
     mbot_dream_prompt
     dsh_args=(--patch "$MBOT_ROOT/patches/dream.yml")
   else
+    dsh_args=(--patch "$MBOT_ROOT/patches/run.yml")
+    for path in "${MBOT_GRANTED[@]}"; do dsh_args+=(--add-dir "$path"); done
     [[ -z $task ]] || boot_args+=(--task "$task")
     MBOT_RUN_ID="$MBOT_RUN_ID" "$MBOT_ROOT/bin/botctl" -C "$MBOT_WS" "${boot_args[@]}" > "$MBOT_SCRATCH/prompt"
     printf '\n只通过 botctl 改看板/任务/候选，记忆只读；禁止 git commit 或调用 mbot。\n本次请求：\n<request>\n%s\n</request>\n' "$request" >> "$MBOT_SCRATCH/prompt"
+    printf '\n宿主已授予的外部可写目录（任务还须限定自己的文件范围）：\n' >> "$MBOT_SCRATCH/prompt"
+    for path in "${MBOT_GRANTED[@]}"; do printf '%s\n' "$path" >> "$MBOT_SCRATCH/prompt"; done
   fi
   mbot_capture_secrets
+  printf '%s\0' "${MBOT_GRANTED[@]}" | jq -Rsc 'split("\u0000") | map(select(length>0))' | mbot_scrub > "$MBOT_SCRATCH/grants.json"
   base_failures=$(mbot_failure_count)
   mbot_guard_snapshot
   MBOT_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -102,7 +114,7 @@ mbot_execute() {
     mbot_violation inbox input_budget_too_small
   else (
     cd "$MBOT_WS"
-    export MBOT_RUN_ID MBOT_WS MBOT_MODE MBOT_BOT=$bot PATH="$MBOT_ROOT/bin:$PATH"
+    export MBOT_RUN_ID MBOT_WS MBOT_MODE MBOT_GRANTS MBOT_BOT=$bot PATH="$MBOT_ROOT/bin:$PATH"
     timeout --kill-after=10s "$MBOT_TIMEOUT" "$MBOT_DSH" --profile headless "${dsh_args[@]}" --json \
       --permission-mode workspace-write --approval-policy never - 8>&- 9>&-
   ) < "$MBOT_SCRATCH/prompt" > "$MBOT_SCRATCH/raw.jsonl" 2> "$MBOT_SCRATCH/stderr" || rc=$?
