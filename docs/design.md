@@ -1,6 +1,6 @@
 # dsh-mbot：0.1 基线与 0.2 迭代设计
 
-当前包版本 0.1.0，发布标签 0.1。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。本地安装反馈是下一轮输入，聊天区与面板必须以真实界面验收。
+当前包版本 0.1.0，首版能力以 0.1 命名；发布 tag 推荐采用 v0.1.0，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。本地安装反馈是下一轮输入，聊天区与面板必须以真实界面验收。
 
 ## 1. 当前能力与缺口
 
@@ -133,4 +133,4 @@ UI 可见、Session 事件持久化、模型可见是不同问题。Chief 确需
 
 0.1 已有公开类型、11 项 Cordis、64 组 Bash 检查，两种真实安装/API 验收；界面反馈和面板未被证明。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
 
-标签 0.1 指向 d1bd4e6，包版本 0.1.0；保留既有标签和历史验收。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。
+包版本为 0.1.0，具体发布标签由作者在要发布的提交上创建，以 Git refs 为准；不将它固定绑定到某个实现提交。完整版本 tag 有利于索引发现；GitHub Release/Actions 非必需。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。

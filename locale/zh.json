@@ -1,4 +1,6 @@
 {
-  "title": "MBot",
-  "description": "以 Markdown 和 Git 管理 Bot 工作区、持久任务看板与 Dreaming 记忆整理。"
+  "meta": {
+    "title": "MBot",
+    "description": "以 Markdown 和 Git 管理 Bot 工作区、持久任务看板与 Dreaming 记忆整理。"
+  }
 }

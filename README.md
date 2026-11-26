@@ -26,6 +26,8 @@ dsh plugin --profile web add /tmp/dsh-mbot-0.1.0.tgz
 
 web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patches 和运维资源，无安装时构建；已有进程按 HMR 能力生效或重启 DSH。Git 安装可使用 github:UrsoCN/dsh-mbot#<tag-or-commit>，以远端实际可见版本为准。
 
+推荐完整版本 tag（如 v0.1.0 对应包版本 0.1.0）。GitHub Release/Actions 不是安装必需项，分支也不等于 tag；规范检查、CI 与发布建议见 [发布检查](docs/plugin-standard-review.md)。
+
 卸载用 dsh plugin --profile web remove dsh-mbot；独立数据仓库保留。安装提供 profile 的 node_modules/.bin/mbot 和 botctl，但不修改全局 PATH、不初始化数据或部署 cron。
 
 ## 快速开始
@@ -126,7 +128,7 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-0.1 有公开类型、11 项 Cordis、64 组 Bash 检查；真实安装验证源码/tarball 的 Host 激活、工具/命令 handler、schema、bin、卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；测试产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+0.1 有公开类型、11 项 Cordis、64 组 Bash 检查；当前安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、工具/命令 handler、schema、bin、展示元数据及卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 这些验收不证明完整 GUI 可用。后续界面/会话功能需真实聊天区、设置页、重启/重连与多实例验收。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 

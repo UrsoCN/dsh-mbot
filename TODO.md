@@ -47,6 +47,8 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 ## 持续验收与后续增强
 
+- [ ] 发布工程：使用与包版本对应的完整 tag（推荐 v0.1.0）；增加 CI；按需增加上传 tgz/校验和的 Release Action，发布不是安装必需项
+- [ ] 将 engines.dsh、DSH peers 和实际兼容测试矩阵对齐，避免把宽范围声明视为已验证；规范检查见 [发布检查](docs/plugin-standard-review.md)
 - [ ] 至少 7 天真实调度观察：每日检查记忆预算、nightly 提交/报告、违规处理，在 wiki/ops-log.md 记录；第零天不等于完成
 - [ ] 主 Session 受控业务执行：先设计每轮基准、锁、guard、回滚/提交，再考虑直接复用主 Session；接入前保留 headless run
 - [ ] 升级/迁移：配置与登记 schemaVersion、模板兼容；不覆盖自定义协议/角色；验证旧 0.1 仓库及 profile
@@ -54,4 +56,4 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 - [ ] 打包 mbot skill；复活“源”/“u”为真实 Bot；按需增加 dsh-im/tether 入口
 - [ ] 建立 50–100 条私有评测，再决定全文索引/检索；不引入记忆数据库作为真相源
 
-现有标签 0.1 指向 d1bd4e6，本轮文档整理不移动它。修复与新功能使用后续提交/版本；发布按 [维护约定](AGENTS.md) 检查版本、包内容与验收。
+分支和标签按 Git refs 区分，不将某个 tag 的指向写死在规划中。新发布推荐完整版本标签，与 package.version 对应；具体状态及建议见 [发布检查](docs/plugin-standard-review.md)。修复与新功能使用相应提交/版本。

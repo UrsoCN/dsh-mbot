@@ -2,7 +2,7 @@
 
 ## 0.1（npm 包版本 0.1.0）
 
-2026-11-26，首个可运行的 DeepSeek Harness/Cordis Host 插件版本。标签 0.1 指向 d1bd4e6。本文件将原 TODO 已完成项目收拢为能力与验收摘要；后续见 [TODO](../TODO.md)。本轮整理不移动已有标签，不将未来功能并入 0.1。
+2026-11-26，首个可运行的 DeepSeek Harness/Cordis Host 插件版本，主要功能实现于 d1bd4e6。本文件将原 TODO 已完成项目收拢为能力与验收摘要；后续见 [TODO](../TODO.md)。发布标签以作者选定提交及 Git refs 为准，不强制固定到该实现提交。
 
 文档整理日期：2026-11-27。以下功能以现有 0.1 代码为基线；新反馈与后续规划尚未作为功能实现发布。
 
@@ -40,6 +40,12 @@ Markdown/Git 保存任务与长期记忆；工作 Bot 只读记忆，remember �
 
 ### 发布与后续维护
 
-0.1 是代码标签，0.1.0 是 package.json 版本。文档整理是标签之后的独立提交，不为补说明移动标签。Git 安装以远端可见 tag/commit 为准，本说明不宣称已完成 npm 发布。
+0.1 是首版名称，0.1.0 是 package.json 版本；Git 分支与发布 tag 必须区分，新 tag 推荐 v0.1.0。Git 安装以远端可见 tag/commit 为准，GitHub Release/Actions 不是安装必需，本说明不宣称已完成 npm 发布。
 
 后续在这里记录变更、迁移、验收、限制；已完成工作从 TODO 移入相应版本。维护者遵循根 [AGENTS](../AGENTS.md)，运行 Chief/Worker 遵循数据仓库协议。
+
+## 未发布：规范优化（2026-11-27）
+
+- 修复中英文 locale 为 DSH 使用的 meta.title/meta.description，实际插件管理器读取通过。
+- 安装验收增加无开发依赖的 Git fixture；源码链接、Git、tarball 三种方式均验证元数据、激活、工具/命令、schema、bin 与卸载。
+- 纠正把 0.1 分支当 tag、把发布标签永久锁定到实现提交的说明；最新复查已有作者推送的 v0.1.0 → 27cb31c。使用完整版本 tag 的建议见 [发布检查](plugin-standard-review.md)；本轮优化未自动并入已有标签或另作发布。

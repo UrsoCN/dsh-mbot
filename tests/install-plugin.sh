@@ -13,10 +13,18 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 npm --prefix "$repo" pack --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
 jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+# A committed package tree tests Git installation without linking developer node_modules.
+mkdir "$root/git-source"
+tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
+git -C "$root/git-source" init -q
+git -C "$root/git-source" add -- .
+git -C "$root/git-source" commit -qm 'fixture: packaged Git plugin source'
+git_commit=$(git -C "$root/git-source" rev-parse HEAD)
+git clone --bare --no-hardlinks "$root/git-source" "$root/plugin.git" > "$root/git-fixture.log" 2>&1
 cat > "$root/probe.mjs" <<'JS'
 import { writeFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
-export const inject = ['mbot', 'tools', 'commands', 'appExit']
+export const inject = ['mbot', 'tools', 'commands', 'pluginManager', 'appExit']
 export async function apply(ctx) {
   try {
     await setImmediate()
@@ -29,7 +37,11 @@ export async function apply(ctx) {
     const command = ctx.commands.find({}, 'mbot')
     if (!command) throw new Error('/mbot command missing')
     const status = await command.handler({ rawInput: 'status', signal })
-    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', output, status }, null, 2))
+    const bundle = (await ctx.pluginManager.listBundles()).find(item => item.name==='dsh-mbot')
+    const meta = bundle?.meta
+    if (meta?.error || meta?.title?.en !== 'MBot' || meta?.title?.zh !== 'MBot'
+      || !meta?.description?.zh?.includes('记忆')) throw new Error('DSH localized plugin metadata not loaded')
+    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', output, status, meta }, null, 2))
     ctx.appExit(status.kind==='success' ? 0 : 1)
   } catch (error) {
     await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: false, error: String(error) }))
@@ -37,8 +49,12 @@ export async function apply(ctx) {
   }
 }
 JS
-for mode in tarball source; do
-  if [[ $mode == tarball ]]; then spec=$tarball; else spec=$repo; fi
+for mode in tarball source git; do
+  case $mode in
+    tarball) spec=$tarball ;;
+    source) spec=$repo ;;
+    git) spec="git+file://$root/plugin.git#$git_commit" ;;
+  esac
   profile=mbot-$mode
   dsh plugin --profile "$profile" add "$spec" --store-dir "$root/pnpm-store" --ignore-scripts > "$root/$mode.install.log" 2>&1
   jq -e '.dsh.profile.bundles | index("dsh-mbot") != null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
@@ -57,5 +73,5 @@ for mode in tarball source; do
   dsh plugin --profile "$profile" remove dsh-mbot --store-dir "$root/pnpm-store" > "$root/$mode.remove.log" 2>&1
   jq -e '.dsh.profile.bundles | index("dsh-mbot") == null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
   [[ -f $ws/BOARD.md && -z $(git -C "$ws" status --porcelain) ]]
-  printf 'Plugin install PASS: %s install/activation/native tool/command/schema/bin/removal\n' "$mode"
+  printf 'Plugin install PASS: %s install/activation/native tool/command/schema/bin/metadata/removal\n' "$mode"
 done
