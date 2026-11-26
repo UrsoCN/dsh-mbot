@@ -1,6 +1,6 @@
 # M4：星型调度验收
 
-2026-11-26，Linux，DSH `0.2.2-rc.5`。M4 完成，下一里程碑是无人值守。入口见 [README](../README.md#星型调度tick-与归档)，实现约定见 [design.md §10](design.md#10-星型调度)。
+2026-11-26，Linux，DSH `0.2.2-rc.5`。本文件保留 M4 的历史验收。入口见 [README](../README.md#星型调度tick-与归档)，当前约定见 [设计](design.md#5-任务记忆与归属)。
 
 ## 复现
 

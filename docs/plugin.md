@@ -2,6 +2,8 @@
 
 2026-11-26，Linux，Node `22.23.2`，DSH `0.2.2-rc.5`。包 `dsh-mbot@0.1.0` 已成为可安装的 DSH bundle；Bash 核心和独立数据仓库保持原事务、护栏和 Git 审计行为。
 
+本文件是 0.1 的 Host/安装/模型验收记录。安装后的用户反馈说明聊天区 init/status 展示仍有问题；volatile schema 不代表自有设置面板已交付。当前也未自动登记 DSH 工作区或绑定主 Session，下一轮范围见 [TODO](../TODO.md) 与 [发布说明](RELEASE_NOTE.md)。
+
 ## 安装
 
 从源码目录：
@@ -22,7 +24,7 @@ Git 远端包含该提交后可用 `github:UrsoCN/dsh-mbot#<commit>`；ESM 代�
 
 插件只支持 Linux/WSL 的本地执行环境；需要 Bash、GNU coreutils、Git、flock、jq、awk、C.UTF-8 与 Node 22+。凭据放 DSH_HOME/.env。安装按指定 profile 保存 bundle；不会初始化数据、安装 cron 或修改全局 PATH。已有进程按 profile 的 HMR 能力生效，或重启 DSH。
 
-在 Plugins 中给 MBot 的 workspace 设置独立物理目录，然后使用 `/mbot init`、`/mbot status`、`/mbot run <request>`、`/mbot dream`。设置为 volatile；后续操作取新值，在途操作保留开始时的目录。留空时回退 Bash 的环境/用户配置/默认目录解析。CLI bin 保留 -C 与原有配置来源，不直接读 DSH profile YAML。
+0.1 没有自有设置面板；workspace 可在 profile 的 cordis.patch.yml 中用 id: mbot 的 config 指定（见 [README](../README.md#工作区与配置)）。Host 字段为 volatile；后续操作取新值，在途操作保留开始时的目录。CLI bin 保留 -C 与原有配置来源，不直接读 profile YAML。命令 handler 已接入，实际聊天区反馈尚待修复。
 
 ## 结构与行为
 

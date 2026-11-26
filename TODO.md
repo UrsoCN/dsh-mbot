@@ -1,121 +1,57 @@
-# TODO：dsh-mbot 初步实现计划
+# TODO：0.1 之后的迭代
 
-> 依据 [`docs/design.md`](docs/design.md)（v0.2）。顺序：验证 DSH 行为 → 骨架与 `botctl` → `mbot run` 闭环 → Dreaming → 星型调度 → 无人值守。
-> 每个里程碑有**验收**，没过不进下一步。估时按业余投入粗估。
-> 已定：Bash 事务核心、`mbot` + `botctl` 双入口、数据仓库默认 `~/.mbot-ws`、Dreaming 单阶段；按新增需求提供 Cordis 原生插件与 DSH bundle 安装。
+0.1 是可运行的 Cordis Host 插件与 Bash 事务核心。已完成事项汇总在 [发布说明](docs/RELEASE_NOTE.md)，实现与后续边界见 [设计](docs/design.md)，维护约定见 [AGENTS](AGENTS.md)。本文件只保留未完成工作，按 P0 → P1 → P2 推进；每阶段独立验收、更新文档并提交。
 
-## M0 · Spike：核实 DSH 行为
+## P0 · 0.1.1：命令反馈与目录选择
 
-在临时 git 目录里手动跑，结论回填 `docs/design.md` §14.2。
+用户反馈：/mbot init /home/u/文档/mbot_demo 创建成功，却看不到结果；/mbot status 也没有提示。代码还存在一个独立问题：显式 init 路径只用于该次初始化，后续命令仍可能选择旧目录。
 
-- [x] 凭据：`DEEPSEEK_API_KEY` 放 `$DSH_HOME/.env`（默认 `~/.dsh/.env`），在 `/tmp` 隔离验证 cron 式空环境下 headless 能跑
-- [x] `dsh --profile headless --json "列出当前目录" > run.jsonl`：事件类型、`final` 结构、有无 token 用量
-- [x] `--permission-mode workspace-write --approval-policy never`：工作区内读写/bash 正常；越界写被拒的表现
-- [x] 工作区根 `AGENTS.md`：顶层会话与 **fresh subagent** 是否都加载
-- [x] 环境继承：bash 工具和子代理里能否看到 `mbot` 导出的 `PATH`、`MBOT_RUN_ID`
-- [x] 沙箱内执行工作区外的脚本（模拟 `botctl`），并在 `.mbot/` 下 `flock`
-- [x] 并行派 2 个 subagent：并发上限；depth=1 时 Worker 再调 `subagent` 的报错
-- [x] `send_message` 给已完成的子代理能否恢复一轮
-- [x] `--patch` 覆盖默认模型（Dreaming 用低成本模型）
-- [x] 冷启动耗时与基线 token
-- [x] 依赖：`jq`、`flock`、`git`、`dsh 0.2.2-rc.5` 本机可用
+- [ ] 在实际 DSH 界面复现，记录版本、profile、入口及结果；沿 handler → commands.execute → command/run/done → 客户端 flow/renderer 排查，暂不假定 Bash 没有 stdout
+- [ ] 聊天区显示运行中、成功、错误、跳过与取消；init 显示实际目录和下一步，status 显示当前 Bot/目录、看板、预算、PAUSED 与最近运行
+- [ ] 优先复用 DSH 的命令事件和展示路径；默认不生成模型 role content、不触发模型；补充卡片/通知不能与已有 flow 重复
+- [ ] init 成功后选中该目录，持久化通过 Host 配置入口；失败保留旧选择；明确环境/配置与未来 Bot 选择的优先级
+- [ ] 补 commands.execute 与真实聊天区验收：中文/空格路径、目录已存在、工作区缺失、失败/取消、重启与重新打开 Session
 
-**验收**：§14.2 每项有结论（"不支持 → 改设计"也算）。
+**验收**：init → status → 重启 DSH → status，均看到正确目录与结果；错误和锁忙可见；控制命令不消耗模型调用、不重复消息；CLI 保持兼容。
 
-2026-11-25 已通过：`bash tests/m0-spike.sh all`，5 个真实 DSH 场景，0 个探针失败。结论与复现见 [`docs/m0-spike.md`](docs/m0-spike.md)；追加核实了显式开启 `interrupt_agent` 后的中断行为。
+## P1 · 0.2.0：Bot 实例、DSH 工作区与主 Session
 
-## M1 · 骨架、配置与 `botctl`
+Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是实例内角色。0.1 的每次 run 都是新的 headless 会话，尚无持久主 Session。
 
-- [x] `git init`；`README.md`（定位 + 快速开始）、`LICENSE`、`.editorconfig`、`.gitignore`
-- [x] `lib/config.sh`：工作区解析 `-C` → `MBOT_WS` → `~/.config/mbot/config` → `~/.mbot-ws`；交互终端首次询问并写配置，非交互直接报错；拒绝 `~/.dsh` 下及与框架仓库重叠的路径
-- [x] `install.sh`：`bin/*` 软链到 `~/.local/bin`，可选写 `~/.config/mbot/config`
-- [x] `templates/workspace/`：
-  - [x] `AGENTS.md`：角色、写入归属、看板只能经 `botctl`、`botctl` 命令速查、禁止自行 `git commit` 与调用 `mbot`
-  - [x] `MEMORY.md`、`bots/{chief,coder}/{SOUL.md,MEMORY.md}`、`BOARD.md`、`tasks/_template.md`、`wiki/_index.md`、`inbox/.gitkeep`
-  - [x] `.mbot/config`（预算、超时、`MBOT_GRANTS`、dsh 路径）、`.gitignore`（`.env`、`.mbot/{runs,lock,botctl.lock,PAUSED,failures}`）
-- [x] `mbot init [dir]`：校验 → 拷模板 → `git init` → `human: init`
-- [x] `botctl`（`lib/board.sh`、`lib/lint.sh`）：
-  - [x] `boot <bot> [--task id]`
-  - [x] `board show|add|set`（id 分配、模板建任务单、`blocked` 必须 `--reason`）
-  - [x] `task show|result`（只追加到「执行记录 / 结果」段）
-  - [x] `remember "<事实>" [--as r] [--task id]` → `inbox/<date>.md`
-  - [x] `lint`：MEMORY 行数/字符数（`wc -m`）、SOUL ≤5k、wiki ≤200 行、BOARD ≤80 行 + 表格式 + 状态枚举、`[[链接]]` 存在
-  - [x] 变更类命令 `flock .mbot/botctl.lock`；`MBOT_RUN_ID` 已设时不提交，否则提交 `human: …`
-- [x] `tests/run.sh`：对 `botctl` 各命令做断言（纯 bash，不引入 bats）
+- [ ] 定义实例登记数据：稳定 botId、名称、数据目录、DSH workspaceId、mainSessionId、默认角色、创建时间、schemaVersion；按 profile 隔离，引用 DSH 实体，不复制其完整状态
+- [ ] 定义创建/列出/选择/导入/修复 Host API 与命令入口；新增语法在实现时定稿，不提前写成已可用
+- [ ] 插件 /mbot init 自动完成数据仓库初始化、DSH 工作区登记、Chief 主 Session 创建和绑定；CLI mbot init 继续只初始化数据仓库
+- [ ] 完成后显示结果与主 Session 链接，默认打开新 Bot 的主 Session；保留发起命令的旧会话；初始化本身不调用模型
+- [ ] 使用官方 workspace/session/controller API；创建可重试、去重，部分失败可修复；只清理由本次创建且仍安全的资源，不删除用户已有目录或会话
+- [ ] 导入已有 mbot_demo 等仓库：先 lint/识别版本，保留 Git、SOUL、MEMORY、看板和配置，再补建绑定
+- [ ] 主 Session 加载 Chief 的角色/记忆/看板；初期是只读交互入口，业务变更委托现有受控 run，不直接替代有 guard 的执行链
+- [ ] 按调用 Session 的绑定选 Bot，避免一个面板的全局选择重定向其他 Bot 会话；重启恢复绑定，缺失/归档 Session 显示修复入口
+- [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在
 
-**验收**：`mbot init /tmp/ws` → `botctl -C /tmp/ws board add "试试"` 生成 `001` 与任务单并提交 → `board set 001 blocked` 无 `--reason` 被拒 → 把 MEMORY 写超后 `botctl lint` 报出文件与超限量。
+**验收**：A/B 各有独立目录、DSH 工作区与主 Session；重复创建/重试不重复实体；切换及重启后绑定正确；旧仓库可无损导入；失败不留下不可识别的孤儿资源；现有权限、审计与 headless 检查通过。
 
-2026-11-26 已通过：`bash tests/run.sh` 共 16 组离线集成检查（含八路并发、提交隔离/失败回滚、UTF-8 预算与链接边界）；另用真实 PTY 验证首次询问、保存带空格路径、缺失工作区不自动创建。使用方法见 [`README.md`](README.md)。
+## P2 · 0.2.0：MBot 设置与管理面板
 
-## M2 · 单次运行闭环 `mbot run`
+0.1 只有 Host Config 与 volatile workspace schema，没有自有设置面板；此前把 schema 验收写成设置页交付，需要纠正。
 
-- [x] 入口检查：`PAUSED` → 退出 0；`MBOT_RUN_ID` 已设 → 拒绝；`flock -n`；工作树干净；记录 `HEAD`
-- [x] run-id；prompt = `botctl boot <bot> [--task]` + 边界声明 + `<request>`
-- [x] 调用：导出 `MBOT_RUN_ID/MBOT_BOT/MBOT_WS/PATH` → `timeout $MBOT_TIMEOUT dsh --profile headless --json --permission-mode workspace-write --approval-policy never`；原始流存 `.mbot/runs/`（`--add-dir` 按 M4 实现）
-- [x] `lib/render.sh`：NDJSON → `transcripts/<date>/<run-id>.md`（请求摘要、工具调用、最终回答、本次 `remember` 条目）+ `.meta.json`；脱敏
-- [x] `lib/guard.sh`：归属表回滚、`inbox/` 只追加校验、BOARD lint 失败还原、HEAD 比对、违规写 meta
-- [x] commit `run(<bot>): <run-id> <摘要>`；失败计数，连续 3 次自动 PAUSED
-- [x] `mbot status`、`pause`、`resume`
-- [x] `tests/fake-dsh` + 用例：正常改看板 → 提交；偷改 MEMORY → 回滚记违规；删 inbox 行 → 回滚；dsh 退出 1 → 计数 +1；并发两个 run → 第二个跳过；运行内调 `mbot run` → 拒绝
+- [ ] 增加 DSH client 浏览器入口、dsh.client 声明与 ./client export；附着 bare dsh-mbot 根行，Host/headless 独立使用
+- [ ] 用受支持的 Plugins/Settings 扩展注册 MBot 面板，不修改 DSH 核心；明确页面路径以及关闭/卸载清理
+- [ ] 显示实例列表、当前选择、目录、主 Session、角色与运行状态；提供创建、导入、选择、打开和修复
+- [ ] 管理插件默认项和各 Bot 已支持的预算、超时、grants、备份等配置；SOUL/MEMORY 先展示，长期记忆仍遵守既有写者规则
+- [ ] 区分插件 Config、Bot 的 .mbot/config 与 DSH 实体；Host 校验后原子保存，数据配置形成 human commit，不重复维护同一值
+- [ ] 使用 ConfigEditor/form revision 和 volatile 更新；无效值、并发或保存失败不改变有效配置；凭据只使用引用
+- [ ] 显示缺失实体、PAUSED、预算超限、错误与最近报告；面板/日志不展示明文 key
+- [ ] 构建、打包可加载 client bundle；真实界面验收创建、编辑、重启、切换、开关和卸载，不能只查 schema 或调用 handler
 
-**验收**：真 dsh 跑 `mbot run chief "在看板上加一个任务：整理 README"` → Chief 通过 `botctl board add` 加行，transcript 可读，`git log` 一个干净 commit，MEMORY 未变。
+**验收**：安装后面板可见，创建 Bot → 主 Session → 配置保存 → 重启恢复可走通；A/B 不串；刷新/多标签页不重复注册；CLI/headless 不依赖浏览器。
 
-2026-11-26 已通过：16 组基础 + 15 组运行检查；`bash tests/real-run.sh` 使用真实 DSH 生成 `001`，MEMORY 不变，无违规，数据仓库仅有初始化和一次 run 提交且工作树干净。实测与恢复行为见 [`docs/m2-run.md`](docs/m2-run.md)。
+## 持续验收与后续增强
 
-## M3 · Dreaming 与记忆闭环
+- [ ] 至少 7 天真实调度观察：每日检查记忆预算、nightly 提交/报告、违规处理，在 wiki/ops-log.md 记录；第零天不等于完成
+- [ ] 主 Session 受控业务执行：先设计每轮基准、锁、guard、回滚/提交，再考虑直接复用主 Session；接入前保留 headless run
+- [ ] 升级/迁移：配置与登记 schemaVersion、模板兼容；不覆盖自定义协议/角色；验证旧 0.1 仓库及 profile
+- [ ] Worker 结果文件隔离；transcripts 按月归档与 git gc
+- [ ] 打包 mbot skill；复活“源”/“u”为真实 Bot；按需增加 dsh-im/tether 入口
+- [ ] 建立 50–100 条私有评测，再决定全文索引/检索；不引入记忆数据库作为真相源
 
-- [x] `prompts/dream.md`：Analyze（inbox 优先）→ Merge → Rewrite → Report；条目格式、`disputed` 规则
-- [x] `mbot dream`：找上一个 `dream:`（首次 `human: init`）→ 新增 `transcripts/ inbox/ tasks/archive/` 清单 → 按 `MBOT_DREAM_MAX_BYTES` 截断 → 调 dsh（成功报告保存 pending/blob/offset，保证下一轮续读）
-- [x] guard（dream）：只允许 `MEMORY.md`、已有 `bots/*/MEMORY.md`、wiki Markdown、本次 `dream-reports` 报告；必需的记忆/索引文件不允许删除
-- [x] 失败：lint 不过 / 有删除但报告无依据 → 回滚记忆改动，只提交报告及元数据 `dream(failed): …`
-- [x] fake-dsh 用例：正常 → `dream:`；超预算 → `dream(failed)`；偷改 BOARD → 回滚
-
-**验收（记忆闭环）**：`mbot run chief "以后周报一律用中文，记住这条"` → Chief 调 `botctl remember`，MEMORY 不变 → `mbot dream` → 规则进 `MEMORY.md`，有 report 与 `dream:` commit → 下一次 `mbot run` 按规则行事 → `git revert` 后规则消失。
-
-2026-11-26 已通过：`bash tests/run.sh` 共 42 组离线检查；`bash tests/real-dream.sh` 真实跑通候选 → 合并 → 英文请求得到中文周报 → revert 恢复旧记忆。新增输入续读、失败重试、替换/重命名、UTF-8 行边界及逐文件删除依据检查；实测修复了子命令 `--help` 误入 inbox 与 added 日期误用 UTC 的问题。见 [`docs/m3-dream.md`](docs/m3-dream.md)。
-
-## M4 · 星型调度
-
-- [x] `bots/chief/SOUL.md`：拆解 → `board add` → 派活 prompt 模板（design §10.3）→ 纠偏/中断 → `board set`
-- [x] `bots/coder/SOUL.md`（+ 可选 `researcher`）：第一步 `botctl boot`，结果 `task result`，值得记的 `remember`
-- [x] `prompts/tick.md`：选一个 `todo` 或推进 `doing`；无事可做立即结束
-- [x] `mbot tick`；`mbot archive`（纯脚本，`chore(archive)`）
-- [x] `MBOT_GRANTS` → `--add-dir`（只接受存在的物理绝对路径）
-
-**验收**：复杂需求 → Chief 拆成 ≥2 个任务、并行派 2 个 Worker → 结果落在各自任务单 → 看板状态正确 → 无越权记录；人为卡住一个 Worker，Chief 能 `interrupt_agent` 并标 `blocked`。
-
-2026-11-26 已通过：`bash tests/run.sh` 共 50 组离线检查；`bash tests/real-schedule.sh` 实测两 fresh Worker 同时 running，分别开发 greet.sh/README、写回任务并标 done；第三个 Worker 进入 sleep 后被中断并标 blocked；两个 done 任务原样归档。记忆未变，无工作区违规，外部项目未被提交，数据仓库干净。见 [`docs/m4-schedule.md`](docs/m4-schedule.md)。
-
-## M5 · 无人值守
-
-- [x] `cron/mbot.crontab.example`：`PATH`、每 2h `tick`、03:17 `archive && dream`；凭据走 `~/.dsh/.env`
-- [x] dream 成功后可选 `git push`
-- [x] 恢复演练脚本：临时目录 clone → `botctl lint` → 冷启动问答
-- [ ] 观察 7 天，人工记在 `wiki/ops-log.md`
-
-**验收**：7 天内 `MEMORY.md` 始终在预算内；每晚有 `dream:`/`dream(failed):` commit 与 report；无未处理越权；演练过一次 `git revert` 与 PAUSED。
-
-2026-11-26 工具与第零天演练通过：`bash tests/run.sh` 共 64 组离线检查；`bash tests/real-ops.sh` 在空环境下仅用临时 DSH_HOME/.env 成功运行 archive/dream、本地 upstream 备份、clone 冷启动、PAUSED/resume 与 revert。人工快照工具已就绪；未安装生产 cron，连续 7 天观察仍未完成，M5 整体验收保持待定。复现与证据见 [`docs/m5-ops.md`](docs/m5-ops.md)。
-
-## 插件化 · 新增需求
-
-- [x] npm 包清单、`dsh.bundle`、Cordis patch、平台/版本声明、公开类型与双 bin
-- [x] 原生 MBot 服务：`.volatile()` 工作区设置，复用 Bash 核心，子进程随插件清理
-- [x] 原生 `botctl` 模型工具与 DSH 权限/审批；`/mbot` 人类控制命令
-- [x] 打包全部脚本/模板/prompts；凭据不入包；源码/Git/tarball 无安装时构建
-- [x] `dsh plugin add` 源码与 tarball 安装、激活、工具/命令/schema/bin 与卸载验收
-- [x] 真实模型从其他项目使用原生工具 → 安装包内 Dreaming → 干净审计提交
-
-2026-11-26 通过：11 项 Cordis 集成检查、64 组 Bash 检查和公开类型检查；真实 DSH 对两种安装方式均通过。真实 API 在独立项目中用 botctl 建任务、投递中文周报规则，再由安装后的 mbot dream 合并，零违规。记录见 [`docs/plugin.md`](docs/plugin.md)。本地提交与可安装包已准备，未发布 npm 或推送 Git 远端。
-
-## Backlog（v1+，按需）
-
-- [x] DSH 设置页配置数据目录：Cordis 插件的 `.volatile()` workspace，原生服务/工具/命令读取；终端 Bash 入口保留原有解析
-- [ ] `mbot` skill（`~/.dsh/skills/mbot/SKILL.md`）：在任意项目的 DSH 会话里用 `botctl` 看板/派活
-- [ ] `mbot chat`：`--session-id` 续接 Chief 顶层会话
-- [ ] Worker 结果物理隔离（`tasks/<id>.result.md`）
-- [ ] transcripts 按月归档、定期 `git gc`
-- [ ] 私有评测集（50–100 条 query）→ 再决定要不要 FTS5/BM25
-- [ ] 复活 `源` / `u` 为首批真实 Bot（见 memory-revival.md）
-- [ ] 入口层：dsh-im（QQ/Telegram）或 tether 远程触发 `mbot run`
-- [ ] 模式 B：`dsh web` 常驻时的 GUI 接入
+现有标签 0.1 指向 d1bd4e6，本轮文档整理不移动它。修复与新功能使用后续提交/版本；发布按 [维护约定](AGENTS.md) 检查版本、包内容与验收。

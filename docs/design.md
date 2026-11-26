@@ -1,551 +1,136 @@
-# dsh-mbot 设计稿（v0.3：Cordis 插件）
+# dsh-mbot：0.1 基线与 0.2 迭代设计
 
-> 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
-> 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：Cordis 插件化完成；M0–M4 已完成，M5 工具与第零天演练完成，连续 7 天观察待验收。插件安装见 [`plugin.md`](plugin.md)，实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)、[`m5-ops.md`](m5-ops.md)。
->
-> **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
-> 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
->
-> **v0.3 变更**：按用户新要求提供完整 Cordis 插件与 `dsh plugin add` 安装；保留 Bash 事务核心，增加 ESM 服务、模型工具、命令和 volatile 工作区设置，不增加数据存储或后台调度。
+当前包版本 0.1.0，发布标签 0.1。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。本地安装反馈是下一轮输入，聊天区与面板必须以真实界面验收。
 
----
+## 1. 当前能力与缺口
 
-## 0. 一页结论
-
-| 维度 | 决策 |
+| 已实现的 0.1 | 尚未实现/待修复 |
 |---|---|
-| **实现形态** | Cordis ESM 插件与 bundle，公开 TypeScript 声明；原生服务/工具/命令复用 Bash `mbot`（宿主编排、验收、提交）+ `botctl`（任务/候选原子操作），共享 `lib/*.sh` |
-| **数据仓库** | 默认 `~/.mbot-ws`（独立 Git 仓库）；可用 `-C` / `MBOT_WS` / `~/.config/mbot/config` 覆盖；首次交互运行时询问路径 |
-| **记忆** | 纯 Markdown + Git。**工作 agent 对记忆只读，只能用 `botctl remember` 投递候选；Dreaming 是唯一写者**。v0 不做索引/向量，只用 `grep` + 链接 |
-| **协作** | **星型**：Chief 用原生 `subagent` 派 Worker；DSH 默认 `subagent.maxDepth = 1`，Worker 天然不能再派活。持久交接只走 `BOARD.md` + `tasks/<id>.md`，且都通过 `botctl` 修改 |
-| **调度** | 系统 cron：每 2h `mbot tick`；每天 **03:17** `mbot dream`（**单阶段**：直接写 + lint 闸门 + 可 `git revert`）。全局 `flock` 串行，`PAUSED` 急停 |
-| **权限** | headless 无在线审批通道 → `--permission-mode workspace-write --approval-policy never`。`botctl` 放在**工作区之外**（Bot 可执行、不可改）；运行后 `mbot` 按路径归属表验收，越权改动回滚 |
-| **审计** | 一次运行一个语义化 commit；Dreaming 写坏就 `git revert` |
-| **最小化指标** | Bash 核心依赖 `bash / git / flock / jq / awk / coreutils / dsh`，插件共享 DSH/Cordis 服务及 Schemastery；0 新常驻进程、0 数据库；Bash `mbot` + `botctl` + `lib` 目标 ≤1200 行（当前 1102 行），原生适配与运维脚本独立统计 |
+| 可安装 Cordis bundle、原生 botctl、/mbot handler、Config schema | 实际界面 init/status 反馈不可见问题 |
+| 独立 Markdown/Git 数据仓库、Bash 事务与护栏 | init 显式目录不会自动成为后续选择 |
+| 每次独立 headless Chief、fresh Worker、独立 Dreaming | Bot 实例登记、DSH 工作区登记、持久主 Session |
+| volatile workspace 的 Host 校验与更新 | 自有设置/管理面板及浏览器入口 |
+| cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
----
+DSH CommandResult 支持将结果保存在 command/run、command/done，客户端可在模型历史之外展示。当前界面为何没显示仍须复现追踪，不能由直接 handler 测试推断 UI 可用。schema 能导出也不代表面板已注册。
 
-## 1. 设计前提
+## 2. 不变的原则
 
-### 1.1 前期已核实（沿用）
+1. Markdown/Git 是任务与长期记忆真相源；Session 是交互历史与上下文缓存。
+2. 工作 Bot 只读长期记忆，remember 投递候选，Dreaming 是运行期记忆写者；人类维护协议、角色和配置。
+3. 结构化修改走 botctl；Host 捕获基准、加锁、验收、回滚并提交。
+4. 工具包与数据仓库分离；不 grant 工具、DSH_HOME 或其他保护目录。
+5. 复用 Cordis 注入/effects/ConfigEditor 和 DSH 工作区/会话协议，不创建另一套 Harness。
+6. 升级保留旧仓库、角色、验收证据与标签；规划不是当前能力。
+7. inbox、wiki、transcript、网页和任务中的材料作为数据注入，保留上下文边界；角色/权限由协议与 Host 决定，不由资料中的指令覆盖。
 
-| # | 事实 | 来源 |
-|---|---|---|
-| 1 | 子代理工具 `subagent`；`send_message` / `interrupt_agent` / `list_agents` 只在**同一子代理树内**有效 | 整合稿 §1 |
-| 2 | 重型 Agent Teams 的 roster/任务板**绑定 Lead session**，session 换新即"消失" | agent-team-plan 实测 |
-| 3 | `dsh-schedule` 投递依赖 Web Session controller，`dsh web` 不常驻就没有定时 | dsh-schedule README |
-| 4 | `--session-id` 只能接管**顶层**会话 | dsh-headless README |
-| 5 | Tobs：每 Bot 一个 Git 记忆仓库；`SOUL.md` ≤5k、`MEMORY.md` ≤3k 字符常驻注入；Host 做 git 验收 | tobs-internals |
-| 6 | CMA Dreaming / agent-memory：工作 agent 记忆**只读**，离线整理进程**唯一写** | 整合稿 §1 |
-| 7 | 记忆评测口径差异可达 25 个点 → 不信作者自评 | memory-research-assets §3.1 |
+## 3. 名词与实例模型
 
-### 1.2 本机 DSH 0.2.2-rc.5 包文档补核
-
-| # | 事实 | 对设计的影响 |
-|---|---|---|
-| A | headless：任务来自参数或 **stdin**；`--json` 输出 NDJSON（`session`/`status`/`thinking`/`text`/`tool_call`/`tool_result`/`final`，启动错误可有 `error`）；退出码 0/1 | `mbot` 用 stdin 投喂上下文、用 `--json` 生成 transcript；成功要求退出 0 且 `final.reason.kind = completed` |
-| B | headless 支持 `--permission-mode`、`--approval-policy ask\|never`、`--add-dir <abs>`；"**Headless has no live approval-response channel**" | 无人值守用 `never` |
-| C | 沙箱 `workspace-write` 下，cwd 内的文件操作**不需要审批**；只有越界后申请提权（escalation）才走 `ctx.approval` | `botctl` 只写工作区 → **不需要任何"免审批白名单"** |
-| D | `dsh-agent-instructions`：从项目根（`.git` 所在）到 cwd 自动加载 `AGENTS.md`/`CLAUDE.md` | 工作区根 `AGENTS.md` = 不变的协议 + `botctl` 用法 |
-| E | Skills：`<项目根>/.dsh/skills`、`<项目根>/.agents/skills`、`~/.dsh/skills`、`~/.agents/skills`；目录 `<name>/SKILL.md` 或扁平 `<name>.md`，热加载 | v1 可发一个 `mbot` skill，让人在**任意项目**的 DSH 会话里也能操作看板 |
-| F | `subagent.maxDepth` 默认 **1**，`maxActiveSubagents` 默认 **8**；fresh 子代理看不到当前对话，但会加载工作区 `AGENTS.md` | 星型由运行时强制；交接必须落文件；两 Worker 并发已实测 |
-| G | `send_message`：工作中的目标收到 steer；已完成的本地子代理可恢复一轮；模型工具返回 `message delivered to agent <name>` | 纠偏可用；"回复"靠子代理结果或文件；`interrupt_agent` 默认关闭，需 patch 开启 |
-| H | headless 凭据：启动环境 → `<cwd>/.env` → `$DSH_HOME/.env`；忽略 GUI 登录 | cron 需显式 `DEEPSEEK_API_KEY`；`.env` 必须 gitignore |
-| I | DSH 设置页只编辑**插件用 `.volatile()` 声明**的配置字段，持久化到 profile 的 Cordis patch | v0.3 已由原生插件的 workspace 设置实现 |
-| J | `sdk-minimal` profile：只给持久 shell 等少数工具，**排除** subagent、AGENTS.md、skills，且为 `danger-full-access` | 不适合本项目；我们用标准 `headless` profile |
-
-### 1.3 DSH 的三层扩展方式（选型依据）
-
-| 层 | 形态 | 适用 | 本项目 |
-|---|---|---|---|
-| 重 | Cordis 插件（ESM JavaScript/TypeScript, Node 22） | 生命周期、注册服务/工具/命令、声明设置项 | v0.3 采用原生适配；源码直接分发，无安装时编译 |
-| 中 | SDK（stdio JSON-RPC，TS / Python 客户端）驱动 DSH 子进程 | 需要程序化多轮控制、审批回调 | 不用；headless 一次一任务已够 |
-| 轻 | `AGENTS.md` + Skills + bash 工具 + headless CLI | 协议、工具箱、自动化 | **保留为事务与运行核心** |
-
----
-
-## 2. 设计原则
-
-1. **纯文本是真相源**：Markdown 可读、可 diff、可 `git revert`；任何索引都是可删缓存。
-2. **单一写者**：记忆只由 Dreaming 写；看板由 Chief 通过 `botctl` 写；Worker 只写自己任务单的结果段。
-3. **结构化修改走脚本**：看板、任务单、记忆候选的格式由 `botctl` 保证，不让模型手改表格。
-4. **Host 验收，不信自觉**：写入归属靠 `mbot` 运行后的路径表检查兜底。
-5. **工具不可被使用者篡改**：`botctl`/`mbot` 位于工作区之外，Bot 只有执行权。
-6. **Git 即审计**：一次运行一个 commit，消息前缀即 actor。
-7. **冷启动最小上下文、稳定前缀**：只注入 `AGENTS.md` + `SOUL` + `MEMORY` + 看板头 + 本次任务，按"最不常变 → 最常变"排列。
-8. **人类保留部署权**：框架仓库与数据仓库分离，框架只由人类修改。
-
----
-
-## 3. 总体架构
-
-```mermaid
-flowchart TD
-    H["Human (终端)"] --> M
-    H -. 也可直接用 .-> BC
-    C["cron"] --> M
-    M["mbot (宿主编排)"] -->|"stdin + --json"| D["dsh headless: Chief"]
-    D -->|"subagent"| W["Worker: coder / researcher"]
-    M -->|"mode=dream"| R["dsh headless: Dreaming"]
-    D -->|"bash"| BC["botctl (工具箱, 工作区外, 只读可执行)"]
-    W -->|"bash"| BC
-    subgraph WS["~/.mbot-ws (数据仓库)"]
-      A["AGENTS.md"]
-      B["BOARD.md + tasks/"]
-      I["inbox/ (记忆候选, 只追加)"]
-      MEM["MEMORY.md + bots/*/MEMORY.md + wiki/"]
-      T["transcripts/"]
-    end
-    BC --> B
-    BC --> I
-    R -. 读 .-> T
-    R -. 读 .-> I
-    R -. 唯一写者 .-> MEM
-    M -. 写 .-> T
-```
-
-| 仓库 | 内容 | 谁改 |
-|---|---|---|
-| `dsh-mbot`（本仓库，框架） | `bin/mbot`、`bin/botctl`、`lib/`、工作区模板、prompts、测试 | 人类 |
-| `~/.mbot-ws`（数据） | 协议、记忆、看板、任务、候选、transcripts | `mbot` 代 Bot 提交；人类可手改 |
-
----
-
-## 4. 框架仓库布局
-
-```text
-dsh-mbot/
-├── bin/
-│   ├── mbot                    # 宿主侧：init/run/tick/dream/archive/status/pause（Bot 禁用）
-│   └── botctl                  # Bot 侧 + 人类：boot/board/task/remember/lint
-├── lib/                        # 共享函数：config.sh ws.sh board.sh lint.sh guard.sh render.sh
-├── plugin/{index,tools,commands}.js # Cordis 原生服务、模型工具、人类命令及类型声明
-├── package.json + cordis.patch.yml # dsh.bundle、平台/版本、公开入口、安装层
-├── templates/workspace/        # mbot init 拷贝的骨架（见 §6）
-├── prompts/
-│   ├── tick.md                 # 巡检指令
-│   └── dream.md                # Dreaming 流程
-├── install.sh                  # 把 bin/ 软链到 ~/.local/bin；写 ~/.config/mbot/config
-├── cron/mbot.crontab.example
-├── ops/{cron-run,recover,observe}.sh # 人类/cron 运维入口，Bot 禁用
-├── tests/                      # 假 dsh（MBOT_DSH=tests/fake-dsh），不花 token
-└── docs/design.md
-```
-
-### 4.1 两个入口的边界
-
-| | `mbot` | `botctl` |
-|---|---|---|
-| 调用者 | cron、人类 | Chief/Worker（bash 工具）、人类 |
-| 会调 `dsh` | 是 | **否** |
-| 写 git commit | 运行结束统一提交 | 运行内（`MBOT_RUN_ID` 已设）**只改文件不提交**；人类直接用时立即提交 `human:` |
-| 防嵌套 | `MBOT_RUN_ID` 已设时拒绝 `run/tick/dream`，防止 Bot 递归拉起 headless | — |
-| 并发 | 全局 `flock .mbot/lock` | 变更类命令用 `flock .mbot/botctl.lock`（并行 Worker 互斥） |
-
-> 为什么分两个而不是一个：授权给 Bot 的只应是"不会拉起模型、不会提交、不会动记忆"的确定性操作；`mbot` 的能力（调模型、提交、Dreaming）只属于宿主。
-
----
-
-## 5. 数据仓库位置
-
-解析顺序（先到先得）：
-
-1. `-C <dir>` 命令行参数
-2. 环境变量 `MBOT_WS`
-3. `~/.config/mbot/config` 中的 `MBOT_WS=`
-4. 默认 `~/.mbot-ws`
-
-M1 实现补充：用户配置遵循 `XDG_CONFIG_HOME`（默认 `~/.config`）。配置是静态 `KEY=value` 数据，可选成对引号，不执行 shell、不展开变量或命令替换。工作区预算配置也按此方式读取，环境变量优先。空路径报错。
-
-首次运行：解析出的目录不存在时——
-
-- **交互终端**：询问路径（回车用默认），写入 `~/.config/mbot/config`，并提示执行 `mbot init`；
-- **非交互（cron/Bot）**：直接报错退出，**绝不自动创建**。
-
-约束：不得位于 `~/.dsh` 下，也不得与框架仓库重叠（`mbot init` 校验）。
-v0.3：Cordis 插件的 workspace 设置用于原生服务/工具/命令；留空时回退上述解析。独立 Bash 入口保持原有来源，不直接解析 profile YAML。
-
-`mbot init` 是显式创建入口，只接受不存在或空目录，并拒绝嵌套 Git 仓库；已有软链路径先解析到物理路径。工作区内部由 botctl 读写的托管文件和目录禁止软链，防止路径重定向。
-
----
-
-## 6. 工作区布局与写入归属
-
-```text
-~/.mbot-ws/
-├── AGENTS.md                    # 协议 + botctl 用法（人类维护，DSH 自动加载）
-├── MEMORY.md                    # 共享层记忆索引（≤150 行 / ≤3000 字符）
-├── BOARD.md                     # 看板（≤80 行）
-├── tasks/
-│   ├── _template.md
-│   ├── 001.md …                 # 一任务一文件
-│   └── archive/2026-11/
-├── inbox/2026-11-25.md          # 记忆候选（botctl remember 追加）
-├── bots/
-│   ├── chief/{SOUL.md,MEMORY.md}
-│   └── coder/{SOUL.md,MEMORY.md}
-├── wiki/                        # 小文件（≤200 行）+ _index.md
-├── dream-reports/<run-id>.md + .meta.json
-├── transcripts/2026-11-25/<run-id>.md + .meta.json
-└── .mbot/                       # config 入库；lock、PAUSED、runs/、failures 不入库
-```
-
-### 6.1 写入归属表（`mbot guard` 运行后强制）
-
-| 路径 | 预算 | `run`（Chief+Worker） | `dream` | 人类 |
-|---|---|---|---|---|
-| `AGENTS.md`、`bots/*/SOUL.md` | SOUL ≤5k 字符 | ✗ | ✗ | ✓ |
-| `MEMORY.md`、`bots/*/MEMORY.md` | ≤150 行 且 ≤3000 字符 | ✗ | ✓ | ✓ |
-| `wiki/ops-log.md` | ≤200 行，人工观察 | ✗ | ✗ | ✓ |
-| `wiki/**`、`dream-reports/**` | wiki 单文件 ≤200 行 | ✗ | ✓ | ✓ |
-| `BOARD.md` | ≤80 行，lint 格式 | ✓（经 botctl） | ✗ | ✓ |
-| `tasks/**` | — | ✓（经 botctl） | ✗ | ✓ |
-| `inbox/**` | **只追加**（diff 不得有删除行） | ✓（经 botctl） | ✗ | ✓ |
-| `transcripts/**` | 只追加 | `mbot` 写 | `mbot` 写 | ✗ |
-| 其他 | — | ✗ | ✗ | ✓ |
-
-验收：`git status --porcelain` → 拒绝项 `git checkout --` / `git clean` 还原并记 `meta.json.violations` → `BOARD.md` lint 不过则还原到运行前 → 只 `git add` 允许项 → commit。
-运行前后比对 `HEAD`：若被移动（agent 自己 `git commit`），标记违规并告警。
-
----
-
-## 7. 工具箱 `botctl`
-
-| 命令 | 作用 | 典型调用者 |
-|---|---|---|
-| `botctl boot <bot> [--task <id>]` | 按 §8.3 顺序输出 SOUL + 共享 MEMORY + 私有 MEMORY + 看板头 30 行 + 任务单 | `mbot` 组装 prompt；Worker 冷启动第一步 |
-| `botctl board show [--status s]` | 打印看板（可过滤） | Chief |
-| `botctl board add "<摘要>" [--owner r]` | 分配下一个 id、按模板建 `tasks/<id>.md`、追加看板行 | Chief / 人类 |
-| `botctl board set <id> <todo\|doing\|blocked\|done> [--owner r] [--reason "…"]` | 改状态；`blocked` 必须带原因（写入任务单） | Chief |
-| `botctl task show <id>` | 打印任务单 | Worker |
-| `botctl task result <id> [--as r] < text` | 在任务单「执行记录 / 结果」段追加带时间戳与作者的记录 | Worker |
-| `botctl remember "<事实>" [--as r] [--task id]` | 追加到 `inbox/<date>.md`：`- 事实 [by: r; run: <run-id>; task: id; at: <iso>]` | 任何 Bot |
-| `botctl lint` | 预算、链接、看板格式检查 | 所有人 |
-
-- **不提供 `mem append`**：记忆只由 Dreaming 写；Bot 想记东西就 `remember`，次日凌晨被整理进 `MEMORY.md`/`wiki/`。
-- `MBOT_RUN_ID`、`MBOT_BOT` 由 `mbot` 导出给 headless 进程；Worker 用 `--as` 标识自己（待验证子代理是否继承环境变量与 PATH）。
-- 输出面向模型：短、纯文本、出错时一句话说明原因与正确用法。
-
-M1 实现约定：
-
-- 看板 ID 从 `001` 起，扫描当前与归档任务取最大值加一；默认 owner 为 chief，角色对应 `bots/<name>`。
-- 摘要、候选和受阻原因须为非空单行；表格摘要中的 `|` 用 `&#124;` 保存。结果段必须是任务最后一个二级段落，多行产出以引用追加，保留此前内容。
-- 读写命令共用 botctl 锁。人类修改只提交本次目标路径，保留其他暂存；目标已有未提交改动则拒绝。快照恢复命令失败或提交失败时的目标文件，看板超预算也回滚新增任务；Bot 运行内不提交。
-- `lint` 检查看板与任务 owner/状态一致、预算和链接；链接以工作区根为基准，允许锚点/显示名，校验文件而非段落。transcripts/dream-reports 是原始材料，排除于链接检查。
-
----
-
-## 8. 运行时：`mbot`
-
-### 8.1 命令
-
-| 命令 | 作用 |
+| 名词 | 含义 |
 |---|---|
-| `mbot init [dir]` | 校验路径 → 拷模板 → `git init` → `human: init` |
-| `mbot run [bot] "<指令>" [--task id]` | 以某 Bot 身份跑一次（默认 chief） |
-| `mbot tick` | `run chief` + `prompts/tick.md` |
-| `mbot dream` | Dreaming（mode=dream） |
-| `mbot archive` | `done` 行移出看板、任务单移入 `tasks/archive/YYYY-MM/`，提交 `chore(archive)`（不调模型） |
-| `mbot status` | 最近运行、失败计数、PAUSED 原因、记忆预算余量、看板计数 |
-| `mbot pause` / `resume` | 创建/删除 `.mbot/PAUSED` |
+| 插件 | profile 中的 MBot 服务、工具、命令和未来 client 面板 |
+| Bot 实例（计划） | 稳定 botId、名称、独立数据目录、DSH 工作区与 Chief 主 Session 的绑定 |
+| 角色 | 实例内 chief/coder 和自定义 SOUL/MEMORY；不等于管理列表中的 Bot 实例 |
+| 数据仓库 | MEMORY、BOARD、tasks、inbox、wiki、报告和 Git 历史 |
+| DSH 工作区（计划登记） | Harness 原生实体，引用数据目录；目录存在不代表实体已登记 |
+| 主 Session（计划） | 每个实例唯一默认的 Chief 交互入口，可关闭、恢复、修复绑定；不是唯一记忆源 |
+| 运行 Session | 0.1 run/tick/dream 每次新建的 headless 会话，与主 Session 区分 |
 
-### 8.2 单次运行生命周期
+实例登记只保存少量配置与引用，如 botId、workspacePath、workspaceId、mainSessionId、createdAt、schemaVersion；不复制 Session 事件或工作区完整状态。按 profile 隔离，优先核实官方持久化能力；需要轻量 JSON 时采用版本标记与原子写入，不引入新数据库。任务与记忆仍在原 Git 仓库。
 
-```mermaid
-sequenceDiagram
-    participant Cr as cron/Human
-    participant M as mbot
-    participant G as git
-    participant D as dsh headless
-    Cr->>M: mbot tick
-    M->>M: PAUSED? 退出0 / MBOT_RUN_ID 已设? 拒绝
-    M->>M: flock -n .mbot/lock
-    M->>G: 工作树必须干净，记下 HEAD
-    M->>M: botctl boot chief + 指令 → prompt
-    M->>D: export MBOT_RUN_ID MBOT_BOT PATH；timeout dsh --profile headless --json --permission-mode workspace-write --approval-policy never [--add-dir grants]
-    D-->>M: NDJSON → .mbot/runs/<run-id>.jsonl
-    M->>M: 渲染 transcripts/<date>/<run-id>.md + meta.json（脱敏）
-    M->>G: guard：回滚越权、校验 inbox 只追加、BOARD lint、HEAD 比对
-    M->>G: commit "run(chief): <run-id> <摘要>"
-    M->>M: 失败计数；连续 3 次自动 PAUSED
-```
+## 4. 工程与数据布局
 
-- run-id：`<UTC 时间>-<mode>-<4 位随机>`，如 `20261125T191700Z-dream-a1b2`。
-- Commit 前缀：`run(<bot>):` / `dream:` / `dream(failed):` / `chore(archive):` / `human:`。
-
-M2 实现补充：
-
-- stdin 投喂请求并导出 `MBOT_WS`；原始流先写宿主 `/tmp` 私有目录，验收后归档 `.mbot/runs/`，防止运行中的 Bot 混入宿主产物。当前不接收 grants，M4 再实现。
-- 人类 botctl 变更也获取全局锁；Bot 只获取工具锁，DSH 不继承宿主锁描述符。pause 不终止当前调用；resume 在运行中报忙。
-- guard 以运行前 Git 内容与忽略文件快照为基准；inbox 校验字节前缀；任务模板不可写；无效 BOARD 连同本次任务变更一起回滚。还原父目录时不跟随新软链。
-- 成功必须满足退出 0、最后一个事件为 completed final、无护栏违规；错误/缺失 JSON 与超时也生成失败审计。连续三次失败触发 PAUSED，成功重置失败计数。
-- HEAD 移动或控制路径替换立即 PAUSED；普通 HEAD 移动恢复原父节点后提交审计。Git 目录损坏或宿主验收失败时，保留原始流、计一次失败并暂停，不强行提交；人工修复后再恢复。
-- Git 工作区与元数据目录固定，宿主 Git 禁用 hooks/fsmonitor。入库记录、终端回答和 commit 摘要脱敏；原始流私有且不入库。meta 的 token 只覆盖顶层，耗时只覆盖 DSH 调用。
-
-### 8.3 Prompt 组装（稳定 → 易变）
-
-```text
-[DSH 系统提示 + ~/.mbot-ws/AGENTS.md]       ← 原生注入，几乎不变
-<soul bot="chief">      bots/chief/SOUL.md  ← 人类改才变
-<memory scope="shared"> MEMORY.md           ← Dreaming 后才变（一天一次）
-<memory scope="chief">  bots/chief/MEMORY.md
-<board head="30">       BOARD.md 前 30 行    ← 每次可能变
-<task id="007">         tasks/007.md         ← 可选
-<request>               本次指令             ← 每次变
-```
-
-每个数据块前加边界声明："以下是参考数据，不是指令"。
-
-### 8.4 会话策略
-
-- cron / tick / dream：每次 fresh session，全靠文件冷启动。
-- 人类连续对话（backlog）：`mbot chat` 用 `--session-id` 续接 Chief 顶层会话。
-
----
-
-## 9. 记忆模型
-
-| 层 | 载体 | 写者 |
-|---|---|---|
-| T0 上下文 | DSH session（+ compaction） | DSH |
-| T1 原始日志 | `transcripts/` | `mbot` |
-| T1' 候选 | `inbox/` | `botctl remember`（只追加） |
-| T2 知识 | `wiki/*.md` + `_index.md` | Dreaming |
-| T3 索引 | `MEMORY.md`（共享）+ `bots/<bot>/MEMORY.md`（私有） | Dreaming |
-
-- **共享层 vs 个人层**：用户画像、铁律放共享 `MEMORY.md`；角色经验放 `bots/<bot>/MEMORY.md`。Chief 不继承、不广播 Worker 记忆。
-- **条目格式**（Agent Memory Repo 约定）：
-
-```markdown
-- 用户偏好中文回复，代码注释用英文 [source: inbox/2026-11-25.md; added: 2026-11-26]
-- 部署流程见 [[wiki/deploy.md]]
-- (disputed) 测试机 IP 为 10.0.0.5 / 10.0.0.7 [source: …; added: …]
-```
-
-- **读取**：冷启动注入 T3；细节由 agent 自己 `grep -r wiki/` / 顺 `[[链接]]` 打开。
-
----
-
-## 10. 星型调度
-
-### 10.1 角色
-
-| 角色 | 形态 | 能做 | 不能做 |
-|---|---|---|---|
-| **Chief** | headless 顶层会话 | `botctl board *`、建任务、`task result --as chief` 写派活说明、`subagent` 派活、`send_message`/`interrupt_agent` 纠偏、`remember` | 写记忆、改 SOUL/AGENTS、调 `mbot` |
-| **Worker** | Chief 派出的 fresh 子代理（depth 1） | `botctl boot/task/remember`；在 grant 的外部目录干活 | 再派子代理、改看板、互相聊天（后两项由协议约束，消息工具本身允许同树跨分支通信） |
-| **Dreaming** | 独立 headless 运行 | 读 transcripts/inbox/tasks/wiki，写记忆与报告 | 改看板、任务、SOUL |
-
-### 10.2 看板与任务单
-
-```markdown
-| id | 状态 | owner | 摘要 | 更新 |
-|---|---|---|---|---|
-| 007 | doing | coder | 给 mbot 加 lint | 2026-11-25 |
-```
-
-```markdown
-# 007 给 mbot 加 lint
-- owner: coder  状态: doing  创建: 2026-11-25
-## 目标
-## 输入 / 上下文（文件路径）
-## 产出与边界（可写路径、禁止事项）
-## 验收标准
-## 执行记录 / 结果      ← 只由 botctl task result 追加
-```
-
-状态只有 `todo / doing / blocked / done`。
-
-### 10.3 派活与纠偏
-
-```text
-Chief: botctl board add "给 mbot 加 lint" --owner coder   → 007
-       subagent({ description: "007 coder",
-         prompt: "你是 coder。先运行 `botctl boot coder --task 007`，按任务单执行；
-                  结果用 `botctl task result 007 --as coder` 写回；值得长期记住的用 `botctl remember`。" })
-  ├─ 运行中纠偏：list_agents → send_message
-  ├─ 卡死：interrupt_agent → botctl board set 007 blocked --reason "…"
-  └─ 收结果：botctl board set 007 done
-```
-
-外部工作目录由人类在 `.mbot/config` 的 `MBOT_GRANTS` 列出，`mbot` 转成 `--add-dir`；那些仓库的提交与合并由人类负责。值为冒号分隔的物理绝对目录，支持空格；拒绝空项、重复项、相对/软链别名以及与框架、数据仓库、DSH_HOME 的重叠。run/tick 记录有效 grants，dream 不授予外部目录。
-
-标准 headless 默认不暴露 `interrupt_agent`。M4 由宿主追加 `patches/run.yml`（不修改用户的全局 DSH profile），固定 fresh spawn、深度 1、最多两 Worker，开启中断并关闭 fork/Agent Teams/workflow 派活工具；不覆盖用户默认模型。中断配置部分为：
-
-```yaml
-- id: tool-subagent-control
-  config:
-    interrupt: true
-```
-
-M4 实现约定：Chief 先把目标、输入、文件范围及验收写进各任务结果段，再标 doing、并行派活；Worker 第一工具操作是 boot，结果经 task result 写回。跨次 run/tick 不使用旧 agent 名单。tick 在全局锁内优先选 doing，否则看板第一个 todo，完整任务注入；空闲时跳过模型。archive 在全局/工具锁内将 done 文件原样移到年月目录并移除看板行，提交 `chore(archive)`；冲突或提交失败恢复全部目标，ID 不复用。归档任务按历史材料处理，不检查其中的旧链接目标。
-
----
-
-## 11. Dreaming（单阶段）
-
-### 11.1 触发与输入
-
-- cron `17 3 * * *` → `mbot archive && mbot dream`。
-- 增量输入靠 Git：取最近一个仍保留 checkpoint 的 `dream:` commit（首次用 `human: init`），比较 inbox / transcripts / tasks/archive 的 Markdown；关闭 rename 折叠，避免文件移动漏读。
-- 报告 `.meta.json.checkpoint` 保存 source_head、limit、bytes、processed 和 pending；条目记录 path、blob、offset、size。先续读旧片段，再读取新尾部；失败报告不作为 checkpoint。输入被替换或删除时不恢复旧版本事实，重命名按当前文件重新读取；revert 一并回滚 checkpoint。
-- 顺序是 inbox → transcripts → archive，预算只计新增材料 payload。按完整行分片，保持 UTF-8/记录边界；单行无法放进预算且没有其他可读材料时直接失败，不调用模型，待提高预算重试。
-- prompt = `prompts/dream.md` + 当前共享/私有 MEMORY、wiki 入口 + 本次片段；明确禁读未选中的整份历史输入。本地 added 日期由宿主提供，run-id 保持 UTC。
-
-### 11.2 流程（`prompts/dream.md`）
-
-1. **Analyze**：先读 `inbox/` 候选（高优先级），再读新 transcripts 与归档任务；抽候选事实，每条带 source。
-2. **Merge**：`grep` 现有 `wiki/` 与 `MEMORY.md`，去重合并；冲突保留双版本标 `disputed`；过期条目移出索引。
-3. **Rewrite**：更新 `wiki/` 与 `_index.md`；把两层 `MEMORY.md` 压回预算内，只留指针与铁律。
-4. **Report**：写 `dream-reports/<date>.md`：新增 / 修改 / 删除（含依据）/ 丢弃的候选 / 待裁决的 disputed。
-
-### 11.3 护栏（`mbot` 执行）
-
-| 护栏 | 行为 |
+| 路径 | 职责 |
 |---|---|
-| 路径归属 | 只接受 dream 列为 ✓ 的路径 |
-| 预算 lint | 超预算 / 链接失效 → 回滚记忆改动，只提交报告为 `dream(failed):` |
-| 删除依据 | 每个删旧行的文件都须在「删除」段以相对路径开头，同一行给出非空 `依据：`；结构闸门不代替来源内容审阅 |
-| 成本 | 新材料字节上限 + `timeout`；框架 overlay 固定 `deepseek-official/deepseek-flash`，不修改用户 profile |
-| 回滚 | 每晚一个 commit，`git revert <sha>` |
-| 互斥 | 与 tick 共用 `flock` |
+| plugin/index.js | mbot 服务、volatile workspace、受管理子进程 |
+| plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
+| bin/mbot、bin/botctl、lib/ | 配置、事务、lint、运行、渲染、guard、Dreaming、调度、备份 |
+| templates/workspace/ | 新仓库模板；gitignore 在 init 时生成 .gitignore |
+| prompts/、patches/ | tick/Dreaming 指令、模型/Worker 能力覆盖 |
+| ops/、cron/ | 人类/cron 运维入口，不自动部署 |
+| tests/ | Bash、Cordis、真实安装与 API 验收 |
+| AGENTS.md | 框架维护约定，区别于模板中的运行期协议 |
 
-**已决定只用单阶段**（不做 proposals 两阶段），可靠性靠 lint 闸门 + report + git 回滚。
+数据仓库包括 AGENTS.md、MEMORY.md、BOARD.md、bots/<role>/{SOUL,MEMORY}.md、tasks、inbox、wiki、transcripts、dream-reports 与 .mbot。config 入库，锁、PAUSED、失败计数、原始日志忽略；凭据不入库/包。升级不能重拷模板覆盖用户数据。
 
-M3 实现补充：run/dream 共享调用、审计与失败计数。dream 只接受已有角色记忆、wiki Markdown 和本次唯一报告；MEMORY 与 wiki/_index 必须保留。任何模型失败、越权、lint 或删除依据失败都会恢复所有记忆，提交报告与元数据为 `dream(failed):`；成功将记忆与 checkpoint 同时提交为 `dream:`。旧报告只读，按 run-id 命名，避免同日补跑覆盖；不把 Dreaming 自己的审计材料放进 transcripts 输入。`mbot status` 也显示最近的 dream。
+## 5. 任务、记忆与归属
 
----
-
-## 12. 调度与运维
-
-```cron
-PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
-# DEEPSEEK_API_KEY 放 ~/.dsh/.env（headless 会读），不要写进 crontab
-0 */2 * * *  /home/u/code/open_source/dsh-mbot/ops/cron-run.sh tick
-17 3 * * *   /home/u/code/open_source/dsh-mbot/ops/cron-run.sh nightly
-```
-
-| 机制 | 设计 |
+| 数据 | 运行期写者/约束 |
 |---|---|
-| 串行 | `flock -n .mbot/lock`，拿不到就跳过本轮 |
-| 急停 | `mbot pause`（`.mbot/PAUSED`）→ 所有入口立即退出 0 |
-| 熔断 | 连续 3 次非 0 退出自动 PAUSED |
-| 备份 | dream 成功后 `git push`（可选远端，失败不影响本地） |
-| 恢复演练 | 季度：临时目录 clone → `botctl lint` → `mbot run chief "你是谁，看板上有什么"` |
-| 可选模式 B | 需要 GUI 时再起 `dsh web`；v0 不依赖 DSH `schedule` |
+| BOARD、tasks | 经 botctl；Chief 管状态，Worker 只处理分配任务 |
+| inbox | remember 只追加，保留原字节前缀 |
+| MEMORY、已有角色 MEMORY、wiki | 独立 Dreaming；预算/链接校验，删除需逐文件依据 |
+| wiki/ops-log.md | 仅人类，Dreaming 也只读 |
+| transcripts、报告元数据 | Host 生成，历史材料受保护 |
+| AGENTS、SOUL、配置、工具 | 人类维护，运行期不得修改 |
 
-M5 实现补充：cron 示例显式指定 workspace/DSH_HOME 并禁用邮件；不自动安装。cron-run 将解析后的工作区固定传给宿主，nightly 使用 archive 成功后接 dream，私有独立日志保存在数据仓库/框架/DSH_HOME 外的 XDG state 目录。PAUSED 与锁忙也会记录，退出 0 不代表每晚实际完成 dream。
+默认 MEMORY ≤150 行且 ≤3000 UTF-8 字符，SOUL ≤5000 字符，wiki 每文件 ≤200 行，BOARD ≤80 行。任务状态 todo/doing/blocked/done，blocked 必须有原因；ID 包括归档任务且不复用，结果追加到固定段。
 
-备份默认 `MBOT_PUSH_AFTER_DREAM=0`，开启后只在成功本地 dream 提交后向当前分支的既有 upstream 推送，运行前后核对 remote/ref/推送 URL。缺失或改变 upstream、拒绝与 `MBOT_PUSH_TIMEOUT=30` 超时不改变本地成功状态；禁用凭据交互与客户端 hooks，不强推。脱敏 push 日志/状态留在忽略目录，status 显示最近运行对应状态。
+Chief 先写目标、输入、文件范围、验收，再标 doing/派 Worker。最多同时两个 fresh Worker、深度 1，开启 interrupt_agent，关闭 fork/Agent Teams/workflow 派活。跨运行依赖任务记录，不依赖旧 Worker 名单；done 原样归档，失败回滚。详见 [M4](m4-schedule.md)。
 
-recover 克隆到 `/tmp`，在本次冷启动清空 grants、关闭推送，要求 lint 与真实只读问答通过、只新增 transcript 提交且恢复数据不变。observe 由人类获取锁、按人类事务提交当天快照；包含预算、lint、最近 dream、留存审计违规计数与脱敏备注，保持 wiki 行预算。ops-log 对 dream 也只读。连续 7 天还需逐日人工核对真实提交、报告、预算与违规处理，不用经过小时数或第零天演练冒充整体验收。
+## 6. 现有运行与 Dreaming
 
----
+### 6.1 受控运行
 
-## 13. 权限与安全
+run/tick/dream 检查嵌套、PAUSED、全局 flock、干净工作树，捕获 HEAD/文件基准后调用 headless。任务修改经 botctl 锁；Host 收集 NDJSON、恢复越权/非追加变化、校验看板、生成脱敏 transcript/meta，统一提交。
 
-| 项 | 设计 |
-|---|---|
-| 沙箱 | `workspace-write`，cwd = `~/.mbot-ws`；外部业务目录经 `--add-dir`（人类维护 grants）；DSH 的临时目录仍可写，不能把 `/tmp` 当作拒绝测试目标或工具防篡改边界 |
-| 审批 | `--approval-policy never`；工作区内操作本就无需审批，越界提权直接被拒并进 transcript |
-| 工具防篡改 | `mbot`/`botctl`/`lib` 在框架仓库（工作区外），Bot 只读可执行；**不要**把工具放进工作区 |
-| 防递归 | `MBOT_RUN_ID` 存在时 `mbot run/tick/dream` 拒绝执行 |
-| 记忆写权限 | 归属表 + 运行后 guard；只有 dream 模式能写记忆 |
-| 运行目录 | 永不 grant `~/.dsh`、框架仓库、运行中的服务目录 |
-| 密钥 | `.env` gitignore；transcript 渲染时脱敏常见 key 形态 |
-| Prompt 注入 | transcripts / inbox / wiki / 网页一律是数据；注入块带边界声明 |
+运行上下文按 SOUL、共享/私有 MEMORY、看板、任务和本次请求组装。headless 使用 workspace-write/never 与框架 overlay；metadata 的 token 只统计顶层流，不宣称包含 Worker 总成本。
 
----
+成功要求 DSH 退出 0、末事件 final、reason.kind=completed、无违规。模型失败保留审计与合法产出，三次失败熔断；HEAD/控制路径异常立即暂停。Git 元数据不可用保留原始证据；commit 失败保留现场并暂停。原始流在验收后归档，不属于脱敏输出。
 
-## 14. 风险与待验证
+native botctl 的 Host 操作要求完整权限或一次 DSH 审批，不扩大 Session 权限。受控 run 内禁止原生工具与 /mbot 绕过 Bash guard。服务 argv 不经 shell，捕获一次 workspace，传递取消，卸载时终止并等待进程。详见 [M2](m2-run.md)、[插件验收](plugin.md)。
 
-### 14.1 风险
+### 6.2 Dreaming
 
-| 风险 | 缓解 |
-|---|---|
-| Dreaming 写坏记忆 | lint 闸门 + report + `git revert` |
-| agent 绕过 botctl 手改看板 | guard 允许路径但 BOARD lint 不过即还原；AGENTS.md 明令 |
-| agent 自己 `git commit` | HEAD 比对告警 |
-| `approval never` 导致任务做不完 | 被拒调用进 transcript；Chief 下一轮标 `blocked` 交人类 |
-| inbox 被灌水 | Dreaming 去重 + 丢弃候选进报告；必要时每 run 条数上限 |
-| 成本膨胀 | 输入上限、超时、熔断 |
-| 仓库膨胀 | transcripts 按月归档（backlog）；`git gc` |
+remember 追加候选，独立 Dreaming 执行 Analyze → Merge → Rewrite → Report。输入优先 inbox，再 transcript/归档任务，按完整 UTF-8 行限制新材料字节数。成功 checkpoint 保存 blob/offset/pending，下一次续读，失败不推进；替换/重命名按当前版本处理，不复活删除材料。
 
-### 14.2 M0 实测结论（2026-11-25，DSH 0.2.2-rc.5）
+只接受允许的记忆/本次报告改动；lint、链接、删除依据或模型失败，恢复全部记忆，仅提交 dream(failed) 报告；成功提交 dream。git revert 恢复记忆/checkpoint。单行放不进预算时保留进度并失败，不调用模型。详见 [M3](m3-dream.md)。
 
-以下每项已得结论；复现步骤、指标和实施影响见 [`m0-spike.md`](m0-spike.md)。
+### 6.3 配置与运维
 
-| 验证项 | 结论 | 后续实现 |
-|---|---|---|
-| cron 凭据 | `env -i` 下，仅 `$DSH_HOME/.env` 有 key 时成功；未改动真实 `~/.dsh/.env` | cron 使用默认 `~/.dsh/.env`；不把 key 写进参数或日志 |
-| NDJSON / final / token | 7 类常规事件；`final = {type, sessionId, reason, text}`；token 在 `status.phase = step_end` 的 `usage` | 检查退出码及 `final.reason`；逐步求和，缓存 token 单列；顶层流不含 Worker 的完整日志/用量，不宣称总树成本 |
-| AGENTS.md | 顶层、两 fresh Worker 的最终答复均含仅定义在根 `AGENTS.md` 的口令 | 根协议原生注入；Worker 仍显式 `botctl boot` 读取角色与任务 |
-| 环境继承 | bash 和 Worker 均见 `MBOT_RUN_ID=M0_RUN_7C91`、外置脚本 PATH | 按设计导出 `MBOT_RUN_ID/MBOT_BOT/PATH`；Worker 使用 `--as` 标识作者 |
-| 外置脚本 / flock | 工作区外脚本能执行，`.mbot/botctl.lock` 和日志创建成功 | `botctl` 安装在正常工作区外，脚本库无需 grant；不得放在默认可写的临时区 |
-| workspace-write + never | 内部 `read/write/bash` 正常；真正越界 `write` 报 `FS_SANDBOX_DENIED`，bash 返回 `Permission denied` 和 shell exit 1；临时区仍可写 | shell 失败不能仅看 `tool_result.status`，本次 bash 事件仍为 `completed`；文件 guard 必须保留 |
-| 并发 / 深度 | 两 Worker 同时 `running`；孙代理创建返回 `Error: subagent depth 2 exceeds maxDepth 1` | 默认并发上限 8 来自源码，未做 8 路饱和压测；v0 两 Worker 可用 |
-| 完成后恢复 | `send_message` 唤醒已完成 Worker，新轮写 `resumed.txt` 成功 | 纠偏/补充任务可复用同树中的本地子代理 |
-| 中断 | 默认关闭；patch `tool-subagent-control.config.interrupt: true` 后，运行中的 Worker 变 `inactive` | M4 提供框架 patch；不依赖用户 profile 自行开启 |
-| 模型覆盖 | `--patch` 覆盖 `agent-default-model.config`，持久响应源确认 `deepseek-v4-pro`；默认 `deepseek-flash` | Dreaming 使用明确的 `deepseek-official/deepseek-flash` overlay，保留用户配置 |
-| 冷启动基线 | 首次“pwd + ls”调用总耗时 7.168 s（含网络/推理，两步）；总 token 12,398，缓存读 11,648，输入未命中 572，输出 178 | 这是单机单次端到端样本，非纯启动开销或容量指标；不据此承诺固定延迟 |
+独立 Bash 目录优先级：-C → MBOT_WS → XDG 用户配置 → ~/.mbot-ws。0.1 原生服务使用非空 Cordis workspace，否则回退这些来源。显式 /mbot init <path> 只影响该次初始化，这是 P0 体验问题。
 
----
+.mbot/config 静态读取，不 source/插值，环境优先。grants 是物理绝对目录的冒号列表，仅 run/tick 使用，拒绝保护目录、别名、空项、重复项。默认超时 300 秒，新材料预算 64000 字节。
 
-## 15. 决策记录
+cron 每两小时 tick，03:17 archive 成功后接 dream。锁忙/暂停/空闲可能退出 0，需核对报告；日志在数据仓库外。备份默认关闭，只推既有 upstream，拒绝/超时保留本地成功；clone 恢复在 /tmp 清空 grants/推送后做只读冷启动。7 天观察未完成。详见 [M5](m5-ops.md)。
 
-### 15.1 已定
+## 7. 下一轮：聊天区反馈
 
-| 日期 | 决策 |
-|---|---|
-| 2026-11-25 | 框架代码在本仓库；数据仓库默认 `~/.mbot-ws`，后续支持首次启动询问 / DSH 设置页配置 |
-| 2026-11-25 | Dreaming 只用单阶段 |
-| 2026-11-25 | 纯 Bash，不写 TS 插件；`mbot` + `botctl` 双入口 |
-| 2026-11-25 | M0 通过；M2 验收需检查 `final.reason` 并区分顶层 token 与子代理成本；M4 显式 patch 开启 `interrupt_agent`；临时目录不作为工具防篡改边界 |
-| 2026-11-26 | M1 通过；配置静态解析，人类提交仅包含目标文件，拒绝脏目标，命令失败用快照恢复；归档 ID 不复用，托管路径不允许软链 |
-| 2026-11-26 | M2 通过；完整运行与失败审计、越权/非追加恢复、三次熔断已实现；HEAD/控制路径异常立即暂停；无效看板连同任务回滚；原始流在宿主验收后归档 |
-| 2026-11-26 | M3 通过；成功报告持久化输入 checkpoint，失败不推进；单阶段记忆改动原子验收；Flash overlay 与本地 added 日期明确；子命令帮助只读 |
-| 2026-11-26 | 为显式保留续读队列、回滚与报告验收，将框架体积目标从 800 行调整为 1200 行；M3 当前 975 行，不增加插件、数据库或第三方运行依赖 |
-| 2026-11-26 | M4 通过；两路 fresh Worker、可中断、持久派活说明已实测；tick 空闲不调用模型，归档保留任务字节且失败回滚；grants 按物理目录逐项传递，dream 不继承外部写权限 |
-| 2026-11-26 | M5 工具与第零天演练通过；cron 私有日志在工作区外，成功 dream 可选推既有 upstream，失败保留本地；clone 冷启动、PAUSED/resume、revert 已实测；人工 ops-log 受只读护栏，7 天观察仍待验收 |
-| 2026-11-26 | 按用户新要求将纯 Bash 工程封装为完整 Cordis bundle；ESM 服务、原生工具、人类命令与 volatile 设置共享原事务核心；源码和 tarball 均通过 dsh plugin add 安装，真实 native 工具与包内 dream 通过；不自动发布或配置生产 cron |
+控制结果在发起 Session 的聊天区显示开始、成功、失败、跳过、取消，包含目录、选择和操作链接。默认复用 CommandResult 与持久命令事件，不伪造 assistant 回复、不触发模型，不把全部 status/日志塞进模型 role content。
 
-### 15.2 对 `botctl` 草案的取舍
+UI 可见、Session 事件持久化、模型可见是不同问题。Chief 确需消费结果时，选择性注入业务摘要或让它读任务；展示层不决定长期记忆。按命令身份关联结果，避免 flow、通知、卡片重复。
 
-| 草案要点 | 处理 | 理由 |
-|---|---|---|
-| 纯 Bash + AGENTS.md + 原生 subagent，0 TS 插件 | **采纳** | 与 §1.3 选型一致 |
-| `botctl boot` 拼装上下文 | **采纳**，并让 `mbot` 也复用它 | 一处实现，人/Bot/宿主同一视图 |
-| `board add/claim/done` 原子操作 | **采纳**，改为 `board add/set` | 状态机统一，`blocked` 强制原因 |
-| `mem append/replace` 让 Bot 直接写 MEMORY | **拒绝**，改为 `remember` → `inbox/` | 违背"Dreaming 唯一写者"；直接写会让记忆漂移 |
-| 每个操作自动 `git commit` | **修改**：运行内只改文件，运行结束由 `mbot` 统一验收提交；人类直接用才即时提交 | 运行中 HEAD 移动会破坏 guard，也让一次运行散成多个 commit |
-| 工具放在工作区 `.bot/bin/` | **修改**：放框架仓库 | 工作区对 Bot 可写，工具会被 Bot 改掉再执行 |
-| MEMORY 200 行警戒线 | **修改**：≤150 行 且 ≤3000 字符 | 沿用 Tobs 实测与整合稿结论 |
-| dream 由 DSH 定时任务调用 | **修改**：系统 cron | DSH `schedule` 需要 `dsh web` 常驻 |
-| dream 前打 `git tag` 快照 | 不需要 | 每次 dream 本身就是一个可 revert 的 commit |
-| 用 `ctx.tools.guard()` 给 botctl 免审批 | **不需要/未核实** | 本机文档未见该 API；`workspace-write` 下工作区内操作本就无需审批 |
-| "Minimal 模式只给 bash + 编辑器" | 不采用 | 实际是 `sdk-minimal`，排除 subagent/AGENTS.md/skills 且为全权限 |
+复现需覆盖 commands.execute、事件传播、projection/flow、renderer、重连/重启。Host handler 有 text，但用户看不到结果，根因未确认；直接 handler/无界面验收不能关闭问题。
 
----
+## 8. 下一轮：创建与主 Session
 
-## 16. 来源与参考
+插件 /mbot init 的目标流程：
 
-整理自（`/home/u/文档/polaris/docs/`）：
+1. 校验数据路径/实例身份，识别新建或导入，初始化/校验 Git 仓库。
+2. 通过 DSH 原生能力登记工作区，创建或恢复 Chief 主 Session。
+3. 保存 botId/workspaceId/mainSessionId 绑定和当前选择。
+4. 在发起 Session 显示结果，默认打开主 Session，保留旧会话；不以跳转掩盖失败。
 
-- [bot-framework-design.md](file:///home/u/文档/polaris/docs/bot-framework-design.md)：整合稿，本设计的主干
-- [tobs-internals.md](file:///home/u/文档/polaris/docs/tobs-internals.md)：SOUL/MEMORY 预算、git 验收、权限模型
-- [agent-team-plan.md](file:///home/u/文档/polaris/docs/agent-team-plan.md)、[agent-team-ideas.md](file:///home/u/文档/polaris/docs/agent-team-ideas.md)：放弃 Agent Teams 的原因、Lead 定位、缓存顾虑
-- [memory-systems-survey.md](file:///home/u/文档/polaris/docs/memory-systems-survey.md)、[memory-research-assets.md](file:///home/u/文档/polaris/docs/memory-research-assets.md)：记忆选型、评测防骗清单、Agent Memory Repo 格式
-- [memory-revival.md](file:///home/u/文档/polaris/docs/memory-revival.md)：共享层 + 个人层；`u`/`源` 可作为首批真实 Bot
+跨文件、Git 与 DSH 实体没有单一事务，须定义阶段状态/补偿：重试去重、部分成功可修复，不删除用户已有仓库/Session；缺失 DSH 能力先报错，不留下虚假绑定。创建不调用模型。CLI init 保留独立行为。
 
-本机 DSH 包文档（`@deepseek-ai/*`）：`dsh-headless`、`dsh-agent-instructions`、`dsh-skill-filesystem`、`dsh-settings`、`dsh-tool-bash`、`dsh-bash-sandbox`、`dsh-sandbox-policy`、`dsh-user-approval`、`dsh-tool-subagent`、`dsh-tool-subagent-control`、`dsh-sdk-minimal`。
+主 Session 初期为只读 Chief 交互入口，读 SOUL/MEMORY/看板，业务执行仍委托有 guard 的 headless run。直接执行任务需另行接入每轮基准、锁、权限、验收与审计；不能为续聊绕过记忆规则。Worker/Dreaming 不复用主 Session。
 
-## 17. Cordis 插件与安装
+选择优先服从显式实例与调用 Session 绑定，再用调用方选择/profile 默认；旧 workspace 为兼容来源。具体 API/语法和迁移在 P1 定稿。全局选择不能重定向 A/B 已绑定会话；缺失/归档 Session 可见并可修复。重启不销毁数据，clone 可重建 DSH 绑定。
 
-`package.json` 声明 `dsh.bundle.patch=./cordis.patch.yml`，平台 Linux/WSL、Node 22+、DSH 兼容范围。bundle 插入 mbot 服务、tool-mbot 和 command-mbot 三行；服务依赖以 inject 表达，消费注册由 Cordis effect 自动卸载。依赖实例共享的 DSH/Cordis 包声明 peers，Schemastery 是普通无状态依赖，源码和 tarball 都直接携带 ESM 与 .d.ts，无 prepare/install 脚本。
+## 9. 下一轮：设置与管理面板
 
-mbot 服务通过 DSH subprocess provider 启动包内固定脚本，argv 不经 shell 解释；捕获一次 workspace volatile 值，带取消信号，卸载时终止并等待所有拥有的进程。它不改全局 PATH/配置，不在加载时创建数据。原生工具没有可供模型指定的任意目录或宿主 run/dream 动作；所有调用按 sandboxPolicy 与 approveEscalation 要求完整权限或一次审批。受 mbot 管理的运行禁止原生工具与人类命令绕过 Bash 护栏。
+新增浏览器 half：声明 dsh.client、./client，提供 DSH 可加载的 lazy-CJS factory bundle，附着 bare dsh-mbot 根行。Host 不导入浏览器代码，headless 不要求 UI；包须带构建产物，源码/安装的构建约定重新验收。
 
-`/mbot` 属于人类 commands 注册表，直接执行初始化、查看、运行、Dreaming 与运维控制，不把控制命令送给模型。命令输出和原生工具输出脱敏；命令原文不在 Session 中重复记录，受控 run 的请求保留在脱敏 transcript 中。GUI 使用 volatile workspace 字段；独立 Bash CLI 保留 -C/环境/用户配置解析。
+通过官方 Plugins/Settings 扩展注册 MBot 页面。Host 持有实例 CRUD、绑定、路径/权限/版本校验与保存，浏览器只走支持的远程协议，不执行 Bash、直接改配置或读凭据。关闭/卸载/重连清理注册和订阅。
 
-数据模板以 `gitignore` 分发，init 生成工作区 `.gitignore`，避免 npm 省略 dotfile。包中保留所有脚本、模板、prompts、patches 和 ops；凭据、node_modules、测试产物不入包。安装后提供 profile 的 .bin 入口；卸载 bundle 不删除独立数据仓库。源码、tarball、真实模型验收见 [`plugin.md`](plugin.md)。
+面板展示实例、目录、主 Session、角色、看板/预算/PAUSED/最近报告，并支持创建/导入/选择/打开/修复及已支持的配置编辑。插件默认项走 ConfigEditor/form revision；数据配置走静态校验/human Git 事务；DSH 原生实体由官方服务持有，不重复维护值。无效/并发/保存失败不改变有效配置，key 只使用引用。
+
+真实 GUI 的创建、保存、重启、多实例切换、开关/卸载是验收条件；schema、组件、接口检查不能替代完整用户流程。
+
+## 10. 升级、发布与证据
+
+0.1.1 修交互缺陷，0.2.0 增加实例和管理产品。新登记带 schemaVersion，导入先验证再迁移，模板采用差异合并，不 reset/re-init 用户数据。保留 Bash、模型工具、headless、源码/tarball 安装兼容矩阵。
+
+0.1 已有公开类型、11 项 Cordis、64 组 Bash 检查，两种真实安装/API 验收；界面反馈和面板未被证明。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
+
+标签 0.1 指向 d1bd4e6，包版本 0.1.0；保留既有标签和历史验收。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。

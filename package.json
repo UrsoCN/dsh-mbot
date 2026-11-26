@@ -27,6 +27,7 @@
     "botctl": "./bin/botctl"
   },
   "files": [
+    "AGENTS.md",
     "plugin",
     "bin",
     "lib",

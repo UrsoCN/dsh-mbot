@@ -1,6 +1,6 @@
 # M0：DSH 行为实测
 
-2026-11-25，Linux，DSH `0.2.2-rc.5`。验收结论已回填 [design.md §14.2](design.md#142-m0-实测结论2026-11-25dsh-022-rc5)，[TODO M0](../TODO.md) 已完成。
+2026-11-25，Linux，DSH `0.2.2-rc.5`。本文件保留 M0 的历史验收；已完成事项汇总在 [0.1 发布说明](RELEASE_NOTE.md)，当前边界见 [设计](design.md)。
 
 ## 复现
 

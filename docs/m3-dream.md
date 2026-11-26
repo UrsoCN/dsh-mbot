@@ -1,6 +1,6 @@
 # M3：Dreaming 与记忆闭环验收
 
-2026-11-26，Linux，DSH `0.2.2-rc.5`。M3 已完成，下一里程碑是星型调度。入口见 [README](../README.md#dreaming-记忆闭环)，设计见 [design.md §11](design.md#11-dreaming单阶段)。
+2026-11-26，Linux，DSH `0.2.2-rc.5`。本文件保留 M3 的历史验收。入口见 [README](../README.md#dreaming-记忆闭环)，当前边界见 [设计](design.md#62-dreaming)。
 
 ## 复现
 
