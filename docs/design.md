@@ -1,18 +1,18 @@
 # dsh-mbot：0.1 基线与 0.2 迭代设计
 
-当前包版本 0.1.0，首版能力以 0.1 命名；发布 tag 推荐采用 v0.1.0，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。本地安装反馈是下一轮输入，聊天区与面板必须以真实界面验收。
+当前包版本 0.1.1，发布 tag 使用对应完整版本，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。聊天区已通过真实界面验收，主 Session 和面板仍为规划。
 
 ## 1. 当前能力与缺口
 
 | 已实现的 0.1 | 尚未实现/待修复 |
 |---|---|
-| 可安装 Cordis bundle、原生 botctl、/mbot handler、Config schema | 实际界面 init/status 反馈不可见问题 |
-| 独立 Markdown/Git 数据仓库、Bash 事务与护栏 | init 显式目录不会自动成为后续选择 |
+| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 主 Session 与生命周期的原生交互 |
+| 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 实例绑定与导入/修复 |
 | 每次独立 headless Chief、fresh Worker、独立 Dreaming | Bot 实例登记、DSH 工作区登记、持久主 Session |
-| volatile workspace 的 Host 校验与更新 | 自有设置/管理面板及浏览器入口 |
+| volatile workspace 的 Host 校验与更新、最小浏览器入口 | 自有设置/管理面板 |
 | cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
-DSH CommandResult 支持将结果保存在 command/run、command/done，客户端可在模型历史之外展示。当前界面为何没显示仍须复现追踪，不能由直接 handler 测试推断 UI 可用。schema 能导出也不代表面板已注册。
+DSH CommandResult 支持将结果保存在 command/run、command/done，客户端可在模型历史之外展示。0.1.1 的浏览器入口贡献 MBot 命令活动，让只执行命令的新会话展开原生聊天视图。schema 能导出也不代表面板已注册。
 
 ## 2. 不变的原则
 
@@ -42,7 +42,8 @@ DSH CommandResult 支持将结果保存在 command/run、command/done，客户�
 
 | 路径 | 职责 |
 |---|---|
-| plugin/index.js | mbot 服务、volatile workspace、受管理子进程 |
+| plugin/index.js | mbot 服务、volatile workspace、受管理子进程、初始化与配置保存 |
+| plugin/client.js | DSH lazy-CJS 浏览器入口；命令活动贡献，复用原生卡片 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
 | bin/mbot、bin/botctl、lib/ | 配置、事务、lint、运行、渲染、guard、Dreaming、调度、备份 |
 | templates/workspace/ | 新仓库模板；gitignore 在 init 时生成 .gitignore |
@@ -88,19 +89,21 @@ remember 追加候选，独立 Dreaming 执行 Analyze → Merge → Rewrite →
 
 ### 6.3 配置与运维
 
-独立 Bash 目录优先级：-C → MBOT_WS → XDG 用户配置 → ~/.mbot-ws。0.1 原生服务使用非空 Cordis workspace，否则回退这些来源。显式 /mbot init <path> 只影响该次初始化，这是 P0 体验问题。
+独立 Bash 目录优先级：-C → MBOT_WS → XDG 用户配置 → ~/.mbot-ws。0.1 原生服务使用非空 Cordis workspace，否则回退这些来源。显式 /mbot init <path> 成功后通过 ConfigEditor 保存实际目录；独立 CLI init 不保存 profile 选择。
 
 .mbot/config 静态读取，不 source/插值，环境优先。grants 是物理绝对目录的冒号列表，仅 run/tick 使用，拒绝保护目录、别名、空项、重复项。默认超时 300 秒，新材料预算 64000 字节。
 
 cron 每两小时 tick，03:17 archive 成功后接 dream。锁忙/暂停/空闲可能退出 0，需核对报告；日志在数据仓库外。备份默认关闭，只推既有 upstream，拒绝/超时保留本地成功；clone 恢复在 /tmp 清空 grants/推送后做只读冷启动。7 天观察未完成。详见 [M5](m5-ops.md)。
 
-## 7. 下一轮：聊天区反馈
+## 7. 已实现：聊天区反馈与目录选择
 
-控制结果在发起 Session 的聊天区显示开始、成功、失败、跳过、取消，包含目录、选择和操作链接。默认复用 CommandResult 与持久命令事件，不伪造 assistant 回复、不触发模型，不把全部 status/日志塞进模型 role content。
+控制结果在发起 Session 的聊天区显示开始、成功、失败、跳过、取消，init 包含实际目录、选择结果和下一步。默认复用 CommandResult 与持久命令事件，不伪造 assistant 回复、不触发模型，不把全部 status/日志塞进模型 role content。
 
 UI 可见、Session 事件持久化、模型可见是不同问题。Chief 确需消费结果时，选择性注入业务摘要或让它读任务；展示层不决定长期记忆。按命令身份关联结果，避免 flow、通知、卡片重复。
 
-复现需覆盖 commands.execute、事件传播、projection/flow、renderer、重连/重启。Host handler 有 text，但用户看不到结果，根因未确认；直接 handler/无界面验收不能关闭问题。
+根因是 DSH 0.2.2-rc.5 的 Chat activity predicate 排除了普通 command 节点，新会话因此保留 Hero 空白页。最小 client 在独立活动 target 上识别 /mbot command/run 并激活对应 Conversation，原生 Chat 是唯一卡片写者；既有历史重放后也可见，不修改 DSH 核心或模型历史。
+
+Host 串行初始化，通过 ConfigEditor 原子保存 canonical directory；保存时核对调用前的 workspace 值，保留并发的新选择。缺少 profile 保存能力时创建前报错；初始化失败保留旧选择，仓库创建后保存失败明确报告部分成功。每次业务操作仍捕获一次 workspace，在途操作不被重定向。真实 tarball 浏览器验收覆盖命令显示、错误/跳过、多标签页、刷新与重启；取消由 commands.execute/AbortSignal 验证。
 
 ## 8. 下一轮：创建与主 Session
 
@@ -131,8 +134,8 @@ UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工
 
 ## 10. 升级、发布与证据
 
-0.1.1 修交互缺陷，0.2.0 增加实例和管理产品。新登记带 schemaVersion，导入先验证再迁移，模板采用差异合并，不 reset/re-init 用户数据。保留 Bash、模型工具、headless、源码/tarball 安装兼容矩阵。
+0.1.1 已修交互缺陷，0.2.0 增加实例和管理产品。新登记带 schemaVersion，导入先验证再迁移，模板采用差异合并，不 reset/re-init 用户数据。保留 Bash、模型工具、headless、源码/tarball 安装兼容矩阵。
 
-0.1 已有公开类型、11 项 Cordis、64 组 Bash 检查，两种真实安装/API 验收；界面反馈和面板未被证明。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
+0.1 保留公开类型、11 项 Cordis、64 组 Bash 和真实模型的历史验收；0.1.1 新增 commands.execute 与浏览器验收，见 [P0](p0-feedback.md)。主 Session/面板仍待实现。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
 
-包版本为 0.1.0，具体发布标签由作者在要发布的提交上创建，以 Git refs 为准；不将它固定绑定到某个实现提交。完整版本 tag 有利于索引发现；GitHub Release/Actions 非必需。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。
+包版本为 0.1.1，具体发布标签在验收通过的提交上创建，以 Git refs 为准；不将它固定绑定到某个实现提交。完整版本 tag 有利于索引发现；GitHub Release/Actions 非必需。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。

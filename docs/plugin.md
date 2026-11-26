@@ -2,7 +2,7 @@
 
 2026-11-26，Linux，Node `22.23.2`，DSH `0.2.2-rc.5`。包 `dsh-mbot@0.1.0` 已成为可安装的 DSH bundle；Bash 核心和独立数据仓库保持原事务、护栏和 Git 审计行为。
 
-本文件是 0.1 的 Host/安装/模型验收记录。安装后的用户反馈说明聊天区 init/status 展示仍有问题；volatile schema 不代表自有设置面板已交付。当前也未自动登记 DSH 工作区或绑定主 Session，下一轮范围见 [TODO](../TODO.md) 与 [发布说明](RELEASE_NOTE.md)。
+本文件保留 0.1 的 Host/安装/模型验收记录。0.1.1 已修复聊天区反馈并保存目录选择，新安装/浏览器依据见 [P0 验收](p0-feedback.md)；volatile schema 不代表自有设置面板已交付。当前也未自动登记 DSH 工作区或绑定主 Session，下一轮范围见 [TODO](../TODO.md) 与 [发布说明](RELEASE_NOTE.md)。
 
 ## 安装
 

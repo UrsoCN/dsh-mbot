@@ -26,10 +26,14 @@ export function apply(ctx) {
         if (process.env.MBOT_RUN_ID !== undefined) throw new Error('Managed Bots must not invoke /mbot host controls')
         const command = commandArgs(invocation.rawInput)
         if (!command) return { kind: 'success', text: usage }
-        const result = await ctx.mbot.execute(command.program, command.argv, { signal: invocation.signal })
-        return { kind: result.exitCode ? 'error' : 'success', text: result.stdout + result.stderr + (result.truncated ? '\n[Output truncated]' : '') }
+        const result = command.argv[0] === 'init'
+          ? await ctx.mbot.initialize(command.argv[1], { signal: invocation.signal })
+          : await ctx.mbot.execute(command.program, command.argv, { signal: invocation.signal })
+        const output = result.stdout + result.stderr
+        return { kind: result.exitCode ? 'error' : 'success', text: (output || (result.exitCode ? `mbot failed (${result.exitCode})` : 'Completed.'))
+          + (result.truncated ? '\n[Output truncated]' : '') }
       } catch (error) {
-        return { kind: 'error', text: error.message }
+        return { kind: 'error', text: invocation.signal.aborted ? 'Cancelled: /mbot operation stopped.' : error.message }
       }
     },
   })

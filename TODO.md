@@ -1,18 +1,8 @@
 # TODO：0.1 之后的迭代
 
-0.1 是可运行的 Cordis Host 插件与 Bash 事务核心。已完成事项汇总在 [发布说明](docs/RELEASE_NOTE.md)，实现与后续边界见 [设计](docs/design.md)，维护约定见 [AGENTS](AGENTS.md)。本文件只保留未完成工作，按 P0 → P1 → P2 推进；每阶段独立验收、更新文档并提交。
+0.1 是可运行的 Cordis Host 插件与 Bash 事务核心。已完成事项汇总在 [发布说明](docs/RELEASE_NOTE.md)，实现与后续边界见 [设计](docs/design.md)，维护约定见 [AGENTS](AGENTS.md)。本文件只保留未完成工作，按 P1 → P2 推进；每阶段独立验收、更新文档并提交。
 
-## P0 · 0.1.1：命令反馈与目录选择
-
-用户反馈：/mbot init /home/u/文档/mbot_demo 创建成功，却看不到结果；/mbot status 也没有提示。代码还存在一个独立问题：显式 init 路径只用于该次初始化，后续命令仍可能选择旧目录。
-
-- [ ] 在实际 DSH 界面复现，记录版本、profile、入口及结果；沿 handler → commands.execute → command/run/done → 客户端 flow/renderer 排查，暂不假定 Bash 没有 stdout
-- [ ] 聊天区显示运行中、成功、错误、跳过与取消；init 显示实际目录和下一步，status 显示当前 Bot/目录、看板、预算、PAUSED 与最近运行
-- [ ] 优先复用 DSH 的命令事件和展示路径；默认不生成模型 role content、不触发模型；补充卡片/通知不能与已有 flow 重复
-- [ ] init 成功后选中该目录，持久化通过 Host 配置入口；失败保留旧选择；明确环境/配置与未来 Bot 选择的优先级
-- [ ] 补 commands.execute 与真实聊天区验收：中文/空格路径、目录已存在、工作区缺失、失败/取消、重启与重新打开 Session
-
-**验收**：init → status → 重启 DSH → status，均看到正确目录与结果；错误和锁忙可见；控制命令不消耗模型调用、不重复消息；CLI 保持兼容。
+P0 命令反馈与目录选择已完成，归入 [0.1.1 发布说明](docs/RELEASE_NOTE.md)。当前从 P1 推进主 Session；P2 的最小浏览器入口已随修复落地，管理面板尚未实现。
 
 ## P1 · 0.2.0：Bot 实例、DSH 工作区与主 Session
 
@@ -37,7 +27,7 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 0.1 只有 Host Config 与 volatile workspace schema，没有自有设置面板；此前把 schema 验收写成设置页交付，需要纠正。
 
-- [ ] 增加 DSH client 浏览器入口、dsh.client 声明与 ./client export；附着 bare dsh-mbot 根行，Host/headless 独立使用
+- [ ] 扩展已有最小 client 为管理面板；保留 dsh.client、./client、bare dsh-mbot 根行及 Host/headless 独立使用约定
 - [ ] 用受支持的 Plugins/Settings 扩展注册 MBot 面板，不修改 DSH 核心；明确页面路径以及关闭/卸载清理
 - [ ] 显示实例列表、当前选择、目录、主 Session、角色与运行状态；提供创建、导入、选择、打开和修复
 - [ ] 管理插件默认项和各 Bot 已支持的预算、超时、grants、备份等配置；SOUL/MEMORY 先展示，长期记忆仍遵守既有写者规则

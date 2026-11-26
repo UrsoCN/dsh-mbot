@@ -7,12 +7,14 @@ root=$(mktemp -d /tmp/mbot-plugin-install.XXXXXX)
 trap 'printf "Plugin installation artifacts: %s\n" "$root"' EXIT
 export DSH_HOME=$root/dsh XDG_CONFIG_HOME=$root/config XDG_DATA_HOME=$root/data XDG_CACHE_HOME=$root/cache XDG_STATE_HOME=$root/state TMPDIR=$root
 export DSH_TELEMETRY_MODE=DISABLED
+export COREPACK_HOME=$root/corepack
 export GIT_AUTHOR_NAME='mbot plugin install' GIT_AUTHOR_EMAIL=mbot-tests@example.invalid
 export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
-npm --prefix "$repo" pack --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
+cd "$root"
+npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1

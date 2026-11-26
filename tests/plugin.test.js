@@ -8,6 +8,7 @@ import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import Commands from '@deepseek-ai/dsh-commands'
+import { Session } from '@deepseek-ai/dsh-session'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import * as plugin from '../plugin/index.js'
@@ -139,6 +140,120 @@ test('slash commands execute without a model and treat request text literally', 
   assert.equal((await command.handler({ rawInput: 'unknown', signal: new AbortController().signal })).kind, 'error')
   assert.deepEqual(commands.commandArgs('run say hello; $(touch /tmp/should-not-execute)'), { program: 'mbot', argv: ['run', 'chief', 'say hello; $(touch /tmp/should-not-execute)'] })
   assert.deepEqual(commands.commandArgs('init /tmp/path with spaces'), { program: 'mbot', argv: ['init', '/tmp/path with spaces'] })
+})
+
+test('commands.execute persists native lifecycle events without model-visible content', async t => {
+  const { ctx } = await app(t)
+  const session = Session.create('mbot-command-lifecycle')
+  const agent = { session }
+  const signal = new AbortController().signal
+  for (const line of ['/mbot status', '/mbot unknown', '/mbot help']) {
+    const execution = await ctx.commands.execute(agent, line, [], signal)
+    assert.ok(execution.result.text)
+    const [run, done] = session.snapshotEvents().slice(-2)
+    assert.equal(run.type, 'command/run')
+    assert.equal(done.type, 'command/done')
+    assert.equal(run.data.commandId, done.data.commandId)
+    assert.equal(done.data.text, execution.result.text)
+    assert.equal(run.data.args, undefined)
+  }
+  assert.ok(session.snapshotEvents().every(event => event.type.startsWith('command/')))
+  assert.equal(session.surface.nodes.length, 0)
+})
+
+test('command lifecycle exposes running work and settles cancellation as a visible error', async t => {
+  const { ctx } = await app(t)
+  const session = Session.create('mbot-cancel-command')
+  const controller = new AbortController()
+  const entered = Promise.withResolvers()
+  ctx.mbot.execute = (_program, _args, { signal }) => new Promise((_resolve, reject) => {
+    entered.resolve()
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+  const execution = ctx.commands.execute({ session }, '/mbot status', [], controller.signal)
+  await entered.promise
+  assert.equal(session.snapshotEvents().at(-1).type, 'command/run')
+  controller.abort(new Error('cancelled'))
+  await assert.rejects(execution, /cancelled/u)
+  const settled = session.snapshotEvents().at(-1)
+  assert.equal(settled.type, 'command/done')
+  assert.equal(settled.data.kind, 'error')
+  assert.match(settled.data.text, /cancelled/iu)
+})
+
+async function configEditor(ctx, owner, initial) {
+  await owner.dispose()
+  class MemoryLoader extends Loader { commit() {} }
+  await ctx.plugin(MemoryLoader)
+  ctx.loader.builtins['mbot-selection'] = plugin
+  const id = await ctx.loader.create({ name: 'cordis:mbot-selection', config: { workspace: initial } })
+  await ctx.loader.await()
+  let raw = { workspace: initial }
+  let fail = false
+  const entry = ctx.loader.resolve(id)
+  class Editor extends Service {
+    constructor(ctx) { super(ctx, 'configEditor') }
+    entries() { return [entry] }
+    async edit(target, change) {
+      assert.equal(target.fiber.uid, entry.fiber.uid)
+      const next = change(raw, {})
+      if (fail) throw new Error('disk write failed')
+      await ctx.loader.update(id, { config: next })
+      raw = next
+    }
+  }
+  await ctx.plugin(Editor)
+  return { raw: () => raw, fail: () => { fail = true }, update: async path => { raw = { workspace: path }; await ctx.loader.update(id, { config: raw }) } }
+}
+
+test('init selects a canonical Unicode directory and failed init keeps the previous selection', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const directory = join(root, '文档', 'bot with spaces')
+  const agent = { session: Session.create('mbot-init-command') }
+  const signal = new AbortController().signal
+  const result = await ctx.commands.execute(agent, `/mbot init ${directory}/../bot with spaces`, [], signal)
+  assert.equal(result.result.kind, 'success', result.result.text)
+  assert.match(result.result.text, /Next: \/mbot status/u)
+  assert.equal(editor.raw().workspace, directory)
+  assert.equal(ctx.mbot.workspace(), directory)
+  const status = await ctx.commands.execute(agent, '/mbot status', [], signal)
+  assert.ok(status.result.text.includes(`Workspace: ${directory}`))
+  assert.equal((await ctx.mbot.initialize(directory)).exitCode, 1)
+  assert.equal(ctx.mbot.workspace(), directory)
+  assert.equal(git(directory, 'status', '--porcelain'), '')
+})
+
+test('selection persistence failure retains the old config and reports the initialized repository', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  editor.fail()
+  const directory = join(root, 'unsaved init')
+  const result = await ctx.mbot.initialize(directory)
+  assert.equal(result.exitCode, 1)
+  assert.match(result.stdout, /Initialized/u)
+  assert.match(result.stderr, /selection was not saved: disk write failed/u)
+  assert.equal(ctx.mbot.workspace(), ws)
+  assert.equal(git(directory, 'log', '-1', '--format=%s'), 'human: init')
+})
+
+test('parallel init is serialized and does not overwrite a concurrent configuration edit', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const paths = [join(root, 'queued A'), join(root, 'queued B')]
+  const results = await Promise.all(paths.map(path => ctx.mbot.initialize(path)))
+  assert.ok(results.every(result => result.exitCode === 0))
+  assert.equal(ctx.mbot.workspace(), paths[1])
+  const original = ctx.mbot.execute.bind(ctx.mbot)
+  ctx.mbot.execute = async (...args) => {
+    const result = await original(...args)
+    await editor.update(ws)
+    return result
+  }
+  const changed = await ctx.mbot.initialize(join(root, 'selection conflict'))
+  assert.equal(changed.exitCode, 1)
+  assert.match(changed.stderr, /newer selection retained/u)
+  assert.equal(ctx.mbot.workspace(), ws)
 })
 
 test('live workspace config is captured per operation and unloading removes tools and commands', async t => {

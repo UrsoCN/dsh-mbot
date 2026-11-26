@@ -4,9 +4,9 @@
 
 ## 1. Tag、分支与 GitHub Release
 
-最新复查：本地与 origin 都已有 refs/tags/v0.1.0，指向 27cb31c，与 package.version=0.1.0 对应，符合推荐命名。此前看到的 refs/heads/0.1 是分支，已与真正的 tag 区分。此处是检查时快照，后续以实际 Git refs 为准，不把标签指向写死在设计文档。本轮 locale/测试优化尚未包含在该已推送标签中，单独提交，不自动移动标签。
+0.1.0 发布核对时：本地与 origin 都已有 refs/tags/v0.1.0，指向 27cb31c，与 package.version=0.1.0 对应，符合推荐命名。此前看到的 refs/heads/0.1 是分支，已与真正的 tag 区分。此处是检查时快照，后续以实际 Git refs 为准，不把标签指向写死在设计文档。locale/测试优化及命令反馈随 0.1.1 分发，不移动原标签。
 
-任意合法 Git tag（包括 0.1）可以供 dsh plugin add 显式安装，GitHub Release/Actions 不是必需项。不过官方索引生成器从 Git 仓库识别历史版本时查找 vX.Y.Z、X.Y.Z 和包名@X.Y.Z；0.1 不在完整版本命名规则中。当前 package.version 是 0.1.0，新发布推荐 v0.1.0。
+任意合法 Git tag（包括 0.1）可以供 dsh plugin add 显式安装，GitHub Release/Actions 不是必需项。不过官方索引生成器从 Git 仓库识别历史版本时查找 vX.Y.Z、X.Y.Z 和包名@X.Y.Z；0.1 不在完整版本命名规则中。当前 package.version 是 0.1.1，新发布使用 v0.1.1；下面保留 0.1.0 的标签核对示例。
 
 完成要发布的提交后，可用以下步骤创建真正的 tag（仅适用于 tag 尚不存在的版本，已有 v0.1.0 不必重复创建；本次检查没有执行）。Annotated tag 便于附发布说明，lightweight tag 也能被 DSH 安装/索引识别：
 
@@ -22,16 +22,16 @@ dsh plugin --profile web add github:UrsoCN/dsh-mbot#v0.1.0
 
 | 项目 | 结果 |
 |---|---|
-| npm 包身份与版本 | dsh-mbot@0.1.0，有效 SemVer、ESM、公开类型 |
+| npm 包身份与版本 | dsh-mbot@0.1.1，有效 SemVer、ESM、公开类型 |
 | dsh.bundle 与 patch | 三个入口均按包名引用，能自动激活 |
 | Cordis 入口 | apply/name/Config/inject、服务与 effects 清理已接入 |
 | 平台与兼容声明 | Node 22+、Linux/WSL、engines.dsh 与 peer 声明存在 |
 | 运行资源 | bin/lib/template/prompts/patches/ops、README/LICENSE/文档都入包，脚本有执行权限 |
 | Git 安装 | JS 入口随源码提交，当前无需 build/prepare 或安装时脚本授权 |
 | 展示元数据 | 已修复为 locale 的 meta.title/meta.description；DSH 实际读取中英文字段通过 |
-| UI/client | 当前没有 dsh.client/./client，自有面板未交付；Host-only 插件允许这样发布，但不能宣称包含面板 |
+| UI/client | 0.1.1 已有 dsh.client/./client 与最小 lazy-CJS factory；真实命令聊天区通过，自有面板尚未交付 |
 
-已有引导文档、原生权限检查与类型验收不代替真实聊天区/面板验收；这些功能缺口仍按 TODO 推进。
+已有引导文档、原生权限检查与类型验收不代替真实聊天区/面板验收；0.1.1 的命令反馈已通过真实浏览器验收；主 Session/面板仍按 TODO 推进，依据见 [P0 验收](p0-feedback.md)。
 
 ## 3. 已做的优化与验证
 

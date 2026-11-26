@@ -2,9 +2,9 @@
 
 DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记忆，复用 Bash 核心完成受控运行、Chief/Worker 派活和独立 Dreaming。
 
-当前发布基线为 **0.1（包版本 0.1.0）**。能力与已知限制见 [发布说明](docs/RELEASE_NOTE.md)，下一轮见 [TODO](TODO.md)，架构见 [design](docs/design.md)，维护见 [AGENTS](AGENTS.md)。
+当前版本为 **0.1.1**。能力与已知限制见 [发布说明](docs/RELEASE_NOTE.md)，下一轮见 [TODO](TODO.md)，架构见 [design](docs/design.md)，维护见 [AGENTS](AGENTS.md)。
 
-0.1 已具备 Host 服务、原生 botctl、命令 handler 和工作区 schema，但**尚无自有设置面板、Bot 实例列表或持久主 Session**。用户报告的聊天区 init/status 反馈不可见，以及 init 后目录未自动选中，列为优先修复。当前可用终端 CLI 与手工 profile patch；不要把 schema 验收当作完整 GUI 交付。
+已具备 Host 服务、原生 botctl、工作区 schema 和聊天区命令反馈。`/mbot init <目录>` 成功后自动保存插件的目录选择，后续 status/工具及重启使用该目录。**尚无自有设置面板、Bot 实例列表或持久主 Session**，这些功能列入 0.2.0。
 
 ## 通过 DSH 安装
 
@@ -21,7 +21,7 @@ dsh plugin --profile web add "$PWD"
 
 ```bash
 npm pack --pack-destination /tmp
-dsh plugin --profile web add /tmp/dsh-mbot-0.1.0.tgz
+dsh plugin --profile web add /tmp/dsh-mbot-0.1.1.tgz
 ```
 
 web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patches 和运维资源，无安装时构建；已有进程按 HMR 能力生效或重启 DSH。Git 安装可使用 github:UrsoCN/dsh-mbot#<tag-or-commit>，以远端实际可见版本为准。
@@ -32,7 +32,16 @@ web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patche
 
 ## 快速开始
 
-在源码目录直接使用终端入口，有明确输出：
+安装后，在 DSH 聊天框执行：
+
+```text
+/mbot init /tmp/mbot-demo
+/mbot status
+```
+
+结果使用原生命令卡片显示，点击可展开完整输出；不触发模型调用或进入模型 role content。init 保存对应 profile 的 MBot workspace；失败保留此前选择，若仓库已建成但配置保存失败，卡片会明确提示。数据目录不会自动成为 DSH 工作区，也不会创建主 Session。
+
+在源码目录也可以使用终端入口：
 
 ```bash
 ./bin/mbot init /tmp/mbot-demo
@@ -58,7 +67,7 @@ Bash 目录优先级为 -C → MBOT_WS → XDG_CONFIG_HOME 下的 mbot/config �
     workspace: /absolute/path/to/bot-workspace
 ```
 
-Host 字段为 volatile，后续操作读取新值，在途操作保留原目录。独立 Bash CLI 不读取 profile YAML。/mbot init <directory> 的路径目前只影响本次初始化，后续选择必须另设；自动绑定/选择属于下一轮。
+Host 字段为 volatile，后续操作读取新值，在途操作保留原目录。插件 init 通过官方 ConfigEditor 保存实际目录，并串行处理并发初始化；期间的配置修改不会被静默覆盖。独立 Bash CLI 不读取 profile YAML，CLI init 仍仅初始化数据。
 
 | 配置 | 默认值 |
 |---|---:|
@@ -84,7 +93,7 @@ Host 字段为 volatile，后续操作读取新值，在途操作保留原目录
 
 模型的原生 botctl 操作包括 boot、status、lint、board_show/add/set、task_show/result、remember。它管理 Host 配置的数据仓库，需要完整权限或一次 DSH 审批；不能写 MEMORY 或启动另一个模型。受控 Chief/Worker 继续使用 Bash botctl 与运行 guard。
 
-人类 /mbot handler 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help。控制输入按原文处理，不按 shell 解析；只有 run/tick/dream 调模型。**实际聊天区反馈问题尚待修复**，暂优先终端验证；控制反馈计划通过命令事件显示，不默认加入模型 role content。
+人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
 
 ## 单次运行与恢复
 
@@ -130,9 +139,9 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-0.1 有公开类型、11 项 Cordis、64 组 Bash 检查；当前安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、工具/命令 handler、schema、bin、展示元数据及卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+当前有公开类型、16 项 Cordis、64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、工具/命令 handler、schema、bin、展示元数据及卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
-这些验收不证明完整 GUI 可用。后续界面/会话功能需真实聊天区、设置页、重启/重连与多实例验收。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
+`npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。设置页和主 Session 仍需各自验收。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 
 ## 许可证
 

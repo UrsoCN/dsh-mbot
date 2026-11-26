@@ -20,6 +20,8 @@ export class MBotService extends Service {
   constructor(ctx, config) {
     super(ctx, 'mbot')
     this.config = config
+    this.ownerContext = ctx
+    this.initializing = Promise.resolve()
     this.active = new Set()
     this.closed = false
     ctx.effect(() => async () => {
@@ -37,6 +39,39 @@ export class MBotService extends Service {
       throw new Error('mbot workspace must be an absolute single-line path or ~/path')
     }
     return path
+  }
+
+  /** Initialize and persist selection in the owning profile, serialized across clients. */
+  initialize(directory, options = {}) {
+    const run = async () => {
+      if (this.closed) throw new Error('mbot plugin is disposed')
+      options.signal?.throwIfAborted()
+      const editor = this.ownerContext.get('configEditor')
+      let entry
+      for (let fiber = this.ownerContext.fiber; fiber && !entry; fiber = fiber.parent?.fiber) {
+        entry = editor?.entries().find(candidate => candidate.fiber?.uid === fiber.uid)
+        if (fiber.uid === fiber.parent?.fiber?.uid) break
+      }
+      if (!entry) throw new Error('Persistent workspace selection requires a profile-owned MBot configuration entry')
+      const before = this.config.workspace.get()
+      const result = await this.execute('mbot', ['init', ...(directory === undefined ? [] : [directory])], options)
+      if (result.exitCode) return result
+      try {
+        options.signal?.throwIfAborted()
+        if (this.closed) throw new Error('mbot plugin is disposed')
+        if (!result.workspace) throw new Error('Initialization did not report its data directory')
+        await editor.edit(entry, current => {
+          if ((current.workspace ?? '') !== before) throw new Error('Workspace selection changed during initialization; newer selection retained')
+          return { ...current, workspace: result.workspace }
+        })
+      } catch (error) {
+        return { ...result, exitCode: 1, stderr: `${result.stderr}Repository initialized, but selection was not saved: ${error.message}\nSet the MBot workspace in the plugin configuration to use this repository.\n` }
+      }
+      return { ...result, stdout: `${result.stdout}Selected for subsequent /mbot and native botctl operations.\nNext: /mbot status\n` }
+    }
+    const pending = this.initializing.then(run)
+    this.initializing = pending.catch(() => {})
+    return pending
   }
 
   async execute(program, args, options = {}) {
@@ -61,7 +96,10 @@ export class MBotService extends Service {
       options.signal?.throwIfAborted()
       const stdout = child.collected.stdout.readFrom(0)
       const stderr = child.collected.stderr.readFrom(0)
-      return { exitCode: outcome.exitCode ?? 1, stdout: await redact(stdout.text, workspace),
+      // Bundled init has a single stable success line; capture it before text redaction.
+      const initialized = program === 'mbot' && args[0] === 'init' && outcome.exitCode === 0
+        ? /^Initialized (.+)\n$/u.exec(stdout.text)?.[1] : undefined
+      return { exitCode: outcome.exitCode ?? 1, ...(initialized === undefined ? {} : { workspace: initialized }), stdout: await redact(stdout.text, workspace),
         stderr: await redact(stderr.text, workspace), truncated: stdout.lossy || stderr.lossy }
     } finally {
       child.terminate()
