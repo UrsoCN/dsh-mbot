@@ -30,7 +30,7 @@ Runtime 在 tools/execute 记录前台调用，工具结果进入 Session 前脱
 
 turn/end 后等待调用及事件写入，再 guard、审计并提交；结束消息本身是同步事件，后续 prompt 用 pending barrier 等待完成。期限及 lease.cancel 先取消真实 Agent（keepInbox=true），等待本轮 end 与写者，再结算。管道读期限留出完成阶段的时间，避免正常取消收尾被过早视为 Host 失联。
 
-Worker 的固定角色快照、共享事务和生命周期尚未连接，spawn_agent/send_message 暂拒绝。其他未声明前台生命周期的工具也拒绝，不把一个 accepted/job 收据当作写者静止证明。Root 模型输出已出现但 Host 审计失败时的专用界面反馈仍需补齐。
+Worker 的固定角色快照、共享事务和生命周期尚未连接，spawn_agent/send_message 暂拒绝。后台能力的 run_code 不在默认前台白名单；其他未声明前台生命周期的工具也拒绝，不把一个 accepted/job 收据当作写者静止证明。Root 模型输出后，聊天区独立卡片展示 Host 验收/提交结果；runtime/stop 与原生停止的队列/收尾验收见 [Runtime 反馈](runtime-feedback.md)。
 
 ## 恢复与验证
 

@@ -121,7 +121,7 @@ Web profile 的插件 /mbot init 已接入以下流程，详见 [主会话](main
 
 主 Session 的目标是受插件管理的真实交互会话：按版本组合 SOUL、MEMORY、近期摘要/原始尾部与本次请求，配合 compact 和睡眠。DSH 持有 Session 日志/Inbox/Agent，MBot Runtime 持有业务上下文、准入、来源和写事务；启用业务对话前接入每轮基准、锁、guard 与审计，不再以长期“只读入口”作为目标。0.1 headless 入口保留兼容，Worker/Dreaming 不复用主 Session。详见 [Session Runtime](session-runtime.md)。
 
-dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收，Worker、统一来源/收据、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
+dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。Worker、统一来源/收据、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
@@ -141,6 +141,6 @@ UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工
 
 0.1.1 已修交互缺陷，0.2.0 增加实例和管理产品。新登记带 schemaVersion，导入先验证再迁移，模板采用差异合并，不 reset/re-init 用户数据。保留 Bash、模型工具、headless、源码/tarball 安装兼容矩阵。
 
-0.1 保留公开类型、11 项 Cordis、64 组 Bash 和真实模型的历史验收；0.1.1 新增 commands.execute 与浏览器验收，见 [P0](p0-feedback.md)。dev 主 Session 已补齐实体与导航；完整生命周期/面板仍待实现。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
+0.1 保留公开类型、11 项 Cordis、64 组 Bash 和真实模型的历史验收；0.1.1 新增 commands.execute 与浏览器验收，见 [P0](p0-feedback.md)；dev 的 Runtime 审计/停止新增真实模型适配器与浏览器流程，见 [反馈](runtime-feedback.md)。dev 主 Session 已补齐实体与导航；完整生命周期/面板仍待实现。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
 
 包版本为 0.1.1，具体发布标签在验收通过的提交上创建，以 Git refs 为准；不将它固定绑定到某个实现提交。完整版本 tag 有利于索引发现；GitHub Release/Actions 非必需。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。

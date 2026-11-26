@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：主 Session 审计反馈与停止（未发布）
+
+- 聊天区独立 MBot 卡片区分处理、验收、已提交、本轮未通过和验收未完成；显示真实审计提交与脱敏错误，支持双窗口和刷新重放。展示记录不进入模型 surface，Git/journal 继续持有事务真相。
+- 新增 /mbot runtime 与 /mbot stop：查询执行/验收/队列，取消捕获的回合并等待写者、Git 和 Session 回执，返回该回合收据，随后接收的新工作不扩大等待范围；原生停止已使用 keepInbox=true，真实按钮验收确认待办保留。
+- 已提交但回执保存失败保留 commit、阻止继续执行，失败提交保留原 HEAD/journal；后台能力的 run_code 需接齐写者生命周期才开放。33 项 Cordis、14 项 Runtime、64 组 Bash、四类安装、既有 Chromium 与新的本地 adapter 浏览器流程通过，见 [Runtime 反馈](runtime-feedback.md)。没有调用真实 DeepSeek API。
+
+睡眠/唤醒、统一消息、Worker、Runtime 恢复与面板仍在 TODO；用户停止计数仍沿用原语义，待区分。包仍为 0.1.1，未打新 tag。
+
 ## dev：原生工作区与主 Session（未发布）
 
 - Web 的 /mbot init 自动登记官方工作区、创建受管理主 Session 并在发起窗口打开；import 补建旧仓库的绑定，open/repair 支持导航和重试，原会话保留，创建不调用模型。

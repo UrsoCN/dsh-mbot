@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -23,6 +23,8 @@ import * as executor from '@deepseek-ai/dsh-tool-executor-native'
 import * as mbot from '../plugin/index.js'
 import * as botTools from '../plugin/tools.js'
 import * as runtime from '../plugin/runtime.js'
+import Commands from '@deepseek-ai/dsh-commands'
+import * as botCommands from '../plugin/commands.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -130,6 +132,14 @@ test('real Agent uses managed context and native botctl, then creates one turn a
   assert.equal(audit.runtime.bot_id, bot.botId)
   assert.equal(audit.runtime.session_id, agent.id)
   assert.equal(audit.usage.total_tokens, 30)
+  const status = await ctx.mbotRuntime.status(agent)
+  assert.equal(status.state, 'idle')
+  assert.equal(status.lastReceipt.phase, 'committed')
+  assert.equal(status.lastReceipt.head, git(ws, 'rev-parse', 'HEAD'))
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  assert.deepEqual(log.events.filter(event => event.type === runtime.runtimeRecordType).map(event => event.data.phase), ['active', 'auditing', 'committed'])
+  assert.ok(!surface.events.some(event => event.type === runtime.runtimeRecordType))
+  assert.ok(!JSON.stringify(requests).includes(runtime.runtimeRecordType))
 })
 
 test('two native followups stay FIFO and the second turn sees the first audit commit', { timeout: 30000 }, async t => {
@@ -254,6 +264,7 @@ test('Runtime unload blocks model execution, parks native input, and reload adop
   const attachment = ctx.mbotRuntime.attach(agent, { botId: bot.botId })
   assert.equal(ctx.mbotRuntime.attach(agent, { botId: bot.botId }), attachment)
   await attachment
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
   agent.followup(message('after reload'))
   await settle(ctx, agent)
   assert.equal(requests.length, 3)
@@ -317,4 +328,164 @@ test('a custom tool cannot launch a writer without a managed lifetime contract',
   assert.equal(started, false)
   assert.equal(requests.length, 2)
   assert.ok(JSON.stringify(requests[1].messages).includes('managed foreground lifetime contract'))
+})
+
+test('status distinguishes Agent idle from pending audit and the next turn waits for the receipt', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  let firstReceiptAtNextCall
+  const { ctx, ws, agent, requests } = await app(t, async (_options, count, ctx) => {
+    if (count === 1) {
+      const lease = ctx.mbotRuntime.dataLease(ctx.agents.list()[0])
+      const finish = lease.finish.bind(lease)
+      lease.finish = async outcome => { entered.resolve(); await release.promise; return finish(outcome) }
+    } else {
+      const log = await ctx.sessionQuery.readSession(ctx.agents.list()[0].id)
+      firstReceiptAtNextCall = log.events.find(event => event.type === runtime.runtimeRecordType && event.data.phase === 'committed')
+    }
+    return response('complete')
+  })
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('first audited request'))
+  await entered.promise
+  await agent.whenIdle()
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'auditing')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  agent.followup(message('second audited request'))
+  assert.equal(requests.length, 1)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+  assert.equal(firstReceiptAtNextCall.data.head, git(ws, 'rev-parse', 'HEAD^'))
+})
+
+test('commit failure publishes an incomplete audit, preserves the journal and blocks later model calls', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('model response completed'))
+  // Managed Git intentionally disables user hooks. Inject a commit failure
+  // in this one bridge process's PATH and keep all other Git operations real.
+  const shim = join(root, `failing-commit-${++sequence}`)
+  await mkdir(shim)
+  await writeFile(join(shim, 'git'), '#!/bin/sh\nfor arg do\n  if [ "$arg" = commit ]; then exit 1; fi\ndone\nexec /usr/bin/git "$@"\n')
+  await chmod(join(shim, 'git'), 0o700)
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  ctx.subprocess.spawn = spec => spawn(spec.argv[0].endsWith('/bin/mbot-turn')
+    ? { ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } } : spec)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('respond before host commit'))
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent), /commit/u)
+  const status = await ctx.mbotRuntime.status(agent)
+  assert.equal(status.state, 'failed')
+  assert.equal(status.lastReceipt.phase, 'failed')
+  assert.equal(status.lastReceipt.head, undefined)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).writerScope, 'agent-runtime')
+  const queued = message('must remain pending after failed audit')
+  agent.followup(queued)
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  assert.equal(agent.inbox.nextTurn[0].id, queued.id)
+})
+
+test('receipt persistence failure retains the verified Git commit and redacts private permit bytes', { timeout: 30000 }, async t => {
+  let token
+  const { ctx, ws, agent, requests } = await app(t, (_options, _count, ctx) => {
+    token = ctx.mbotRuntime.dataLease(ctx.agents.list()[0]).shellEnvironment().DSH_MBOT_PERMIT_TOKEN
+    return response('audited result')
+  })
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let failed = false
+  ctx.sessions.flush = async session => {
+    if (!failed) { failed = true; throw new Error(`receipt persistence failed ${token}`) }
+    return flush(session)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('commit then fail receipt save'))
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent), error => /receipt persistence failed/u.test(error.message) && !error.message.includes(token))
+  const status = await ctx.mbotRuntime.status(agent)
+  assert.equal(status.state, 'failed')
+  assert.equal(status.lastReceipt.phase, 'failed')
+  assert.equal(status.lastReceipt.head, git(ws, 'rev-parse', 'HEAD'))
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.ok(!JSON.stringify(status).includes(token))
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  assert.ok(!JSON.stringify(log.events).includes(token))
+  agent.followup(message('do not duplicate the already committed turn'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+})
+
+test('/mbot stop joins late writers and audit while retaining native pending input', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const { ctx, ws, agent, requests } = await app(t, (_options, count) => count === 1
+    ? response('', { name: 'stop_cleanup_writer', args: {} }) : response('queued work done'))
+  await ctx.plugin(Commands)
+  await ctx.plugin(botCommands)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  ctx.tools.register(defineTool({ name: 'stop_cleanup_writer', description: 'A foreground writer with cancellation cleanup.', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(_args, exec) {
+      entered.resolve()
+      await new Promise(resolve => exec.signal.addEventListener('abort', resolve, { once: true }))
+      await release.promise
+      await writeFile(join(ws, 'inbox/stop-cleanup.md'), 'joined stop cleanup\n')
+      return 'joined'
+    },
+  }))
+  const dispose = ctx.mbotRuntime.foregroundTool('stop_cleanup_writer')
+  t.after(dispose)
+  agent.followup(message('begin writer'))
+  await entered.promise
+  const queued = message('retain this queued request')
+  agent.followup(queued)
+  let stopped = false
+  const stopping = ctx.commands.execute(agent, '/mbot stop', [], new AbortController().signal).then(result => { stopped = true; return result })
+  assert.equal(stopped, false)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  const result = await stopping
+  assert.equal(result.result.kind, 'success', result.result.text)
+  assert.match(result.result.text, /Stop completed; queued inputs retained/u)
+  assert.equal(agent.inbox.nextTurn[0].id, queued.id)
+  assert.equal(requests.length, 1)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.match(git(ws, 'show', 'HEAD:inbox/stop-cleanup.md'), /joined stop cleanup/u)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.reason, 'aborted')
+  agent.followup(message('continue queued requests'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+})
+
+test('stop returns its captured turn receipt without waiting for work accepted by another window afterward', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const nextEntered = Promise.withResolvers()
+  const releaseNext = Promise.withResolvers()
+  t.after(() => releaseNext.resolve())
+  const { ctx, agent, requests } = await app(t, async (options, count) => {
+    if (count === 1) {
+      entered.resolve()
+      await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+    } else {
+      nextEntered.resolve()
+      await releaseNext.promise
+    }
+    return response('new work completed')
+  })
+  agent.followup(message('turn to stop'))
+  await entered.promise
+  const stopping = ctx.mbotRuntime.stop(agent)
+  agent.followup(message('another window submitted after the stop request'))
+  const result = await stopping
+  assert.equal(result.targetTurn, 1)
+  assert.equal(result.receipt.turn, 1)
+  assert.equal(result.receipt.reason, 'aborted')
+  await nextEntered.promise
+  assert.equal(requests.length, 2)
+  assert.equal(agent.status, 'running')
+  releaseNext.resolve()
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
 })

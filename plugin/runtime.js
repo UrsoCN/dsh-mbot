@@ -1,15 +1,27 @@
 import { Service } from '@deepseek-ai/cordis'
 import * as nativeBash from '@deepseek-ai/dsh-tool-bash'
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { botSections, reconcileContext, turnContext } from './context.js'
 import { redact } from './redact.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
+export const runtimeRecordType = 'plugin:mbot/runtime-turn'
+const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
+
+function validReceipt(event) {
+  const data = event.data
+  return event.type === runtimeRecordType && event.ignorable === true && data?.schemaVersion === 1
+    && typeof data.botId === 'string' && typeof data.sessionId === 'string' && Number.isSafeInteger(data.turn) && data.turn > 0
+    && receiptPhases.includes(data.phase)
+    && ['runId', 'memoryCommit', 'head', 'meta', 'reason', 'error'].every(key => data[key] === undefined || typeof data[key] === 'string')
+    && (data.success === undefined || typeof data.success === 'boolean')
+}
 
 // Agent-owned gates outlive a Runtime reload. An unavailable owner fails closed;
 // a replacement Runtime adopts the same cell rather than stacking old guards.
 const cells = new WeakMap()
-const foregroundTools = ['botctl', 'bash', 'run_code', 'read', 'read_image', 'write', 'edit', 'apply_patch', 'glob', 'grep',
+const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit', 'apply_patch', 'glob', 'grep',
   'web_search', 'web_fetch', 'ask_user_question', 'session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
 
 function requireState(cell) {
@@ -111,6 +123,7 @@ class ManagedSession {
   }
 
   observe(event) {
+    if (event.type === runtimeRecordType) return
     if (event.type === 'turn/start') {
       this.current = { turn: event.data.turn, step: 1, messages: [], events: [], calls: new Set(), ended: false,
         end: Promise.withResolvers() }
@@ -126,8 +139,8 @@ class ManagedSession {
     record.reason = event.data.reason
     record.end.resolve()
     if (record.lease || record.admission) {
-      this.pending = this.settle(record)
-      void this.pending.catch(error => { this.error = error; void this.runtime.report(error, this.botId).catch(() => {}) })
+      this.pending = record.settlement = this.settle(record)
+      void this.pending.catch(error => { this.error = error; void this.runtime.report(error, this.botId, record.lease).catch(() => {}) })
     }
   }
 
@@ -142,6 +155,7 @@ class ManagedSession {
     const record = this.current
     if (!record || record.ended) throw new Error('MBot admission requires an open Agent turn')
     if (!record.admission) {
+      record.signal = signal
       record.admission = (async () => {
         await this.pending
         signal.throwIfAborted()
@@ -153,6 +167,7 @@ class ManagedSession {
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
           requestIds: record.messages.map(message => message.source.requestId).filter(value => typeof value === 'string'),
           signal, writerScope: 'agent-runtime', onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
+        await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         for (const event of record.events) this.record(record, event)
         record.events = []
         return record
@@ -181,10 +196,42 @@ class ManagedSession {
   }
 
   async settle(record) {
-    try { await record.admission } catch { return }
-    if (!record.lease) return
-    await Promise.allSettled([...record.calls])
-    return record.lease.finish({ reason: record.reason, text: record.text ?? '' })
+    try {
+      try { await record.admission }
+      catch (error) {
+        await this.publish(record, record.signal?.aborted ? 'cancelled' : 'failed', { error: error.message ?? String(error) })
+        await this.runtime.ctx.sessions.flush(this.agent.session)
+        return
+      }
+      if (!record.lease) return
+      await Promise.allSettled([...record.calls])
+      await this.publish(record, 'auditing').catch(error => { record.feedbackError = error })
+      record.result = await record.lease.finish({ reason: record.reason, text: record.text ?? '' })
+      await this.publish(record, record.result.success ? 'committed' : 'rejected')
+      await this.runtime.ctx.sessions.flush(this.agent.session)
+      return record.result
+    } catch (error) {
+      const message = record.lease ? await record.lease.redactResult(error.message ?? String(error))
+        : await redact(error.message ?? String(error), this.runtime.ctx.mbot.bot({ botId: this.botId }).workspacePath)
+      const failure = new Error(message)
+      this.error = record.failure = failure
+      await this.publish(record, 'failed', { error: message }).catch(() => {})
+      await this.runtime.ctx.sessions.flush(this.agent.session).catch(() => {})
+      throw failure
+    } finally { record.settled = true }
+  }
+
+  async publish(record, phase, details = {}) {
+    const data = { schemaVersion: 1, botId: this.botId, sessionId: this.agent.id, turn: record.turn, phase,
+      ...(record.lease ? { runId: record.lease.identity.runId, memoryCommit: record.lease.snapshot.head } : {}),
+      ...(record.result ? { head: record.result.head, meta: record.result.meta, success: record.result.success } : {}),
+      ...(record.reason ? { reason: record.reason.kind } : {}), ...details }
+    if (data.error !== undefined) data.error = record.lease
+      ? await record.lease.redactResult(data.error)
+      : await redact(data.error, this.runtime.ctx.mbot.bot({ botId: this.botId }).workspacePath)
+    const seq = appendPluginRecord(this.agent.session, runtimeRecordType, data)
+    record.receipt = this.lastReceipt = Object.freeze({ ...data, seq })
+    return seq
   }
 
   async close() {
@@ -324,9 +371,44 @@ export class MBotRuntime extends Service {
 
   async settled(agent) { await this.states.get(agent)?.pending }
 
-  async report(error, botId) {
+  async status(agent) {
+    const state = this.states.get(agent)
+    if (!state) throw new Error('Session is not managed by the active MBot Runtime')
+    const record = state.current
+    let lastReceipt = state.lastReceipt
+    if (!lastReceipt) {
+      const log = await this.ctx.sessionQuery.readSession(agent.id)
+      const event = log.events.findLast(event => validReceipt(event) && event.data.botId === state.botId && event.data.sessionId === agent.id)
+      if (event) lastReceipt = { ...event.data, seq: event.seq }
+    }
+    const error = state.error ? record?.lease ? await record.lease.redactResult(state.error.message ?? String(state.error))
+      : await redact(state.error.message ?? String(state.error), this.ctx.mbot.bot({ botId: state.botId }).workspacePath) : undefined
+    return structuredClone({ botId: state.botId, sessionId: agent.id,
+      state: this.closed || state.closing ? 'unavailable' : error ? 'failed'
+        : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
+      queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
+      ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })
+  }
+
+  /** Cancel the captured turn; later accepted inputs remain in the native Inbox. */
+  async stop(agent, options = {}) {
+    options = { ...options }
+    options.signal?.throwIfAborted()
+    const state = this.states.get(agent)
+    if (!state || this.closed || state.closing) throw new Error('Session is not managed by the active MBot Runtime')
+    const record = state.current
+    if (record && !record.ended) {
+      agent.cancel({ kind: 'user' }, { keepInbox: true })
+      await record.end.promise
+      await record.settlement
+    } else await state.pending
+    options.signal?.throwIfAborted()
+    return { ...await this.status(agent), ...(record ? { targetTurn: record.turn, ...(record.receipt ? { receipt: structuredClone(record.receipt) } : {}) } : {}) }
+  }
+
+  async report(error, botId, lease) {
     const bot = this.ctx.mbot.bot({ botId })
-    this.ctx.logger.warn(await redact(error.message ?? String(error), bot?.workspacePath))
+    this.ctx.logger.warn(lease ? await lease.redactResult(error.message ?? String(error)) : await redact(error.message ?? String(error), bot?.workspacePath))
   }
 }
 

@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict'
+import { spawn, execFileSync } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, writeFile, access } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
+
+const { chromium } = await import(process.env.MBOT_PLAYWRIGHT_MODULE || 'playwright')
+const repo = fileURLToPath(new URL('../', import.meta.url))
+const root = await mkdtemp('/tmp/mbot-gui-runtime.')
+const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root,
+  XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'),
+  XDG_STATE_HOME: join(root, 'state'), COREPACK_HOME: join(root, 'corepack'), DSH_TELEMETRY_MODE: 'DISABLED',
+  DEEPSEEK_API_KEY: 'mbot-disposable-local-adapter-key', MBOT_GUI_RUNTIME_ROOT: root,
+  MBOT_GUI_PACKAGE: join(root, 'dsh/profiles/web/node_modules/dsh-mbot/package.json'),
+  GIT_AUTHOR_NAME: 'MBot GUI Runtime', GIT_COMMITTER_NAME: 'MBot GUI Runtime',
+  GIT_AUTHOR_EMAIL: 'mbot-tests@example.invalid', GIT_COMMITTER_EMAIL: 'mbot-tests@example.invalid' }
+delete env.MBOT_WS
+delete env.MBOT_RUN_ID
+const processes = new Set()
+function start(program, args) {
+  const child = spawn(program, args, { cwd: root, env, stdio: 'pipe' })
+  processes.add(child)
+  child.output = ''
+  child.stdout.on('data', data => { child.output += data })
+  child.stderr.on('data', data => { child.output += data })
+  child.finished = new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', code => { processes.delete(child); resolve(code) })
+  })
+  return child
+}
+async function run(program, args) {
+  const child = start(program, args)
+  const timer = setTimeout(() => child.kill('SIGKILL'), 60000)
+  let code
+  try { code = await child.finished } finally { clearTimeout(timer) }
+  assert.equal(code, 0, child.output)
+  return child.output
+}
+async function until(check, timeout = 15000) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    const value = await check()
+    if (value) return value
+    await delay(30)
+  }
+  throw new Error('Timed out waiting for GUI Runtime condition')
+}
+const exists = name => access(join(root, name)).then(() => true, () => false)
+const events = async () => (await readFile(join(root, 'events.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+let browser, page
+try {
+  const [packed] = JSON.parse(await run('npm', ['pack', repo, '--json', '--ignore-scripts', '--pack-destination', root, '--cache', join(root, 'npm-cache')]))
+  await run('dsh', ['plugin', '--profile', 'web', 'add', join(root, packed.filename), '--store-dir', join(root, 'pnpm-store'), '--ignore-scripts'])
+  await mkdir(join(root, 'documents'))
+  const patch = join(env.DSH_HOME, 'profiles/web/cordis.patch.yml')
+  await writeFile(patch, `- id: workspace-controller\n  config:\n    documentsDirectory: ${join(root, 'documents')}\n- id: agent-default-model\n  config:\n    provider: mbot-ui-fixture\n    model: scripted\n- insert:\n    - id: mbot-runtime-fixture\n      name: ${join(repo, 'tests/gui-runtime-fixture.mjs')}\n`)
+  async function host() {
+    const child = start('dsh', ['--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port', '0'])
+    const url = await until(() => /dsh web: (http:\/\/\S+)/u.exec(child.output)?.[1])
+    await until(() => exists('fixture-ready')).catch(async error => { await writeFile(join(root, 'host.log'), child.output); throw error })
+    return { child, url }
+  }
+  let server = await host()
+  browser = await chromium.launch({ headless: true })
+  const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } })
+  page = await context.newPage()
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto(server.url)
+  await page.locator('[contenteditable=true]').waitFor()
+  await page.getByRole('button', { name: '继续', exact: true }).waitFor({ timeout: 3000 }).then(() => page.getByRole('button', { name: '继续', exact: true }).click(), () => {})
+  async function send(text) { const input = page.locator('[contenteditable=true]'); await input.fill(text); await input.press('Enter') }
+  async function command(text) {
+    const before = (await events()).filter(row => row.event.type === 'command/done').length
+    await send(text)
+    return until(async () => {
+      const rows = (await events()).filter(row => row.event.type === 'command/done')
+      return rows.length > before ? rows.at(-1).event.data.text : undefined
+    })
+  }
+  const ws = join(root, 'GUI Bot')
+  const init = await command(`/mbot init ${ws}`)
+  const sessionId = /^Main Session: (session-[0-9a-f-]+)$/mu.exec(init)[1]
+  await command('/mbot runtime')
+  const git = (...args) => execFileSync('git', ['-C', ws, ...args], { encoding: 'utf8' }).trim()
+  const firstBase = git('rev-parse', 'HEAD')
+  await send('hold audit')
+  await until(() => exists('audit-waiting'))
+  const audit = turn => page.locator(`[data-mbot-audit="${turn}"]`)
+  await until(async () => await audit(1).getAttribute('data-phase') === 'auditing')
+  assert.equal(git('rev-parse', 'HEAD'), firstBase)
+  assert.ok((await command('/mbot runtime')).includes('MBot Runtime: auditing'))
+  await page.screenshot({ path: join(root, 'audit-pending.png'), fullPage: true })
+  await writeFile(join(root, 'release-audit'), '')
+  await until(async () => await audit(1).getAttribute('data-phase') === 'committed' && await audit(1).isVisible())
+  assert.ok((await audit(1).innerText()).includes(git('rev-parse', 'HEAD').slice(0, 12)))
+
+  await send('slow writer')
+  await until(() => exists('writer-started'))
+  await send('queued after writer')
+  await until(async () => (await command('/mbot runtime')).includes('Queued: 1 next-turn'))
+  const stopBase = git('rev-parse', 'HEAD')
+  // This is the native composer Stop button, through conversation.cancel → session.cancel.
+  const stop = page.getByRole('button', { name: /停止|Stop/u })
+  await stop.last().click()
+  await until(() => exists('writer-cancelled'))
+  assert.equal(git('rev-parse', 'HEAD'), stopBase)
+  await writeFile(join(root, 'release-writer'), '')
+  await until(async () => await audit(2).getAttribute('data-phase') === 'rejected')
+  assert.match(await audit(2).innerText(), /已停止|stopped/u)
+  assert.ok((await command('/mbot runtime')).includes('Queued: 1 next-turn'))
+  assert.match(await command('/mbot stop'), /Stop completed; queued inputs retained/u)
+  await send('wake')
+  await until(async () => await audit(4).getAttribute('data-phase') === 'committed')
+  assert.equal(git('rev-list', '--count', `${firstBase}..HEAD`), '4')
+  await page.screenshot({ path: join(root, 'native-stop-and-audits.png'), fullPage: true })
+
+  const beforeFailure = git('rev-parse', 'HEAD')
+  await writeFile(join(root, 'fail-next-commit'), '')
+  await send('fail audit')
+  await until(async () => await audit(5).getAttribute('data-phase') === 'failed')
+  assert.match(await audit(5).innerText(), /commit failed/u)
+  assert.equal(git('rev-parse', 'HEAD'), beforeFailure)
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).writerScope, 'agent-runtime')
+  assert.match(await command('/mbot runtime'), /MBot Runtime: failed/u)
+  const second = await context.newPage()
+  await second.goto(`${server.url}#mbot-session=${sessionId}`)
+  await second.locator('[data-mbot-audit="5"][data-phase="failed"]').waitFor()
+  await page.reload()
+  await audit(5).waitFor()
+  assert.equal(await page.locator('[data-mbot-audit]').count(), 5)
+  await page.screenshot({ path: join(root, 'audit-failure-replay.png'), fullPage: true })
+  await second.close()
+  const calls = (await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length
+  assert.equal(calls, 5)
+  assert.deepEqual(errors, [])
+  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/no-external-model')
+} catch (error) {
+  if (page) { await page.screenshot({ path: join(root, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(root, 'failure.txt'), await page.locator('body').innerText()).catch(() => {}) }
+  throw error
+} finally {
+  await browser?.close()
+  for (const child of processes) child.kill('SIGINT')
+  await Promise.allSettled([...processes].map(child => child.finished))
+  console.log(`GUI Runtime artifacts: ${root}`)
+}

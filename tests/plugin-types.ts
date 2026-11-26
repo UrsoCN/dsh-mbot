@@ -28,3 +28,7 @@ ctx.plugin(runtime)
 declare const managedAgent: import('@deepseek-ai/dsh-agent').Agent
 ctx.mbotRuntime.attach(managedAgent, { botId: 'example' })
 ctx.mbotRuntime.settled(managedAgent)
+const runtimeStatus: Promise<runtime.RuntimeStatus> = ctx.mbotRuntime.status(managedAgent)
+const stopped: Promise<runtime.RuntimeStopResult> = ctx.mbotRuntime.stop(managedAgent, { signal: new AbortController().signal })
+void runtimeStatus
+void stopped

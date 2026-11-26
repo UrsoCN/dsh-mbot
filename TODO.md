@@ -10,12 +10,12 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
 
-Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；Worker、统一消息与睡眠/checkpoint 尚未交付。
+Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，Worker、统一消息与睡眠/checkpoint 尚未交付。
 
 - [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
 - [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
-- [ ] 接齐 Worker 的固定角色快照、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
-- [ ] 补齐主 Session 的审计结果反馈、默认保留待办的原生取消入口，以及 Runtime 生命周期命令；不将模型已输出或 agent.whenIdle 视为 Host 验收成功
+- [ ] 接齐 Worker 的固定角色快照、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，验收真实 PTC/run_code（其保留名称不能用自定义工具覆盖），保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
+- [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期；区分显式用户停止与故障计数，避免用户停止触发三次熔断
 - [ ] 将已验证的数据 turn 恢复扩展到 Runtime/Agent/Worker：明确所有写者的所有权及静止证明，协调会话事件与 checkpoint；不将现有 data-subprocesses 的进程核实视为全部工具/IPC 写者已覆盖
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
 - [ ] 在列表/管理页主动检查缺失/归档实体，显示修复入口；已完成调用 Session 路由、持久绑定与 open/repair，继续验收多 Host writer-held、实体意外返回与故障重启

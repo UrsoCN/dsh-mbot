@@ -92,6 +92,8 @@ async function probe(ctx) {
     await managed.agent.whenIdle()
     await ctx.mbotRuntime.settled(managed.agent)
     if (runtimeCalls !== 2) throw new Error(`installed Runtime made ${runtimeCalls} calls; expected tool and final response`)
+    const runtimeStatus = await ctx.mbotRuntime.status(managed.agent)
+    if (runtimeStatus.state !== 'idle' || runtimeStatus.lastReceipt?.phase !== 'committed' || !runtimeStatus.lastReceipt.head) throw new Error('installed Runtime audit receipt missing')
     const { readdir, readFile } = await import('node:fs/promises')
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')

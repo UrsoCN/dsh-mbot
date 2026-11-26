@@ -39,7 +39,7 @@ Host 的管理调用串行；跨进程使用现有 Bot `.mbot/lock`，与数据 
 
 成功打开只监听当前浏览器的 `command/executed` 回执，并在 composer 提交结束后交给 uiWorkspace。Session 广播、重放和其他标签页不会自动导航。A 的主 Session 始终路由到 A，默认选择 B 不会将它改成 B。新消息仍由 DSH Inbox 串行，Bot 数据由 Runtime lease 保护。
 
-主会话目前支持原生直接对话、受管理上下文和前台工具。原生默认取消入口、审计失败反馈、Worker、来源/收据/可见域、自动/手动 compact 与睡眠恢复尚未全部接齐；不宣称该阶段完成了整个 0.2 生命周期。
+主会话目前支持原生直接对话、受管理上下文和前台工具。[原生取消与审计反馈](runtime-feedback.md) 已验收；Worker、来源/收据/可见域、自动/手动 compact 与睡眠恢复仍待实现；不宣称该阶段完成了整个 0.2 生命周期。
 
 ## 验证
 

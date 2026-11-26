@@ -3,7 +3,7 @@ import { nativeBindingAvailable, sessionResult } from './binding.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | select <botId or name> | open [botId or name] | repair [botId or name] | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -14,7 +14,7 @@ export function commandArgs(raw) {
   if (action === 'help') return null
   if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
   if (action === 'recover' && !rest) return { program: 'host', argv: ['recover'] }
-  if (['open', 'repair'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
+  if (['open', 'repair', 'runtime', 'stop'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
   if (['import', 'select'].includes(action)) {
     if (!rest) throw new Error(usage)
     return { program: 'host', argv: [action, rest] }
@@ -38,6 +38,26 @@ export function apply(ctx) {
         if (!command) return { kind: 'success', text: usage }
         const options = { signal: invocation.signal, sessionId: invocation.agent?.id ?? invocation.agent?.session?.id }
         if (command.program === 'host') {
+          if (['runtime', 'stop'].includes(command.argv[0])) {
+            const runtime = ctx.get('mbotRuntime')
+            if (!runtime) throw new Error('MBot Runtime is unavailable')
+            let agent = invocation.agent
+            if (command.argv[1] || !runtime.managed(agent)) {
+              const bot = command.argv[1] ? ctx.mbot.bot({ botId: command.argv[1] }) : ctx.mbot.bot(options)
+              if (!bot?.mainSessionId) throw new Error('Bot has no main Session. Use /mbot open or /mbot repair.')
+              const controller = ctx.get('sessionController')
+              if (!controller) throw new Error('DSH Session Controller is unavailable')
+              const resolved = await controller.resolveAgent(bot.mainSessionId)
+              if ('error' in resolved) throw resolved.error
+              agent = resolved.agent
+            }
+            const status = command.argv[0] === 'stop' ? await runtime.stop(agent, options) : await runtime.status(agent)
+            const receipt = command.argv[0] === 'stop' ? status.receipt ?? status.lastReceipt : status.lastReceipt
+            return { kind: status.state === 'failed' ? 'error' : 'success', text: await redact(
+              `${command.argv[0] === 'stop' ? 'Stop completed; queued inputs retained.\n' : ''}MBot Runtime: ${status.state}\nBot: ${status.botId}\nSession: ${status.sessionId}\nQueued: ${status.queued.nextTurn} next-turn, ${status.queued.nextStep} next-step\n`
+              + (receipt ? `Last audit: turn ${receipt.turn}, ${receipt.phase}${receipt.head ? `, commit ${receipt.head}` : ''}\n` : 'No managed audit yet.\n')
+              + (status.error ? `${status.error}\n` : '')) }
+          }
           if (command.argv[0] === 'list') return { kind: 'success', text: await ctx.mbot.describeBots() }
           if (command.argv[0] === 'recover') {
             const result = await ctx.mbot.recoverTurn(options)

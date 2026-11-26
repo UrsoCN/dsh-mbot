@@ -83,7 +83,7 @@ SOUL/MEMORY 不是对话摘要的一部分；改版本后，下次请求使用�
 4. 复用一个 DSH Agent/Session writer，不为每个窗口再 create。已开始的主 Session 用 resolve/resume；DSH create 的命名 Session 复用只针对仍可复用的 blank，不能把 create 当通用 resume。另一 Host 持 writer 时报告占用，不回退创建重复主 Session。
 5. 每个 turn 捕获上下文/数据基准，按既有 guard 语义验收、回滚与提交；配置及记忆更新只在边界生效，非受控文件变更暂停复核，不静默混入上下文。
 6. 当前运行身份和 MBOT_WS/MBOT_RUN_ID 等按 Agent/子进程显式传递；持久多 Bot Host 不把它们写入全局 process.env。工具用当前运行权限，过期 owner/generation 的结果不得提交。
-7. 关闭窗口、断网只退出观察/等待，不取消共享执行。取消走专用控制通道，默认保留已接收待办；明确清队列才丢弃，并记录收据状态。不能直接套用默认会清 Inbox 的 cancel 行为。
+7. 关闭窗口、断网只退出观察/等待，不取消共享执行。取消走专用控制通道，默认保留已接收待办；明确清队列才丢弃，并记录收据状态。低层 Agent.cancel 默认会清 Inbox；本机 Web 的原生 session.cancel 已传 keepInbox=true，MBot stop 等待被捕获回合的 Host 验收，见 [反馈](runtime-feedback.md)。
 
 实现时必须验证可阻塞准入的公共挂钩。DSH agent/pre-step 可检查/等待，但消息在此之前可能已 claim，不能把“繁忙”当 reject 造成已接收消息消失；也不能只监听 inserted 事后事件就声称所有入口已收口。若需要门面前缓冲，明确唯一权威队列及转交恢复协议。
 
