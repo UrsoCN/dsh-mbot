@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -37,6 +37,10 @@ async function probe(ctx) {
     await ctx.mbot.selectBot(bot.botId)
     const importedAgain = await ctx.mbot.importBot(ctx.mbot.workspace())
     if (importedAgain.botId !== bot.botId || ctx.mbot.registry().bots.length !== 1) throw new Error('Bot import was not idempotent')
+    const turn = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 1, request: 'installed transaction bridge' })
+    await turn.execute('botctl', ['remember', 'installed managed candidate', '--as', 'chief'])
+    const turnResult = await turn.finish({ reason: { kind: 'completed' }, text: 'installed transaction succeeded' })
+    if (!turnResult.success) throw new Error('installed transaction bridge failed')
     const definition = ctx.tools.get('botctl')
     if (!definition) throw new Error('native botctl tool missing')
     const signal = new AbortController().signal

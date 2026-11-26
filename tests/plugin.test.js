@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -373,6 +373,153 @@ test('registry revisions and invalid persisted references reject without changin
     assert.deepEqual(ctx.mbot.registry(), before)
   }
   assert.equal(ctx.mbot.workspace(), ws)
+})
+
+test('managed turn pins context, lets its tools mutate without requeue, and makes one audited commit', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'managed-session', turn: 1, request: 'create a task', requestIds: ['request-one'] })
+  assert.equal(lease.snapshot.head, base)
+  assert.equal(lease.snapshot.memory, await readFile(join(ws, 'MEMORY.md'), 'utf8'))
+  assert.ok(Object.isFrozen(lease.snapshot))
+  assert.equal((await lease.execute('botctl', ['board', 'add', 'managed task'])).exitCode, 0)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal((await lease.execute('botctl', ['remember', 'managed candidate', '--as', 'chief'])).exitCode, 0)
+  const finish = lease.finish({ reason: { kind: 'completed' }, text: 'task created' })
+  assert.equal(lease.finish({ reason: { kind: 'error' }, text: 'duplicate finish' }), finish)
+  const result = await finish
+  assert.equal(result.success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  const meta = JSON.parse(await readFile(join(ws, result.meta), 'utf8'))
+  assert.equal(meta.base_head, base)
+  assert.equal(meta.runtime.bot_id, bot.botId)
+  assert.equal(meta.session_id, 'managed-session')
+  assert.deepEqual(meta.runtime.request_ids, ['request-one'])
+  await assert.rejects(lease.execute('botctl', ['board', 'add', 'late task']), /closed/u)
+  await assert.rejects(access(join(ws, '.mbot/runs/active-turn.json')))
+})
+
+test('managed turn rejects stale permits and restores forbidden memory and HEAD changes', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const original = await readFile(join(ws, 'MEMORY.md'), 'utf8')
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'guard-session', turn: 1, request: 'guard test' })
+  const permit = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  await writeFile(join(ws, 'MEMORY.md'), 'forbidden memory overwrite\n')
+  git(ws, 'add', 'MEMORY.md')
+  git(ws, 'commit', '-m', 'illegal Agent commit')
+  const result = await lease.finish({ reason: { kind: 'completed' }, text: 'claimed success' })
+  assert.equal(result.success, false)
+  assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), original)
+  assert.equal(git(ws, 'rev-parse', 'HEAD^'), base)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  const meta = JSON.parse(await readFile(join(ws, result.meta), 'utf8'))
+  assert.ok(meta.violations.some(value => value.reason === 'head_moved'))
+  assert.ok(meta.violations.some(value => value.path === 'MEMORY.md'))
+  const stale = await ctx.mbot.execute('botctl', ['board', 'add', 'late token'], { workspace: ws, permit: { runId: permit.runId, token: permit.token } })
+  assert.equal(stale.exitCode, 1)
+  assert.match(stale.stderr, /no longer active/u)
+})
+
+test('another Host waits for the Bot lease and queued cancellation does not start a turn', async t => {
+  const first = await app(t)
+  await configEditor(first.ctx, first.owner, first.ws)
+  const bot = await first.ctx.mbot.importBot(first.ws)
+  const second = await app(t)
+  await configEditor(second.ctx, second.owner, second.ws)
+  const other = await second.ctx.mbot.importBot(first.ws)
+  const lease = await first.ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'first-writer', turn: 1, request: 'first' })
+  const abort = new AbortController()
+  const waiting = second.ctx.mbot.beginTurn({ botId: other.botId, sessionId: 'second-writer', turn: 1, request: 'second', signal: abort.signal })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  abort.abort(new Error('queue cancelled'))
+  await assert.rejects(waiting)
+  assert.equal((await lease.finish({ reason: { kind: 'completed' }, text: 'first done' })).success, true)
+  const next = await second.ctx.mbot.beginTurn({ botId: other.botId, sessionId: 'second-writer', turn: 2, request: 'after lease' })
+  assert.equal((await next.finish({ reason: { kind: 'completed' }, text: 'next done' })).success, true)
+})
+
+test('managed audit records Session tool/usage events and redacts private credential literals', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const secret = 'managed-private-credential-123456'
+  await writeFile(join(ws, '.env'), `DEEPSEEK_API_KEY=${secret}\n`)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'audit-session', turn: 1, request: `request ${secret}` })
+  await lease.record({ type: 'tool/call', seq: 1, time: Date.now(), data: { turn: 1, step: 1, callId: 'audit-tool', name: 'botctl', arguments: JSON.stringify({ action: 'remember', text: secret }) } })
+  await lease.record({ type: 'tool/result', seq: 2, time: Date.now(), data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: secret }] } } })
+  await lease.record({ type: 'assistant/message', seq: 3, time: Date.now(), data: { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 8, totalTokens: 15 } } })
+  const result = await lease.finish({ reason: { kind: 'completed' }, text: secret })
+  const meta = await readFile(join(ws, result.meta), 'utf8')
+  const transcript = await readFile(join(ws, result.transcript), 'utf8')
+  assert.doesNotMatch(meta + transcript, new RegExp(secret, 'u'))
+  assert.match(transcript, /\[REDACTED\]/u)
+  assert.match(transcript, /botctl/u)
+  assert.equal(JSON.parse(meta).usage.total_tokens, 15)
+  assert.ok((await readFile(join(ws, '.mbot/runs', `${result.runId}.session.jsonl`), 'utf8')).includes(secret))
+})
+
+test('managed cancellation joins a waiting data tool before auditing and releasing the lease', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'cancel-session', turn: 1, request: 'cancel work' })
+  const blocker = spawn('flock', [join(ws, '.mbot/botctl.lock'), 'sh', '-c', 'printf ready; cat'], { stdio: 'pipe' })
+  t.after(() => blocker.kill('SIGKILL'))
+  await new Promise(resolve => blocker.stdout.once('data', resolve))
+  const pending = assert.rejects(lease.execute('botctl', ['board', 'add', 'must not complete']), /Managed turn cancelled/u)
+  await new Promise(resolve => setTimeout(resolve, 100))
+  const completion = lease.cancel()
+  blocker.stdin.end()
+  await pending
+  assert.equal((await completion).success, false)
+  assert.doesNotMatch(await readFile(join(ws, 'BOARD.md'), 'utf8'), /must not complete/u)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  await assert.rejects(access(join(ws, '.mbot/runs/active-turn.json')))
+})
+
+test('dirty admission is rejected, while a disconnected writer preserves recovery evidence and blocks new writes', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const options = { botId: bot.botId, sessionId: 'disconnected-session', turn: 1, request: 'disconnection' }
+  await writeFile(join(ws, 'uncommitted'), 'human pending data\n')
+  await assert.rejects(ctx.mbot.beginTurn(options), /clean before managed turn/u)
+  await rm(join(ws, 'uncommitted'))
+  const lease = await ctx.mbot.beginTurn(options)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  lease.child.stdin.end()
+  await lease.child.done
+  const ledger = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  t.after(() => rm(ledger.scratch, { recursive: true, force: true }))
+  assert.equal(ledger.phase, 'abandoned')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
+  await assert.rejects(ctx.mbot.beginTurn({ ...options, turn: 2 }), /needs recovery/u)
+  assert.equal((await ctx.mbot.execute('botctl', ['board', 'show'])).exitCode, 0)
+  assert.equal((await ctx.mbot.execute('botctl', ['board', 'add', 'unsafe human retry'])).exitCode, 1)
+  assert.equal((await ctx.mbot.execute('mbot', ['resume'])).exitCode, 1)
+})
+
+test('stalled finalization is bounded and keeps a paused recovery journal', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'stalled-session', turn: 1, request: 'stalled commit', finalizationTimeoutMs: 100 })
+  const blocker = spawn('flock', [join(ws, '.mbot/botctl.lock'), 'sh', '-c', 'printf ready; cat'], { stdio: 'pipe' })
+  t.after(() => blocker.kill('SIGKILL'))
+  await new Promise(resolve => blocker.stdout.once('data', resolve))
+  await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: 'not committed' }))
+  blocker.stdin.end()
+  const ledger = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  t.after(() => rm(ledger.scratch, { recursive: true, force: true }))
+  assert.equal(ledger.phase, 'abandoned')
+  assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
 })
 
 test('live workspace config is captured per operation and unloading removes tools and commands', async t => {

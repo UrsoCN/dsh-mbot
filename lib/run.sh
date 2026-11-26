@@ -23,6 +23,7 @@ mbot_resume() {
   lock=$(mbot_path .mbot/lock); paused=$(mbot_path .mbot/PAUSED)
   exec 8> "$lock"
   flock -n 8 || { mbot_error 'a run is active; resume after it finishes'; return 1; }
+  mbot_require_no_turn
   rm -f -- "$paused"
   printf '0\n' > "$(mbot_path .mbot/failures)"
   printf 'Resumed; consecutive failures reset.\n'
@@ -63,6 +64,7 @@ mbot_execute() {
   lock=$(mbot_path .mbot/lock)
   exec 8> "$lock"
   if ! flock -n 8; then printf 'Skipped: another run is active.\n'; return 0; fi
+  mbot_require_no_turn
   if [[ -f $(mbot_path .mbot/PAUSED) ]]; then printf 'Skipped: workspace is PAUSED.\n'; return 0; fi
   MBOT_GIT_DIR=$(realpath -e -- "$(git -C "$MBOT_WS" rev-parse --absolute-git-dir)")
   MBOT_GIT_INODE=$(stat -c '%d:%i' "$MBOT_GIT_DIR")

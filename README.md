@@ -8,6 +8,8 @@ DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记�
 
 dev 分支已推进实例登记：`/mbot list`、`/mbot import <目录>`、`/mbot select <botId 或名称>` 可用，插件 init 同时登记稳定 Bot 身份；这些变更尚未进入发布标签。登记和选择会按 profile 保存，DSH 工作区/主 Session 绑定仍待实现。详见 [实例登记](docs/bot-instances.md)。
 
+dev 也已实现供主 Session 使用的 [turn 事务基础](docs/turn-transactions.md)，尚未接入实际会话的上下文、工具和生命周期；当前仍使用独立 headless run。
+
 ## 通过 DSH 安装
 
 支持 Linux/WSL 的本地环境，Node.js 22+，实测 DSH 0.2.2-rc.5。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8；先配置 Git 姓名/邮箱。框架不安装系统依赖。

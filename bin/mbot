@@ -13,6 +13,7 @@ source "$MBOT_ROOT/lib/run.sh"
 source "$MBOT_ROOT/lib/dream.sh"
 source "$MBOT_ROOT/lib/schedule.sh"
 source "$MBOT_ROOT/lib/ops.sh"
+source "$MBOT_ROOT/lib/permit.sh"
 if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2
@@ -24,6 +25,7 @@ case ${1:---help} in
     command=$1; shift
     if [[ ( $command == run || $command == tick || $command == archive || $command == dream ) && -v MBOT_RUN_ID ]]; then mbot_error "nested mbot $command is forbidden (MBOT_RUN_ID is set)"; exit 1; fi
     mbot_load_workspace
+    [[ ! -v MBOT_PERMIT_TOKEN ]] || mbot_check_permit 0
     "mbot_$command" "$@" ;;
   *) mbot_error "unknown command: $1 (use --help)"; exit 2 ;;
 esac

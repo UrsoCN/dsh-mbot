@@ -6,6 +6,7 @@ import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { redact } from './redact.js'
 import { BotRegistry, BotRegistrySchema, emptyRegistry, findBot, registration, revise, uniqueName } from './instances.js'
+import { openTurn } from './turn.js'
 
 export const name = 'mbot'
 export const inject = ['subprocess']
@@ -26,9 +27,11 @@ export class MBotService extends Service {
     this.ownerContext = ctx
     this.initializing = Promise.resolve()
     this.active = new Set()
+    this.leases = new Set()
     this.closed = false
     ctx.effect(() => async () => {
       this.closed = true
+      await Promise.allSettled([...this.leases].map(lease => lease.cancel('MBot plugin disposed')))
       for (const child of this.active) child.terminate()
       await Promise.allSettled([...this.active].map(child => child.waitForExit()))
     })
@@ -181,6 +184,14 @@ export class MBotService extends Service {
     // The provider scrubs ambient credentials/DSH identity. Forward only facts these scripts need.
     const env = { DSH_HOME: process.env.DSH_HOME, DSH_TELEMETRY_MODE: process.env.DSH_TELEMETRY_MODE,
       PATH: `${join(packageRoot, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}` }
+    if (options.permit) {
+      if (!(program === 'botctl' || (program === 'mbot' && args[0] === 'status'))
+        || typeof options.permit.runId !== 'string' || !/^[0-9A-Za-z-]+$/u.test(options.permit.runId)
+        || !/^[a-f0-9]{64}$/u.test(options.permit.token) || !workspace) throw new Error('Invalid managed data permit')
+      env.MBOT_RUN_ID = options.permit.runId
+      env.MBOT_PERMIT_TOKEN = options.permit.token
+      env.MBOT_WS = workspace
+    }
     if (program === 'mbot' && ['run', 'tick', 'dream'].includes(args[0])) {
       env.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
     }
@@ -203,6 +214,13 @@ export class MBotService extends Service {
       await child.waitForExit()
       this.active.delete(child)
     }
+  }
+
+  beginTurn(options) {
+    if (this.closed) return Promise.reject(new Error('mbot plugin is disposed'))
+    const bot = this.bot(options)
+    if (!bot) return Promise.reject(new Error('Managed turn requires a registered Bot'))
+    return openTurn(this, packageRoot, bot, { ...options })
   }
 }
 

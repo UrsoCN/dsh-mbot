@@ -44,6 +44,7 @@ mbot_archive() {
   if [[ -f $(mbot_path .mbot/PAUSED) ]]; then printf 'Skipped: workspace is PAUSED.\n'; return 0; fi
   exec 8> "$(mbot_path .mbot/lock)"
   if ! flock -n 8; then printf 'Skipped: another run is active.\n'; return 0; fi
+  mbot_require_no_turn
   exec 9> "$(mbot_path .mbot/botctl.lock)"
   flock 9
   MBOT_GIT_DIR=$(realpath -e -- "$(git -C "$MBOT_WS" rev-parse --absolute-git-dir)")

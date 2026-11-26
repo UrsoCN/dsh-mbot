@@ -10,6 +10,8 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
 
+Host 的 turn 事务桥及数据工具 permit 已实现并验收，见 [事务基础](docs/turn-transactions.md)；尚未接入 Agent/Worker，也未完成恢复，不能视为主 Session 已交付。
+
 - [ ] 在已有实例 API 上补齐 DSH 实体创建/修复与相应命令，完成部分失败的状态记录和重试
 - [ ] 插件 /mbot init 自动完成数据仓库初始化、DSH 工作区登记、Chief 主 Session 创建和绑定；CLI mbot init 继续只初始化数据仓库
 - [ ] 完成后显示结果与主 Session 链接，默认打开新 Bot 的主 Session；保留发起命令的旧会话；初始化本身不调用模型
@@ -17,7 +19,8 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 - [ ] 为已校验导入的旧仓库补建 DSH 工作区/Session 绑定；迁移识别数据版本并保留原 Git、角色、记忆和看板
 - [ ] 实现受管理的真实主 Session：版本化 SOUL/MEMORY、近期摘要/尾部、本次请求与 DSH 必需上下文；按 Agent scope 注册并验证旧快照的 shadow/projection，详见 [Session Runtime](docs/session-runtime.md)
 - [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
-- [ ] 接入 Bot 级租约、每轮数据基准/guard/提交；运行内数据工具走活动权限，不重入外部队列；按 Agent/子进程传环境，不用全局 process.env 保存多 Bot 运行身份
+- [ ] 在真实 Agent/Worker 与全部工具路径接入已验证的 turn 事务桥；组装上下文前取得租约，结束后静止所有写者并验收/提交；按 Agent/子进程传权限，不用全局 process.env 保存多 Bot 身份
+- [ ] 完成遗留 turn journal 的恢复/补偿：核实存活写者、私有快照和 Git/commit 阶段，不以删除 journal 或普通 resume 掩盖未确定现场
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
 - [ ] 按调用 Session 的绑定选 Bot，避免一个面板的全局选择重定向其他 Bot 会话；重启恢复绑定，缺失/归档 Session 显示修复入口
 - [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在

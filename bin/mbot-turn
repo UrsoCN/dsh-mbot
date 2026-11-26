@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Host-only NDJSON transaction bridge. One process owns the Bot lock throughout a turn.
+set -Eeuo pipefail
+shopt -s nullglob globstar
+umask 077
+MBOT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
+for library in config ws lint board guard render run dream schedule ops permit; do source "$MBOT_ROOT/lib/$library.sh"; done
+[[ $# == 3 && $1 == -C ]] || { mbot_error 'usage: mbot-turn -C directory role (Host protocol on stdin)'; exit 2; }
+[[ ! -v MBOT_RUN_ID ]] || { mbot_error 'nested managed turn is forbidden'; exit 1; }
+MBOT_CLI_WS=$2 role=$3
+mbot_load_workspace
+mbot_role "$role"
+[[ $role != human ]] || { mbot_error 'managed turn requires a Bot role'; exit 1; }
+ledger=$(mbot_turn_ledger)
+exec 8> "$(mbot_path .mbot/lock)"
+# Wait rather than rejecting input that DSH may already have claimed.
+flock 8
+mbot_require_no_turn
+[[ ! -f $(mbot_path .mbot/PAUSED) ]] || { mbot_error 'workspace is PAUSED'; exit 1; }
+MBOT_GIT_DIR=$(realpath -e -- "$(git -C "$MBOT_WS" rev-parse --absolute-git-dir)")
+MBOT_GIT_INODE=$(stat -c '%d:%i' "$MBOT_GIT_DIR")
+[[ -z $(mbot_git status --porcelain) ]] || { mbot_error 'workspace must be clean before managed turn'; exit 1; }
+mbot_lint >/dev/null
+MBOT_BASE=$(mbot_git rev-parse HEAD)
+MBOT_BASE_REF=$(mbot_git symbolic-ref -q HEAD || true)
+MBOT_MODE=run
+MBOT_RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-turn-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+MBOT_SCRATCH=$(mktemp -d /tmp/mbot-turn.XXXXXX)
+open=0 settled=0
+write_ledger() {
+  local phase=$1 temp
+  temp=$(mktemp "$MBOT_WS/.mbot/runs/active-turn.XXXXXX")
+  printf '%s' "$phase" | jq -Rs --slurpfile original "$MBOT_SCRATCH/ledger.json" '. as $phase | $original[0] + {phase:$phase}' > "$temp"
+  mv -- "$temp" "$ledger"
+}
+cleanup() {
+  local code=$?
+  trap - EXIT ERR INT TERM HUP
+  if ((open && !settled)); then
+    # Tools may still exist after Host loss. Preserve evidence; never race them with rollback.
+    mbot_mark_paused 'Managed turn interrupted; inspect active-turn.json and surviving work before recovery.' || true
+    write_ledger abandoned || true
+    printf 'mbot: managed turn abandoned; recovery evidence: %s\n' "$MBOT_SCRATCH" >&2
+  else rm -rf -- "$MBOT_SCRATCH"
+  fi
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+IFS= read -r -t "$MBOT_TIMEOUT" header || { mbot_error 'missing managed turn header'; exit 1; }
+printf '%s' "$header" > "$MBOT_SCRATCH/header.json"
+jq -e 'def line: type=="string" and length>0 and (test("[\u0000\r\n]")|not);
+  .kind=="begin" and .schemaVersion==1 and (.botId|line) and (.sessionId|line)
+  and (.turn|type)=="number" and .turn>0 and (.turn|floor)==.turn and (.request|type)=="string"
+  and (.requestIds|type)=="array" and all(.requestIds[]; line)' "$MBOT_SCRATCH/header.json" >/dev/null
+mkdir -p -- "$(mbot_path .mbot/runs)"
+exec 9> "$(mbot_path .mbot/botctl.lock)"
+flock 9
+MBOT_PERMIT_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+printf '%s' "$MBOT_PERMIT_TOKEN" | jq -Rs . > "$MBOT_SCRATCH/token.json"
+MBOT_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+start=$(date +%s%3N)
+jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" \
+  --arg scratch "$MBOT_SCRATCH" --arg ws "$MBOT_WS" --argjson pid "$$" --argjson expires "$((start+MBOT_TIMEOUT*1000))" --slurpfile token "$MBOT_SCRATCH/token.json" \
+  --arg gitDir "$MBOT_GIT_DIR" --arg gitInode "$MBOT_GIT_INODE" --arg locks "$(stat -c '%d:%i' "$MBOT_WS/.mbot/lock" "$MBOT_WS/.mbot/botctl.lock")" \
+  --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:1,phase:"active",runId:$id,token:$token[0],
+    botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,
+    baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,workspace:$ws,pid:$pid,expiresAt:$expires}' > "$MBOT_SCRATCH/ledger.json"
+write_ledger active
+open=1
+: > "$MBOT_SCRATCH/violations.jsonl"
+: > "$MBOT_SCRATCH/session-events.jsonl"
+: > "$MBOT_SCRATCH/stderr"
+printf '[]\n' > "$MBOT_SCRATCH/grants.json"
+export MBOT_PERMIT_TOKEN
+mbot_capture_secrets
+mbot_guard_snapshot
+base_failures=$(mbot_failure_count)
+for file in AGENTS.md MEMORY.md BOARD.md "bots/$role/SOUL.md" "bots/$role/MEMORY.md"; do
+  mbot_git show "$MBOT_BASE:$file" > "$MBOT_SCRATCH/$(basename "$file").${file//\//_}"
+done
+jq -n --arg head "$MBOT_BASE" --arg role "$role" --arg workspace "$MBOT_WS" \
+  --rawfile protocol "$MBOT_SCRATCH/AGENTS.md.AGENTS.md" --rawfile memory "$MBOT_SCRATCH/MEMORY.md.MEMORY.md" \
+  --rawfile board "$MBOT_SCRATCH/BOARD.md.BOARD.md" --rawfile soul "$MBOT_SCRATCH/SOUL.md.bots_${role}_SOUL.md" \
+  --rawfile roleMemory "$MBOT_SCRATCH/MEMORY.md.bots_${role}_MEMORY.md" \
+  '{head:$head,role:$role,workspace:$workspace,protocol:$protocol,soul:$soul,memory:$memory,roleMemory:$roleMemory,board:$board}' \
+  | mbot_scrub > "$MBOT_SCRATCH/context.json"
+jq -cn --slurpfile ledger "$MBOT_SCRATCH/ledger.json" --slurpfile context "$MBOT_SCRATCH/context.json" \
+  '{kind:"ready",runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}'
+flock -u 9
+while IFS= read -r -t "$MBOT_TIMEOUT" frame; do
+  printf '%s' "$frame" > "$MBOT_SCRATCH/frame.json"
+  kind=$(jq -er .kind "$MBOT_SCRATCH/frame.json")
+  if [[ $kind == event ]]; then
+    jq -ec '.event | select(type=="object" and (.type|type)=="string")' "$MBOT_SCRATCH/frame.json" >> "$MBOT_SCRATCH/session-events.jsonl"
+    continue
+  fi
+  [[ $kind == finish ]] || { mbot_error 'unknown managed turn frame'; exit 1; }
+  jq -e --slurpfile token "$MBOT_SCRATCH/token.json" '.token==$token[0] and (.reason.kind|type)=="string" and (.text|type)=="string"' "$MBOT_SCRATCH/frame.json" >/dev/null
+  cp -- "$MBOT_SCRATCH/frame.json" "$MBOT_SCRATCH/finish.json"
+  flock 9
+  [[ $(stat -c '%d:%i' "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_INODE" && $(realpath -e -- "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_DIR" ]] || { mbot_error 'Git directory replaced during managed turn'; exit 1; }
+  mbot_guard_run
+  write_ledger committing
+  jq -cs 'def text: [.content[]? | select(.type=="text") | .text] | join("\n");
+    .[] | if .type=="tool/call" then {type:"tool_call",tool:.data.name,input:(.data.arguments|try fromjson catch .)}
+      elif .type=="tool/result" then {type:"tool_result",result:(.data.message|text)}
+      elif .type=="assistant/message" and .data.usage then {type:"status",phase:"step_end",usage:.data.usage}
+      else empty end' "$MBOT_SCRATCH/session-events.jsonl" > "$MBOT_SCRATCH/raw.jsonl"
+  jq -c --slurpfile header "$MBOT_SCRATCH/header.json" '{type:"final",text:.text,reason:.reason,sessionId:$header[0].sessionId}' "$MBOT_SCRATCH/finish.json" >> "$MBOT_SCRATCH/raw.jsonl"
+  rc=1
+  jq -e '.reason.kind=="completed"' "$MBOT_SCRATCH/finish.json" >/dev/null && rc=0
+  elapsed=$(($(date +%s%3N)-start))
+  request=$(jq -r .request "$MBOT_SCRATCH/header.json")
+  mbot_render "$request" "$elapsed" "$rc" "$role" ''
+  jq --slurpfile header "$MBOT_SCRATCH/header.json" '. + {runtime:{kind:"managed-turn",schemaVersion:1,
+    bot_id:$header[0].botId,session_id:$header[0].sessionId,turn:$header[0].turn,request_ids:$header[0].requestIds}}' \
+    "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
+  mv -- "$MBOT_SCRATCH/managed-meta.json" "$MBOT_SCRATCH/meta.json"
+  printf '\n## Managed turn\n\n' >> "$MBOT_SCRATCH/transcript.md"
+  jq -r '.runtime | tojson | "    " + .' "$MBOT_SCRATCH/meta.json" >> "$MBOT_SCRATCH/transcript.md"
+  day=$(date +%F)
+  transcript=transcripts/$day/$MBOT_RUN_ID.md
+  meta=transcripts/$day/$MBOT_RUN_ID.meta.json
+  mbot_path "$transcript" >/dev/null; mbot_path "$meta" >/dev/null
+  mkdir -p -- "$MBOT_WS/transcripts/$day"
+  cp -- "$MBOT_SCRATCH/transcript.md" "$MBOT_WS/$transcript"
+  cp -- "$MBOT_SCRATCH/meta.json" "$MBOT_WS/$meta"
+  cp -- "$MBOT_SCRATCH/raw.jsonl" "$MBOT_WS/.mbot/runs/$MBOT_RUN_ID.jsonl"
+  cp -- "$MBOT_SCRATCH/session-events.jsonl" "$MBOT_WS/.mbot/runs/$MBOT_RUN_ID.session.jsonl"
+  mbot_git add -A -- BOARD.md tasks inbox "$transcript" "$meta"
+  summary=$(jq -r .summary "$MBOT_SCRATCH/meta.json")
+  if ! mbot_git commit -q -m "run($role): $MBOT_RUN_ID $summary"; then mbot_error 'managed turn commit failed; preserved for recovery'; exit 1; fi
+  head=$(mbot_git rev-parse HEAD)
+  jq --arg head "$head" --arg meta "$meta" '. + {commit:$head,meta:$meta}' "$MBOT_SCRATCH/ledger.json" > "$MBOT_SCRATCH/committed.json"
+  mv -- "$MBOT_SCRATCH/committed.json" "$MBOT_SCRATCH/ledger.json"
+  write_ledger committed
+  failed=0
+  jq -e .success "$MBOT_SCRATCH/meta.json" >/dev/null || failed=1
+  if ((failed)); then base_failures=$((base_failures+1)); else base_failures=0; fi
+  printf '%s\n' "$base_failures" > "$MBOT_WS/.mbot/failures"
+  if ((base_failures>=3)); then mbot_mark_paused 'Automatically paused after three failed managed turns.'; fi
+  rm -- "$ledger"
+  settled=1
+  jq -cn --arg id "$MBOT_RUN_ID" --arg head "$head" --arg meta "$meta" --arg transcript "$transcript" --argjson success "$((1-failed))" \
+    '{kind:"finished",runId:$id,head:$head,meta:$meta,transcript:$transcript,success:($success==1)}'
+  exit 0
+done
+mbot_error 'managed turn disconnected or timed out; no completion was received'
+exit 1

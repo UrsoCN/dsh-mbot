@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：主 Session 事务基础（未发布）
+
+- 新增 Host turn 事务桥：固定 Git/上下文快照、Bot flock、运行内 permit 数据调用、事件记录、guard/脱敏审计与单次提交；旧 CLI/headless 行为保留。
+- 过期 permit 拒绝写入；取消等待拥有的数据进程，异常断连或完成超时保留 journal/snapshot 并暂停，避免未知现场继续执行。
+- 类型、28 项 Cordis、64 组 Bash、三种真实安装及 Chromium 回归通过，详见 [turn 事务](turn-transactions.md)。
+
+尚未将桥接入真实 Agent/Worker、主 Session、上下文投影、统一消息与睡眠/恢复；本阶段仍不打发布 tag。
+
 ## dev：0.2 实例登记阶段（未发布）
 
 - 新增 profile 内稳定 Bot 登记、schemaVersion/revision、init 身份保存，以及 /mbot list/import/select 和对应 Host API。已有目录导入保留数据及历史，路径别名/重试复用身份；重名默认名称自动区分。
