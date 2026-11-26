@@ -1,11 +1,13 @@
-# dsh-mbot 设计稿（大纲 v0.2）
+# dsh-mbot 设计稿（v0.3：Cordis 插件）
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0–M4 已完成；M5 无人值守工具与第零天演练完成，连续 7 天观察待验收。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)、[`m5-ops.md`](m5-ops.md)。
+> 状态：Cordis 插件化完成；M0–M4 已完成，M5 工具与第零天演练完成，连续 7 天观察待验收。插件安装见 [`plugin.md`](plugin.md)，实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)、[`m5-ops.md`](m5-ops.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
+>
+> **v0.3 变更**：按用户新要求提供完整 Cordis 插件与 `dsh plugin add` 安装；保留 Bash 事务核心，增加 ESM 服务、模型工具、命令和 volatile 工作区设置，不增加数据存储或后台调度。
 
 ---
 
@@ -13,14 +15,14 @@
 
 | 维度 | 决策 |
 |---|---|
-| **实现形态** | **0 TypeScript 插件**。纯 Bash：`mbot`（宿主侧：加锁、组装上下文、调 `dsh --profile headless`、验收、提交）+ `botctl`（Bot 侧：看板/任务/记忆候选的原子操作，人类也能直接用），共享 `lib/*.sh` |
+| **实现形态** | Cordis ESM 插件与 bundle，公开 TypeScript 声明；原生服务/工具/命令复用 Bash `mbot`（宿主编排、验收、提交）+ `botctl`（任务/候选原子操作），共享 `lib/*.sh` |
 | **数据仓库** | 默认 `~/.mbot-ws`（独立 Git 仓库）；可用 `-C` / `MBOT_WS` / `~/.config/mbot/config` 覆盖；首次交互运行时询问路径 |
 | **记忆** | 纯 Markdown + Git。**工作 agent 对记忆只读，只能用 `botctl remember` 投递候选；Dreaming 是唯一写者**。v0 不做索引/向量，只用 `grep` + 链接 |
 | **协作** | **星型**：Chief 用原生 `subagent` 派 Worker；DSH 默认 `subagent.maxDepth = 1`，Worker 天然不能再派活。持久交接只走 `BOARD.md` + `tasks/<id>.md`，且都通过 `botctl` 修改 |
 | **调度** | 系统 cron：每 2h `mbot tick`；每天 **03:17** `mbot dream`（**单阶段**：直接写 + lint 闸门 + 可 `git revert`）。全局 `flock` 串行，`PAUSED` 急停 |
 | **权限** | headless 无在线审批通道 → `--permission-mode workspace-write --approval-policy never`。`botctl` 放在**工作区之外**（Bot 可执行、不可改）；运行后 `mbot` 按路径归属表验收，越权改动回滚 |
 | **审计** | 一次运行一个语义化 commit；Dreaming 写坏就 `git revert` |
-| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；M5 当前 1101 行，另运维脚本 108 行，均含注释/空行） |
+| **最小化指标** | Bash 核心依赖 `bash / git / flock / jq / awk / coreutils / dsh`，插件共享 DSH/Cordis 服务及 Schemastery；0 新常驻进程、0 数据库；Bash `mbot` + `botctl` + `lib` 目标 ≤1200 行（当前 1102 行），原生适配与运维脚本独立统计 |
 
 ---
 
@@ -50,16 +52,16 @@
 | F | `subagent.maxDepth` 默认 **1**，`maxActiveSubagents` 默认 **8**；fresh 子代理看不到当前对话，但会加载工作区 `AGENTS.md` | 星型由运行时强制；交接必须落文件；两 Worker 并发已实测 |
 | G | `send_message`：工作中的目标收到 steer；已完成的本地子代理可恢复一轮；模型工具返回 `message delivered to agent <name>` | 纠偏可用；"回复"靠子代理结果或文件；`interrupt_agent` 默认关闭，需 patch 开启 |
 | H | headless 凭据：启动环境 → `<cwd>/.env` → `$DSH_HOME/.env`；忽略 GUI 登录 | cron 需显式 `DEEPSEEK_API_KEY`；`.env` 必须 gitignore |
-| I | DSH 设置页只编辑**插件用 `.volatile()` 声明**的配置字段，持久化到 profile 的 Cordis patch | "在 DSH 设置里配数据目录"必须写一个小 TS 插件 → 放 backlog |
+| I | DSH 设置页只编辑**插件用 `.volatile()` 声明**的配置字段，持久化到 profile 的 Cordis patch | v0.3 已由原生插件的 workspace 设置实现 |
 | J | `sdk-minimal` profile：只给持久 shell 等少数工具，**排除** subagent、AGENTS.md、skills，且为 `danger-full-access` | 不适合本项目；我们用标准 `headless` profile |
 
 ### 1.3 DSH 的三层扩展方式（选型依据）
 
 | 层 | 形态 | 适用 | 本项目 |
 |---|---|---|---|
-| 重 | Cordis 插件（TypeScript, Node 22） | 拦截生命周期、改 UI、注册服务、声明设置项 | v0 不用；backlog 里可选一个"设置项"薄插件 |
+| 重 | Cordis 插件（ESM JavaScript/TypeScript, Node 22） | 生命周期、注册服务/工具/命令、声明设置项 | v0.3 采用原生适配；源码直接分发，无安装时编译 |
 | 中 | SDK（stdio JSON-RPC，TS / Python 客户端）驱动 DSH 子进程 | 需要程序化多轮控制、审批回调 | 不用；headless 一次一任务已够 |
-| 轻 | `AGENTS.md` + Skills + bash 工具 + headless CLI | 协议、工具箱、自动化 | **采用** |
+| 轻 | `AGENTS.md` + Skills + bash 工具 + headless CLI | 协议、工具箱、自动化 | **保留为事务与运行核心** |
 
 ---
 
@@ -118,6 +120,8 @@ dsh-mbot/
 │   ├── mbot                    # 宿主侧：init/run/tick/dream/archive/status/pause（Bot 禁用）
 │   └── botctl                  # Bot 侧 + 人类：boot/board/task/remember/lint
 ├── lib/                        # 共享函数：config.sh ws.sh board.sh lint.sh guard.sh render.sh
+├── plugin/{index,tools,commands}.js # Cordis 原生服务、模型工具、人类命令及类型声明
+├── package.json + cordis.patch.yml # dsh.bundle、平台/版本、公开入口、安装层
 ├── templates/workspace/        # mbot init 拷贝的骨架（见 §6）
 ├── prompts/
 │   ├── tick.md                 # 巡检指令
@@ -160,7 +164,7 @@ M1 实现补充：用户配置遵循 `XDG_CONFIG_HOME`（默认 `~/.config`）�
 - **非交互（cron/Bot）**：直接报错退出，**绝不自动创建**。
 
 约束：不得位于 `~/.dsh` 下，也不得与框架仓库重叠（`mbot init` 校验）。
-后续（backlog）：一个只声明 `mbotWorkspace` 设置项的极小 Cordis 插件，让用户在 DSH 设置页修改，`mbot` 读取该值作为第 3.5 级来源。
+v0.3：Cordis 插件的 workspace 设置用于原生服务/工具/命令；留空时回退上述解析。独立 Bash 入口保持原有来源，不直接解析 profile YAML。
 
 `mbot init` 是显式创建入口，只接受不存在或空目录，并拒绝嵌套 Git 仓库；已有软链路径先解析到物理路径。工作区内部由 botctl 读写的托管文件和目录禁止软链，防止路径重定向。
 
@@ -504,6 +508,7 @@ recover 克隆到 `/tmp`，在本次冷启动清空 grants、关闭推送，要�
 | 2026-11-26 | 为显式保留续读队列、回滚与报告验收，将框架体积目标从 800 行调整为 1200 行；M3 当前 975 行，不增加插件、数据库或第三方运行依赖 |
 | 2026-11-26 | M4 通过；两路 fresh Worker、可中断、持久派活说明已实测；tick 空闲不调用模型，归档保留任务字节且失败回滚；grants 按物理目录逐项传递，dream 不继承外部写权限 |
 | 2026-11-26 | M5 工具与第零天演练通过；cron 私有日志在工作区外，成功 dream 可选推既有 upstream，失败保留本地；clone 冷启动、PAUSED/resume、revert 已实测；人工 ops-log 受只读护栏，7 天观察仍待验收 |
+| 2026-11-26 | 按用户新要求将纯 Bash 工程封装为完整 Cordis bundle；ESM 服务、原生工具、人类命令与 volatile 设置共享原事务核心；源码和 tarball 均通过 dsh plugin add 安装，真实 native 工具与包内 dream 通过；不自动发布或配置生产 cron |
 
 ### 15.2 对 `botctl` 草案的取舍
 
@@ -534,3 +539,13 @@ recover 克隆到 `/tmp`，在本次冷启动清空 grants、关闭推送，要�
 - [memory-revival.md](file:///home/u/文档/polaris/docs/memory-revival.md)：共享层 + 个人层；`u`/`源` 可作为首批真实 Bot
 
 本机 DSH 包文档（`@deepseek-ai/*`）：`dsh-headless`、`dsh-agent-instructions`、`dsh-skill-filesystem`、`dsh-settings`、`dsh-tool-bash`、`dsh-bash-sandbox`、`dsh-sandbox-policy`、`dsh-user-approval`、`dsh-tool-subagent`、`dsh-tool-subagent-control`、`dsh-sdk-minimal`。
+
+## 17. Cordis 插件与安装
+
+`package.json` 声明 `dsh.bundle.patch=./cordis.patch.yml`，平台 Linux/WSL、Node 22+、DSH 兼容范围。bundle 插入 mbot 服务、tool-mbot 和 command-mbot 三行；服务依赖以 inject 表达，消费注册由 Cordis effect 自动卸载。依赖实例共享的 DSH/Cordis 包声明 peers，Schemastery 是普通无状态依赖，源码和 tarball 都直接携带 ESM 与 .d.ts，无 prepare/install 脚本。
+
+mbot 服务通过 DSH subprocess provider 启动包内固定脚本，argv 不经 shell 解释；捕获一次 workspace volatile 值，带取消信号，卸载时终止并等待所有拥有的进程。它不改全局 PATH/配置，不在加载时创建数据。原生工具没有可供模型指定的任意目录或宿主 run/dream 动作；所有调用按 sandboxPolicy 与 approveEscalation 要求完整权限或一次审批。受 mbot 管理的运行禁止原生工具与人类命令绕过 Bash 护栏。
+
+`/mbot` 属于人类 commands 注册表，直接执行初始化、查看、运行、Dreaming 与运维控制，不把控制命令送给模型。命令输出和原生工具输出脱敏；命令原文不在 Session 中重复记录，受控 run 的请求保留在脱敏 transcript 中。GUI 使用 volatile workspace 字段；独立 Bash CLI 保留 -C/环境/用户配置解析。
+
+数据模板以 `gitignore` 分发，init 生成工作区 `.gitignore`，避免 npm 省略 dotfile。包中保留所有脚本、模板、prompts、patches 和 ops；凭据、node_modules、测试产物不入包。安装后提供 profile 的 .bin 入口；卸载 bundle 不删除独立数据仓库。源码、tarball、真实模型验收见 [`plugin.md`](plugin.md)。

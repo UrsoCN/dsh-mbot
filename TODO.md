@@ -2,7 +2,7 @@
 
 > 依据 [`docs/design.md`](docs/design.md)（v0.2）。顺序：验证 DSH 行为 → 骨架与 `botctl` → `mbot run` 闭环 → Dreaming → 星型调度 → 无人值守。
 > 每个里程碑有**验收**，没过不进下一步。估时按业余投入粗估。
-> 已定：纯 Bash、`mbot` + `botctl` 双入口、数据仓库默认 `~/.mbot-ws`、Dreaming 单阶段。
+> 已定：Bash 事务核心、`mbot` + `botctl` 双入口、数据仓库默认 `~/.mbot-ws`、Dreaming 单阶段；按新增需求提供 Cordis 原生插件与 DSH bundle 安装。
 
 ## M0 · Spike：核实 DSH 行为
 
@@ -97,9 +97,20 @@
 
 2026-11-26 工具与第零天演练通过：`bash tests/run.sh` 共 64 组离线检查；`bash tests/real-ops.sh` 在空环境下仅用临时 DSH_HOME/.env 成功运行 archive/dream、本地 upstream 备份、clone 冷启动、PAUSED/resume 与 revert。人工快照工具已就绪；未安装生产 cron，连续 7 天观察仍未完成，M5 整体验收保持待定。复现与证据见 [`docs/m5-ops.md`](docs/m5-ops.md)。
 
+## 插件化 · 新增需求
+
+- [x] npm 包清单、`dsh.bundle`、Cordis patch、平台/版本声明、公开类型与双 bin
+- [x] 原生 MBot 服务：`.volatile()` 工作区设置，复用 Bash 核心，子进程随插件清理
+- [x] 原生 `botctl` 模型工具与 DSH 权限/审批；`/mbot` 人类控制命令
+- [x] 打包全部脚本/模板/prompts；凭据不入包；源码/Git/tarball 无安装时构建
+- [x] `dsh plugin add` 源码与 tarball 安装、激活、工具/命令/schema/bin 与卸载验收
+- [x] 真实模型从其他项目使用原生工具 → 安装包内 Dreaming → 干净审计提交
+
+2026-11-26 通过：11 项 Cordis 集成检查、64 组 Bash 检查和公开类型检查；真实 DSH 对两种安装方式均通过。真实 API 在独立项目中用 botctl 建任务、投递中文周报规则，再由安装后的 mbot dream 合并，零违规。记录见 [`docs/plugin.md`](docs/plugin.md)。本地提交与可安装包已准备，未发布 npm 或推送 Git 远端。
+
 ## Backlog（v1+，按需）
 
-- [ ] DSH 设置页配置数据目录：极小 Cordis 插件，只声明 `.volatile()` 的 `mbotWorkspace` 字段；`mbot` 读取为配置来源之一
+- [x] DSH 设置页配置数据目录：Cordis 插件的 `.volatile()` workspace，原生服务/工具/命令读取；终端 Bash 入口保留原有解析
 - [ ] `mbot` skill（`~/.dsh/skills/mbot/SKILL.md`）：在任意项目的 DSH 会话里用 `botctl` 看板/派活
 - [ ] `mbot chat`：`--session-id` 续接 Chief 顶层会话
 - [ ] Worker 结果物理隔离（`tasks/<id>.result.md`）

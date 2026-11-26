@@ -75,6 +75,7 @@ mbot_init() {
   entries=("$MBOT_WS"/* "$MBOT_WS"/.[!.]* "$MBOT_WS"/..?*)
   ((${#entries[@]} == 1)) && [[ ${entries[0]} == "$MBOT_WS/.mbot" ]] || { mbot_error 'workspace changed during init'; return 1; }
   cp -R -- "$MBOT_ROOT/templates/workspace/." "$MBOT_WS/"
+  mv -- "$MBOT_WS/gitignore" "$MBOT_WS/.gitignore"
   git -C "$MBOT_WS" init -q
   git -C "$MBOT_WS" add -- .
   git -C "$MBOT_WS" commit -q -m 'human: init'

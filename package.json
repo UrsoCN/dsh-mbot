@@ -1,0 +1,103 @@
+{
+  "name": "dsh-mbot",
+  "version": "0.1.0",
+  "description": "Markdown and Git bot workspaces, Chief/Worker orchestration and Dreaming for DeepSeek Harness",
+  "type": "module",
+  "main": "./plugin/index.js",
+  "types": "./plugin/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./plugin/index.d.ts",
+      "default": "./plugin/index.js"
+    },
+    "./tools": {
+      "types": "./plugin/tools.d.ts",
+      "default": "./plugin/tools.js"
+    },
+    "./commands": {
+      "types": "./plugin/commands.d.ts",
+      "default": "./plugin/commands.js"
+    },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "bin": {
+    "mbot": "./bin/mbot",
+    "botctl": "./bin/botctl"
+  },
+  "files": [
+    "plugin",
+    "bin",
+    "lib",
+    "templates",
+    "prompts",
+    "patches",
+    "ops",
+    "cron",
+    "locale",
+    "cordis.patch.yml",
+    "install.sh",
+    "docs"
+  ],
+  "scripts": {
+    "test": "npm run check:types && node --test tests/plugin.test.js && bash tests/run.sh",
+    "test:plugin": "node --test tests/plugin.test.js",
+    "check:types": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 tests/plugin-types.ts",
+    "test:install": "bash tests/install-plugin.sh",
+    "test:real-plugin": "bash tests/real-plugin.sh"
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "~1.1.0",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
+    "@types/node": "^22.20.7",
+    "typescript": "^5.9.3"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml",
+      "platforms": [
+        "linux",
+        "wsl"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UrsoCN/dsh-mbot.git"
+  },
+  "homepage": "https://github.com/UrsoCN/dsh-mbot#readme",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "bots",
+    "memory",
+    "markdown"
+  ]
+}

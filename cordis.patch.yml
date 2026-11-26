@@ -1,0 +1,7 @@
+- insert:
+    - id: mbot
+      name: dsh-mbot
+    - id: tool-mbot
+      name: dsh-mbot/tools
+    - id: command-mbot
+      name: dsh-mbot/commands

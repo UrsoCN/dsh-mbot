@@ -1,3 +1,5 @@
 .env
 .env.*
 .m0-outside.*
+node_modules/
+*.tgz

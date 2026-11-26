@@ -1,14 +1,57 @@
 # dsh-mbot
 
-基于 DeepSeek Harness（DSH）的最小 Bot 系统：纯 Bash 编排，Markdown 保存任务与记忆，Git 保存审计与回滚点。框架仓库与数据仓库分开；Chief 管看板，Worker 执行任务，Dreaming 整理长期记忆。
+DeepSeek Harness（DSH）的 Cordis 插件：原生 `botctl` 工具、`/mbot` 人类命令与工作区设置，复用 Bash 事务核心，以 Markdown 保存任务与记忆、Git 保存审计与回滚点。插件包与数据仓库分开；Chief 管看板，Worker 执行任务，Dreaming 整理长期记忆。
 
-当前 **M0–M4 已验收，M5 工具与恢复演练已完成**：支持 cron、可选备份和人工观察快照；连续 7 天观察仍待验收。进度见 [TODO](TODO.md)，完整边界见 [设计稿](docs/design.md)。
+当前 **Cordis 插件化已完成，M0–M4 已验收，M5 工具与恢复演练已完成**；连续 7 天观察仍待验收。插件安装验收见 [记录](docs/plugin.md)，进度见 [TODO](TODO.md)，完整边界见 [设计稿](docs/design.md)。
+
+## 通过 DSH 安装
+
+支持 Linux/WSL、本地执行环境、Node.js 22+ 和 DSH `0.2.2-rc.5`。需要 Bash、Git、jq、flock、awk、GNU coreutils 与 C.UTF-8。框架不安装操作系统依赖。
+
+从当前源码目录安装到 Web profile：
+
+```bash
+npm ci --ignore-scripts
+dsh plugin --profile web add "$PWD"
+```
+
+也可打包后安装，安装包包含运行代码、全部脚本、协议模板与提示词：
+
+```bash
+npm pack --pack-destination /tmp
+dsh plugin --profile web add /tmp/dsh-mbot-0.1.0.tgz
+```
+
+将 `web` 换成 `headless` 可安装到无人值守 profile。安装会自动启用 `dsh.bundle` 的三个 Cordis 入口；已有进程按 profile 的 HMR 能力生效，或重启 DSH。代码直接以 ESM JavaScript 分发，附 TypeScript 声明；没有安装时构建脚本。Git 仓库包含该版本后，也可使用 `dsh plugin --profile web add github:UrsoCN/dsh-mbot#<commit>`。当前不要求发布到 npm。
+
+在 Plugins 中找到 MBot，将 `workspace` 设置为独立数据仓库的绝对路径（可用 `~/`），然后在人类输入框运行：
+
+```text
+/mbot init
+/mbot status
+/mbot run 在看板上加一个任务：整理 README
+/mbot dream
+```
+
+`workspace` 是 `.volatile()` 设置，后续操作读取新值，已经开始的操作保留原工作区。留空时使用原有 `MBOT_WS` → 用户配置 → `~/.mbot-ws` 解析；插件加载不会自动初始化工作区。profile patch 也可设置：
+
+```yaml
+- id: mbot
+  config:
+    workspace: /absolute/path/to/bot-workspace
+```
+
+`/mbot` 支持 `init [directory]`、`status`、`lint`、`board`、`run <request>`、`tick`、`archive`、`dream`、`pause [reason]`、`resume`、`help`。输入是命令后的原文，不按 shell 解析引号或执行替换。`init [directory]` 的显式目录只影响本次初始化；后续目录由 workspace 设置选择。命令由人类执行，只有 run/tick/dream 会调用模型。
+
+模型可直接使用原生 `botctl`，操作包括 boot、status、lint、board_show/add/set、task_show/result 和 remember。它管理配置中的 Bot 数据仓库，要求当前会话具有 danger-full-access 或该次操作获得 DSH 原生审批，避免绕过项目沙箱。它不能写 MEMORY 或启动另一个模型；由 mbot 管理的 Chief/Worker 继续使用 Bash botctl 和原有运行护栏。
+
+安装同时提供 profile 内的 `node_modules/.bin/mbot` 和 `botctl`。终端/cron 仍可用 `bash install.sh` 安装到 PATH，或者直接执行 profile 的 bin；这些 Bash 入口保留下面的 `-C`/环境/用户配置解析，Cordis 设置只应用于原生工具和 `/mbot`。卸载用 `dsh plugin --profile web remove dsh-mbot`；独立的数据仓库保留。
 
 ## 快速开始
 
 需要 Bash 4.3+、Git、`flock`、`awk`、GNU coreutils（含 `realpath/readlink`），以及 `C.UTF-8` locale。后续真实运行还需要 `jq` 和 DSH（已验证 `0.2.2-rc.5`）。先配置 Git 的用户姓名和邮箱。
 
-在当前仓库直接体验，无需安装：
+也可在当前仓库直接使用 Bash 入口：
 
 ```bash
 ./bin/mbot init /tmp/mbot-demo
@@ -196,8 +239,12 @@ observe 是人工入口，获取运行/工具锁，以 `human: ops snapshot` 提
 ## 验证
 
 ```bash
+npm test
+npm run test:install
 bash tests/run.sh
 ```
+
+`npm test` 检查公开类型入口、11 项 Cordis 集成行为及以下 64 组 Bash 检查。`test:install` 使用真正的 dsh plugin add，对 tarball 和源码目录分别验证激活、原生工具、命令、volatile schema、bin 和卸载；不调用模型，包管理器需要访问 registry。
 
 16 组基础、15 组运行、11 组 Dreaming、8 组调度和 14 组运维检查，共 64 组，涵盖命令、并发、回滚、脱敏、熔断、记忆、输入续读、grants、归档、备份、cron、恢复与观察。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
 
@@ -227,6 +274,12 @@ bash tests/real-schedule.sh
 
 ```bash
 bash tests/real-ops.sh
+```
+
+真实插件安装验收（从另一个项目调用原生工具，再用安装包内的 dream 整理记忆）：
+
+```bash
+npm run test:real-plugin
 ```
 
 DSH 行为探针会调用真实 API；复现见 [M0 实测记录](docs/m0-spike.md)。
