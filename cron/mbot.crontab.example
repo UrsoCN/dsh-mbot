@@ -1,0 +1,10 @@
+# User crontab, not /etc/crontab. Adjust paths for this machine before installing.
+SHELL=/bin/bash
+MAILTO=""
+PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
+MBOT_WS=/home/u/.mbot-ws
+DSH_HOME=/home/u/.dsh
+# Credential: DEEPSEEK_API_KEY in $DSH_HOME/.env, never in this crontab.
+# Logs: ${XDG_STATE_HOME:-$HOME/.local/state}/mbot/logs, outside the workspace.
+0 */2 * * * /home/u/code/open_source/dsh-mbot/ops/cron-run.sh tick
+17 3 * * * /home/u/code/open_source/dsh-mbot/ops/cron-run.sh nightly

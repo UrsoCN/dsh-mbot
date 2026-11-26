@@ -2,7 +2,7 @@
 
 > 2026-11-25。**最小 Bot 系统**：基于 DeepSeek Harness（DSH）、去臃肿、纯 Markdown + Git 记忆、星型调度、凌晨 Dreaming 整理。
 > 由 `~/文档/polaris/docs/` 下的前期材料收敛而来（§16 来源），并用本机 DSH `0.2.2-rc.5` 包文档补核事实（§1.2）。
-> 状态：M0–M4 已完成，下一阶段 M5 无人值守。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)。
+> 状态：M0–M4 已完成；M5 无人值守工具与第零天演练完成，连续 7 天观察待验收。实施计划见 [`../TODO.md`](../TODO.md)，使用方法见 [`../README.md`](../README.md)，DSH 实测见 [`m0-spike.md`](m0-spike.md)，里程碑验收见 [`m2-run.md`](m2-run.md)、[`m3-dream.md`](m3-dream.md)、[`m4-schedule.md`](m4-schedule.md)、[`m5-ops.md`](m5-ops.md)。
 >
 > **v0.2 变更**：确定纯 Bash 路线，拆成 `mbot`（宿主编排）+ `botctl`（Bot 与人共用的工具箱）；数据仓库默认 `~/.mbot-ws`；Dreaming 定为单阶段；
 > 新增 §15 决策记录（含对 `botctl` 草案的取舍）。
@@ -20,7 +20,7 @@
 | **调度** | 系统 cron：每 2h `mbot tick`；每天 **03:17** `mbot dream`（**单阶段**：直接写 + lint 闸门 + 可 `git revert`）。全局 `flock` 串行，`PAUSED` 急停 |
 | **权限** | headless 无在线审批通道 → `--permission-mode workspace-write --approval-policy never`。`botctl` 放在**工作区之外**（Bot 可执行、不可改）；运行后 `mbot` 按路径归属表验收，越权改动回滚 |
 | **审计** | 一次运行一个语义化 commit；Dreaming 写坏就 `git revert` |
-| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；M4 当前 1060 行，含注释/空行） |
+| **最小化指标** | 依赖仅 `bash / git / flock / jq / awk / coreutils / dsh`；0 常驻进程、0 数据库；`mbot` + `botctl` + `lib` 目标合计 ≤1200 行（M3 为增量续读与失败恢复重估；M5 当前 1101 行，另运维脚本 108 行，均含注释/空行） |
 
 ---
 
@@ -124,6 +124,7 @@ dsh-mbot/
 │   └── dream.md                # Dreaming 流程
 ├── install.sh                  # 把 bin/ 软链到 ~/.local/bin；写 ~/.config/mbot/config
 ├── cron/mbot.crontab.example
+├── ops/{cron-run,recover,observe}.sh # 人类/cron 运维入口，Bot 禁用
 ├── tests/                      # 假 dsh（MBOT_DSH=tests/fake-dsh），不花 token
 └── docs/design.md
 ```
@@ -192,6 +193,7 @@ M1 实现补充：用户配置遵循 `XDG_CONFIG_HOME`（默认 `~/.config`）�
 |---|---|---|---|---|
 | `AGENTS.md`、`bots/*/SOUL.md` | SOUL ≤5k 字符 | ✗ | ✗ | ✓ |
 | `MEMORY.md`、`bots/*/MEMORY.md` | ≤150 行 且 ≤3000 字符 | ✗ | ✓ | ✓ |
+| `wiki/ops-log.md` | ≤200 行，人工观察 | ✗ | ✗ | ✓ |
 | `wiki/**`、`dream-reports/**` | wiki 单文件 ≤200 行 | ✗ | ✓ | ✓ |
 | `BOARD.md` | ≤80 行，lint 格式 | ✓（经 botctl） | ✗ | ✓ |
 | `tasks/**` | — | ✓（经 botctl） | ✗ | ✓ |
@@ -416,8 +418,8 @@ M3 实现补充：run/dream 共享调用、审计与失败计数。dream 只接�
 ```cron
 PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 # DEEPSEEK_API_KEY 放 ~/.dsh/.env（headless 会读），不要写进 crontab
-0 */2 * * *  mbot tick
-17 3 * * *   mbot archive && mbot dream
+0 */2 * * *  /home/u/code/open_source/dsh-mbot/ops/cron-run.sh tick
+17 3 * * *   /home/u/code/open_source/dsh-mbot/ops/cron-run.sh nightly
 ```
 
 | 机制 | 设计 |
@@ -428,6 +430,12 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 备份 | dream 成功后 `git push`（可选远端，失败不影响本地） |
 | 恢复演练 | 季度：临时目录 clone → `botctl lint` → `mbot run chief "你是谁，看板上有什么"` |
 | 可选模式 B | 需要 GUI 时再起 `dsh web`；v0 不依赖 DSH `schedule` |
+
+M5 实现补充：cron 示例显式指定 workspace/DSH_HOME 并禁用邮件；不自动安装。cron-run 将解析后的工作区固定传给宿主，nightly 使用 archive 成功后接 dream，私有独立日志保存在数据仓库/框架/DSH_HOME 外的 XDG state 目录。PAUSED 与锁忙也会记录，退出 0 不代表每晚实际完成 dream。
+
+备份默认 `MBOT_PUSH_AFTER_DREAM=0`，开启后只在成功本地 dream 提交后向当前分支的既有 upstream 推送，运行前后核对 remote/ref/推送 URL。缺失或改变 upstream、拒绝与 `MBOT_PUSH_TIMEOUT=30` 超时不改变本地成功状态；禁用凭据交互与客户端 hooks，不强推。脱敏 push 日志/状态留在忽略目录，status 显示最近运行对应状态。
+
+recover 克隆到 `/tmp`，在本次冷启动清空 grants、关闭推送，要求 lint 与真实只读问答通过、只新增 transcript 提交且恢复数据不变。observe 由人类获取锁、按人类事务提交当天快照；包含预算、lint、最近 dream、留存审计违规计数与脱敏备注，保持 wiki 行预算。ops-log 对 dream 也只读。连续 7 天还需逐日人工核对真实提交、报告、预算与违规处理，不用经过小时数或第零天演练冒充整体验收。
 
 ---
 
@@ -495,6 +503,7 @@ PATH=/home/u/.local/bin:/home/u/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin
 | 2026-11-26 | M3 通过；成功报告持久化输入 checkpoint，失败不推进；单阶段记忆改动原子验收；Flash overlay 与本地 added 日期明确；子命令帮助只读 |
 | 2026-11-26 | 为显式保留续读队列、回滚与报告验收，将框架体积目标从 800 行调整为 1200 行；M3 当前 975 行，不增加插件、数据库或第三方运行依赖 |
 | 2026-11-26 | M4 通过；两路 fresh Worker、可中断、持久派活说明已实测；tick 空闲不调用模型，归档保留任务字节且失败回滚；grants 按物理目录逐项传递，dream 不继承外部写权限 |
+| 2026-11-26 | M5 工具与第零天演练通过；cron 私有日志在工作区外，成功 dream 可选推既有 upstream，失败保留本地；clone 冷启动、PAUSED/resume、revert 已实测；人工 ops-log 受只读护栏，7 天观察仍待验收 |
 
 ### 15.2 对 `botctl` 草案的取舍
 

@@ -2,7 +2,7 @@
 
 基于 DeepSeek Harness（DSH）的最小 Bot 系统：纯 Bash 编排，Markdown 保存任务与记忆，Git 保存审计与回滚点。框架仓库与数据仓库分开；Chief 管看板，Worker 执行任务，Dreaming 整理长期记忆。
 
-当前完成 **M0–M4**：工作区、`botctl`、单次运行、Dreaming、星型调度和归档已可用。无人值守按 [TODO](TODO.md) 的 M5 推进。完整边界见 [设计稿](docs/design.md)。
+当前 **M0–M4 已验收，M5 工具与恢复演练已完成**：支持 cron、可选备份和人工观察快照；连续 7 天观察仍待验收。进度见 [TODO](TODO.md)，完整边界见 [设计稿](docs/design.md)。
 
 ## 快速开始
 
@@ -61,6 +61,8 @@ MBOT_WS=/absolute/path/to/workspace
 | `MBOT_DREAM_MAX_BYTES` | 64000 |
 | `MBOT_GRANTS` | 空 |
 | `MBOT_DSH` | dsh |
+| `MBOT_PUSH_AFTER_DREAM` | 0（关闭） |
+| `MBOT_PUSH_TIMEOUT` | 30 秒 |
 
 run/dream 使用 `MBOT_TIMEOUT` 和 `MBOT_DSH`；`MBOT_DREAM_MAX_BYTES` 控制本次整理的新输入字节数。`MBOT_GRANTS` 向 run/tick 授予外部项目目录，dream 不授予外部目录。密钥放在被 Git 忽略的 `.env` 中，真实无人值守运行使用 `$DSH_HOME/.env`。
 
@@ -161,13 +163,43 @@ archive 是纯脚本：把 done 任务原样移到 `tasks/archive/YYYY-MM/`，�
 
 完整的真实并行与中断验收见 [M4 记录](docs/m4-schedule.md)。
 
+## 无人值守与运行观察
+
+[cron 示例](cron/mbot.crontab.example) 每两小时 tick，每天本地时间 03:17 执行 archive 成功后接 dream。部署时在 `crontab -e` 中合并示例，修改框架、工作区、Node/DSH 的绝对路径；凭据只放 `$DSH_HOME/.env`。框架不自动安装 cron。
+
+先手动检查与 cron 相同的入口：
+
+```bash
+./ops/cron-run.sh -C /absolute/workspace tick
+./ops/cron-run.sh -C /absolute/workspace nightly
+```
+
+每次日志写到 `${XDG_STATE_HOME:-$HOME/.local/state}/mbot/logs`，记录起止 UTC、执行输出和退出码；文件权限 600。该目录必须在数据仓库、框架和 DSH_HOME 外，避免并发日志触发运行护栏。PAUSED、锁忙或空闲 tick 的跳过也会记录；退出 0 可能是跳过，仍需核对 nightly commit/report。
+
+备份默认关闭。在工作区 `.mbot/config` 设置 `MBOT_PUSH_AFTER_DREAM=1`，并先由人类配置当前分支的 upstream（例如首次 `git push -u origin HEAD`）。成功 dream 本地提交后才 push，使用已配置的 remote 与目标分支，不猜测、不强推。宿主在模型运行前记录 upstream/推送 URL，运行后若改变则跳过。无 upstream、远端拒绝或超时都保留成功的本地提交，不增加模型失败计数。
+
+备份日志与状态在忽略目录 `.mbot/runs/<run-id>.push.log/.push.json`，日志脱敏 URL 中的凭据；`mbot status` 显示最近一次运行对应的 push 状态。`MBOT_PUSH_TIMEOUT` 限制等待时间，超时后最多再等 5 秒强制结束；无人值守不会提示输入 Git 凭据。
+
+恢复演练从本地数据仓库或备份 URL 克隆到独立 `/tmp` 目录：
+
+```bash
+./ops/recover.sh /absolute/workspace
+./ops/observe.sh -C /absolute/workspace "已核对 nightly 报告、预算和违规处理；今天运行正常"
+```
+
+恢复脚本先 lint，再真实冷启动只读问答，要求成功 transcript、无违规、记忆/任务不变且克隆仓库干净；原仓库不变。演练调用清空外部 grants 并关闭推送，保留克隆与审计材料。克隆保留原配置，正式接管前需核对数据目录、grants 与 remote。
+
+observe 是人工入口，获取运行/工具锁，以 `human: ops snapshot` 提交 `wiki/ops-log.md`。记录首次 UTC、当天状态、记忆预算、lint、最近 dream commit、留存审计违规数量和脱敏备注；lint 失败仍记录并返回非 0，观察文件超预算或有未提交改动则回滚/拒绝。该文件对所有 Bot（含 Dreaming）只读，受 wiki 200 行预算限制；长期日志由人类归档。
+
+连续观察至少 7 天，需要每日核对预算、每晚提交/报告及违规处理，演练 PAUSED/resume 与 `git revert`，在观察记录中给出人工验收结论。经过小时数与当天快照不能自动证明连续运行。本次只完成第零天真实演练，证据见 [M5 记录](docs/m5-ops.md)。
+
 ## 验证
 
 ```bash
 bash tests/run.sh
 ```
 
-16 组基础、15 组运行、11 组 Dreaming 和 8 组调度检查，共 50 组，涵盖命令、并发、回滚、脱敏、熔断、记忆、输入续读、grants 与归档。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
+16 组基础、15 组运行、11 组 Dreaming、8 组调度和 14 组运维检查，共 64 组，涵盖命令、并发、回滚、脱敏、熔断、记忆、输入续读、grants、归档、备份、cron、恢复与观察。模型检查使用 `tests/fake-dsh`；离线测试只在 `/tmp` 生成数据与用户配置，不调用模型，不使用真实密钥，不修改 HOME。
 
 真实 M2 验收会使用仓库 `.env` 或环境中的 DeepSeek key，并创建独立临时工作区和 DSH 数据目录：
 
@@ -189,6 +221,12 @@ bash tests/real-dream.sh
 
 ```bash
 bash tests/real-schedule.sh
+```
+
+真实运维第零天演练（凭据只放临时 DSH_HOME/.env，测试结束删除；使用本地 bare 备份，不安装生产 cron）：
+
+```bash
+bash tests/real-ops.sh
 ```
 
 DSH 行为探针会调用真实 API；复现见 [M0 实测记录](docs/m0-spike.md)。

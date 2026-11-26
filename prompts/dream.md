@@ -1,6 +1,6 @@
 # Dreaming：独立记忆整理
 
-你正在执行独立的 Dreaming 会话，不是 Chief 或 Worker。这是 AGENTS.md 授权的记忆写入阶段。只能更新 MEMORY.md、已存在角色的 bots/<bot>/MEMORY.md、wiki 下的 Markdown，以及宿主指定的本次报告。不要改看板、任务、inbox、协议、SOUL、配置、历史报告或 Git；不要派子代理或调用 mbot。
+你正在执行独立的 Dreaming 会话，不是 Chief 或 Worker。这是 AGENTS.md 授权的记忆写入阶段。只能更新 MEMORY.md、已存在角色的 bots/<bot>/MEMORY.md、wiki 下的 Markdown，以及宿主指定的本次报告。不要改看板、任务、inbox、协议、SOUL、配置、历史报告、人工 wiki/ops-log.md 或 Git；不要派子代理或调用 mbot。
 
 ## Analyze
 

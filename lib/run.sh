@@ -29,12 +29,16 @@ mbot_resume() {
 }
 mbot_status() {
   [[ $# == 0 ]] || { mbot_error 'usage: mbot status'; return 1; }
-  local file latest=''
+  local file latest='' push
   printf 'Workspace: %s\nConsecutive failures: %s\n' "$MBOT_WS" "$(mbot_failure_count)"
   file=$(mbot_path .mbot/PAUSED)
   if [[ -f $file ]]; then printf 'PAUSED: %s\n' "$(cat -- "$file")"; else printf 'PAUSED: no\n'; fi
   for file in "$MBOT_WS/transcripts/"*/*.meta.json "$MBOT_WS/dream-reports/"*.meta.json; do [[ -n $latest && ! $file -nt $latest ]] || latest=$file; done
   if [[ -n $latest ]]; then jq -r '"Latest: " + .run_id + " success=" + (.success|tostring)' "$latest"; else printf 'Latest: none\n'; fi
+  if [[ -n $latest ]]; then
+    push=$(mbot_path ".mbot/runs/$(jq -r .run_id "$latest").push.json")
+    [[ ! -f $push ]] || jq -r '"Latest push: attempted=" + (.attempted|tostring) + " success=" + (.success|tostring) + " exit=" + (.exit_code|tostring)' "$push"
+  fi
   mbot_rows | awk -F '|' '{n[$2]++} END {printf "Board: todo=%d doing=%d blocked=%d done=%d\n",n["todo"],n["doing"],n["blocked"],n["done"]}'
   for file in "$MBOT_WS/MEMORY.md" "$MBOT_WS/bots/"*/MEMORY.md; do
     printf '%s: %s lines/%s, %s characters/%s\n' "${file#"$MBOT_WS/"}" "$(awk 'END{print NR}' "$file")" "$MBOT_MEMORY_MAX_LINES" "$(LC_ALL=C.UTF-8 wc -m < "$file")" "$MBOT_MEMORY_MAX_CHARS"
@@ -81,6 +85,7 @@ mbot_execute() {
   [[ $MBOT_DSH != */* ]] || MBOT_DSH=$(realpath -e -- "$MBOT_DSH")
   MBOT_BASE=$(mbot_git rev-parse HEAD)
   MBOT_BASE_REF=$(mbot_git symbolic-ref -q HEAD || true)
+  mbot_push_prepare
   MBOT_SCRATCH=$(mktemp -d /tmp/mbot-run.XXXXXX)
   trap 'rm -rf -- "$MBOT_SCRATCH"' EXIT
   : > "$MBOT_SCRATCH/violations.jsonl"
@@ -156,6 +161,7 @@ mbot_execute() {
   if ((failed)); then base_failures=$((base_failures+1)); else base_failures=0; fi
   printf '%s\n' "$base_failures" > "$MBOT_WS/.mbot/failures"
   if ((base_failures >= 3)); then mbot_mark_paused "Automatically paused after $base_failures consecutive failed runs."; fi
+  if [[ $mode == dream && $failed == 0 && $MBOT_PUSH_AFTER_DREAM == 1 ]]; then mbot_push; fi
   jq -r 'map(select(.type=="final")) | last | .text // empty' "$MBOT_SCRATCH/clean-events.json"
   printf '%s %s: success=%s; record=%s\n' "$mode" "$MBOT_RUN_ID" "$((1-failed))" "$MBOT_WS/$MBOT_AUDIT_PATH"
   trap - ERR

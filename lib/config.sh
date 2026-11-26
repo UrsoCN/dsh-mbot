@@ -16,7 +16,7 @@ mbot_read_config() {
       [[ $key == MBOT_WS ]] || { mbot_error "unknown user config key: $key"; return 1; }
     else
       case $key in
-        MBOT_MEMORY_MAX_LINES|MBOT_MEMORY_MAX_CHARS|MBOT_SOUL_MAX_CHARS|MBOT_WIKI_MAX_LINES|MBOT_BOARD_MAX_LINES|MBOT_TIMEOUT|MBOT_DREAM_MAX_BYTES|MBOT_GRANTS|MBOT_DSH) ;;
+        MBOT_MEMORY_MAX_LINES|MBOT_MEMORY_MAX_CHARS|MBOT_SOUL_MAX_CHARS|MBOT_WIKI_MAX_LINES|MBOT_BOARD_MAX_LINES|MBOT_TIMEOUT|MBOT_DREAM_MAX_BYTES|MBOT_GRANTS|MBOT_DSH|MBOT_PUSH_AFTER_DREAM|MBOT_PUSH_TIMEOUT) ;;
         *) mbot_error "unknown workspace config key: $key"; return 1 ;;
       esac
     fi
@@ -94,7 +94,9 @@ mbot_load_workspace() {
   : "${MBOT_MEMORY_MAX_LINES:=150}" "${MBOT_MEMORY_MAX_CHARS:=3000}" "${MBOT_SOUL_MAX_CHARS:=5000}"
   : "${MBOT_WIKI_MAX_LINES:=200}" "${MBOT_BOARD_MAX_LINES:=80}" "${MBOT_TIMEOUT:=300}"
   : "${MBOT_DREAM_MAX_BYTES:=64000}" "${MBOT_GRANTS:=}" "${MBOT_DSH:=dsh}"
-  for key in MBOT_MEMORY_MAX_LINES MBOT_MEMORY_MAX_CHARS MBOT_SOUL_MAX_CHARS MBOT_WIKI_MAX_LINES MBOT_BOARD_MAX_LINES MBOT_TIMEOUT MBOT_DREAM_MAX_BYTES; do
+  : "${MBOT_PUSH_AFTER_DREAM:=0}" "${MBOT_PUSH_TIMEOUT:=30}"
+  [[ $MBOT_PUSH_AFTER_DREAM == 0 || $MBOT_PUSH_AFTER_DREAM == 1 ]] || { mbot_error 'MBOT_PUSH_AFTER_DREAM must be 0 or 1'; return 1; }
+  for key in MBOT_MEMORY_MAX_LINES MBOT_MEMORY_MAX_CHARS MBOT_SOUL_MAX_CHARS MBOT_WIKI_MAX_LINES MBOT_BOARD_MAX_LINES MBOT_TIMEOUT MBOT_DREAM_MAX_BYTES MBOT_PUSH_TIMEOUT; do
     [[ ${!key} =~ ^[1-9][0-9]{0,8}$ ]] || { mbot_error "$key must be a positive integer"; return 1; }
   done
   mbot_line "$MBOT_DSH" || { mbot_error 'MBOT_DSH must be nonempty'; return 1; }

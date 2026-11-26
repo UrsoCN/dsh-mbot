@@ -24,6 +24,7 @@ mbot_scrub() {
   jq --slurpfile secrets "$MBOT_SCRATCH/secrets.json" '
     def redact: reduce $secrets[0][] as $s (. ; split($s) | join("[REDACTED]"))
       | gsub("sk-[A-Za-z0-9_-]{12,}"; "[REDACTED]")
+      | gsub("(?<scheme>https?://)[^/@[:space:]]+@"; "\(.scheme)[REDACTED]@")
       | gsub("Bearer [A-Za-z0-9._~+/-]{8,}"; "Bearer [REDACTED]");
     walk(if type == "string" then redact elif type == "object" then with_entries(.key |= redact) else . end)'
 }

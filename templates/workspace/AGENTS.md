@@ -8,6 +8,7 @@
 - Worker 第一条操作是 `botctl boot <bot> --task <id>`；只处理分配的任务，通过 `botctl task result` 追加产出，不改看板、不再派活、不与其他 Worker 通信。
 - 工作中的 Bot 只读 `MEMORY.md`、`bots/*/MEMORY.md`、`wiki/**`；值得记的事实通过 `botctl remember` 投递到 inbox。
 - 只有独立 Dreaming 会话可更新共享/私有 MEMORY、wiki 和 dream-reports；它不得改看板、任务、inbox 或角色协议。
+- wiki/ops-log.md 是人类运行观察记录，所有 Bot（包括 Dreaming）只读。
 - `AGENTS.md`、`bots/*/SOUL.md`、`.mbot/config` 和工具脚本由人类维护。
 - transcripts 由宿主生成；inbox 只追加，不删除或改写已有行。任务只通过 botctl 建立、改状态及追加结果。
 - 外部项目的可写路径仅限宿主明确授予的目录。

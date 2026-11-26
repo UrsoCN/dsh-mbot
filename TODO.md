@@ -88,12 +88,14 @@
 
 ## M5 · 无人值守
 
-- [ ] `cron/mbot.crontab.example`：`PATH`、每 2h `tick`、03:17 `archive && dream`；凭据走 `~/.dsh/.env`
-- [ ] dream 成功后可选 `git push`
-- [ ] 恢复演练脚本：临时目录 clone → `botctl lint` → 冷启动问答
+- [x] `cron/mbot.crontab.example`：`PATH`、每 2h `tick`、03:17 `archive && dream`；凭据走 `~/.dsh/.env`
+- [x] dream 成功后可选 `git push`
+- [x] 恢复演练脚本：临时目录 clone → `botctl lint` → 冷启动问答
 - [ ] 观察 7 天，人工记在 `wiki/ops-log.md`
 
 **验收**：7 天内 `MEMORY.md` 始终在预算内；每晚有 `dream:`/`dream(failed):` commit 与 report；无未处理越权；演练过一次 `git revert` 与 PAUSED。
+
+2026-11-26 工具与第零天演练通过：`bash tests/run.sh` 共 64 组离线检查；`bash tests/real-ops.sh` 在空环境下仅用临时 DSH_HOME/.env 成功运行 archive/dream、本地 upstream 备份、clone 冷启动、PAUSED/resume 与 revert。人工快照工具已就绪；未安装生产 cron，连续 7 天观察仍未完成，M5 整体验收保持待定。复现与证据见 [`docs/m5-ops.md`](docs/m5-ops.md)。
 
 ## Backlog（v1+，按需）
 

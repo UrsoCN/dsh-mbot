@@ -44,7 +44,7 @@ if [[ ${MBOT_MODE:-run} == dream ]]; then
       printf '# 共享记忆\n\n- 周报一律使用中文 [source: inbox/%s.md; added: %s]\n' "$(date +%F)" "$(date +%F)" > MEMORY.md
       ;;
     dream-missing|dream-directory|dream-error) printf '\n- failed candidate\n' >> MEMORY.md ;;
-    dream-noop|slow) ;;
+    dream-noop|dream-upstream-change|dream-ops|slow) ;;
     *) exit 8 ;;
   esac
   if [[ ${MBOT_FAKE_MODE:-} == dream-normal ]]; then
@@ -55,6 +55,8 @@ if [[ ${MBOT_MODE:-run} == dream ]]; then
   if [[ ${MBOT_FAKE_MODE:-} == dream-delete ]]; then rm -f wiki/obsolete.md; fi
   if [[ ${MBOT_FAKE_MODE:-} == dream-index-delete ]]; then rm wiki/_index.md; fi
   if [[ ${MBOT_FAKE_MODE:-} == dream-board ]]; then botctl board add 'dream must not touch board' >/dev/null; fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-upstream-change ]]; then git remote set-url origin "$MBOT_FAKE_ARTIFACTS/destination.git"; fi
+  if [[ ${MBOT_FAKE_MODE:-} == dream-ops ]]; then printf 'fabricated acceptance\n' > wiki/ops-log.md; fi
   if [[ ${MBOT_FAKE_MODE:-} == dream-directory ]]; then mkdir -p "$report"; fi
   if [[ ${MBOT_FAKE_MODE:-} != dream-missing && ${MBOT_FAKE_MODE:-} != dream-directory ]]; then
     printf '# Dreaming\n\n## 新增\n- MEMORY.md：中文周报，来源：inbox/%s.md\n## 修改\n无\n## 删除\n' "$(date +%F)" > "$report"

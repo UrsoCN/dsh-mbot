@@ -12,6 +12,7 @@ source "$MBOT_ROOT/lib/render.sh"
 source "$MBOT_ROOT/lib/run.sh"
 source "$MBOT_ROOT/lib/dream.sh"
 source "$MBOT_ROOT/lib/schedule.sh"
+source "$MBOT_ROOT/lib/ops.sh"
 if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2

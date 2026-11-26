@@ -49,6 +49,7 @@ mbot_guard_allowed() {
   local rel=$1
   if [[ ${MBOT_MODE:-run} == dream ]]; then
     case $rel in
+      wiki/ops-log.md) return 1 ;;
       MEMORY.md|bots/*/MEMORY.md|wiki/*.md) ;;
       "$MBOT_DREAM_REPORT") mbot_path "$rel" >/dev/null 2>&1 && [[ -f $MBOT_WS/$rel ]]; return ;;
       *) return 1 ;;

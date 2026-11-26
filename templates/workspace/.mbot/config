@@ -9,3 +9,5 @@ MBOT_DREAM_MAX_BYTES=64000
 # Colon-separated physical absolute project directories; empty means none.
 MBOT_GRANTS=
 MBOT_DSH=dsh
+MBOT_PUSH_AFTER_DREAM=0
+MBOT_PUSH_TIMEOUT=30
