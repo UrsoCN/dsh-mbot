@@ -8,6 +8,7 @@ export interface RuntimeTurnReceipt {
   schemaVersion: 1; botId: string; sessionId: string; turn: number
   phase: 'active' | 'auditing' | 'committed' | 'rejected' | 'failed' | 'cancelled'
   runId?: string; memoryCommit?: string; head?: string; meta?: string; success?: boolean; reason?: string; error?: string
+  outcome?: import('./turn.js').ManagedOutcome; failureCountEffect?: import('./turn.js').FailureCountEffect
 }
 export interface RuntimeStatus {
   botId: string; sessionId: string

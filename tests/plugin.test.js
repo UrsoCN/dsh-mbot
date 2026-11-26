@@ -644,11 +644,14 @@ test('recovery preserves evidence when private snapshot, journal or lock identit
   assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, false)
 })
 
-for (const crashAt of ['commit', 'receipt']) {
-  test(`recovery recognizes a completed Git commit after a crash at ${crashAt}`, async t => {
+const recoveryOutcomeCases = ['completed', 'cancelled', 'failed'].flatMap(outcome => ['commit', 'receipt'].map(crashAt => ({ outcome, crashAt })))
+recoveryOutcomeCases.push({ outcome: 'legacy', crashAt: 'commit' })
+for (const { outcome, crashAt } of recoveryOutcomeCases) {
+  test(`recovery settles ${outcome} outcome once after a crash at ${crashAt}`, async t => {
     const { ctx, ws, owner } = await app(t)
     await configEditor(ctx, owner, ws)
     const bot = await ctx.mbot.importBot(ws)
+    if (outcome !== 'completed') await writeFile(join(ws, '.mbot/failures'), '2\n')
     const path = process.env.PATH
     const fixture = join(root, `crash-bin-${++seq}`)
     await mkdir(fixture)
@@ -669,11 +672,52 @@ for (const crashAt of ['commit', 'receipt']) {
     } finally { process.env.PATH = path }
     const record = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
     t.after(() => rm(record.scratch, { recursive: true, force: true }))
-    await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: 'committed outcome' }))
-    const head = git(ws, 'rev-parse', 'HEAD')
+    assert.equal(record.schemaVersion, 2)
+    const reason = outcome === 'completed' ? { kind: 'completed' }
+      : outcome === 'failed' ? { kind: 'error', error: { message: 'genuine fixture failure' } }
+        : { kind: 'aborted', reason: { kind: 'user' } }
+    await assert.rejects(lease.finish({ reason, text: 'committed outcome' }))
+    let head = git(ws, 'rev-parse', 'HEAD')
     assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
     assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).phase,
       crashAt === 'commit' ? 'committing' : 'committed')
+    const intentPath = join(record.scratch, 'commit-intent.json')
+    const intent = JSON.parse(await readFile(intentPath, 'utf8'))
+    const savedMeta = await readFile(join(ws, intent.meta), 'utf8')
+    // Seed a valid historical/invalid-version commit and its matching saved tree;
+    // the remaining recovery checks still verify the actual Git commit and log.
+    async function amendMeta(data) {
+      await writeFile(join(ws, intent.meta), JSON.stringify(data, null, 2) + '\n')
+      git(ws, 'add', intent.meta)
+      git(ws, 'commit', '--amend', '--no-edit')
+      intent.tree = git(ws, 'rev-parse', 'HEAD^{tree}')
+      await writeFile(intentPath, JSON.stringify(intent))
+      head = git(ws, 'rev-parse', 'HEAD')
+    }
+    if (outcome === 'legacy') {
+      // A historical journal has version 1 in both durable/private copies.
+      await writeFile(join(ws, '.mbot/runs/active-turn.json'), JSON.stringify({ ...JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')), schemaVersion: 1 }))
+      await writeFile(join(record.scratch, 'ledger.json'), JSON.stringify({ ...JSON.parse(await readFile(join(record.scratch, 'ledger.json'), 'utf8')), schemaVersion: 1 }))
+      const data = JSON.parse(savedMeta)
+      delete data.outcome
+      delete data.failure_count_effect
+      delete data.runtime.outcome_schema_version
+      delete data.runtime.execution_fault
+      await amendMeta(data)
+    } else if (outcome === 'cancelled' && crashAt === 'commit') {
+      await amendMeta({ ...JSON.parse(savedMeta), failure_count_effect: 'reset' })
+      await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /invalid managed outcome/u)
+      assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '2\n')
+      const missing = JSON.parse(savedMeta)
+      delete missing.outcome
+      delete missing.failure_count_effect
+      delete missing.runtime.outcome_schema_version
+      delete missing.runtime.execution_fault
+      await amendMeta(missing)
+      await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /invalid managed outcome/u)
+      assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '2\n')
+      await amendMeta(JSON.parse(savedMeta))
+    }
     if (crashAt === 'commit') {
       await writeFile(join(ws, 'human-work'), 'later human commit\n')
       git(ws, 'add', 'human-work')
@@ -685,14 +729,41 @@ for (const crashAt of ['commit', 'receipt']) {
     }
     const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
     assert.equal(recovered.alreadyCommitted, true)
-    assert.equal(recovered.success, true)
+    assert.equal(recovered.success, outcome === 'completed')
+    assert.equal(recovered.outcome, outcome === 'legacy' ? 'failed' : outcome)
     assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
-    assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '0\n')
+    const expectedFailures = outcome === 'completed' ? '0\n' : outcome === 'cancelled' ? '2\n' : '3\n'
+    assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), expectedFailures)
     assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
     assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+    assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), expectedFailures)
     assert.equal(git(ws, 'status', '--porcelain'), '')
   })
 }
+
+test('unfinished v1 journal retains legacy failure semantics when recovered by the new bridge', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  await writeFile(join(ws, '.mbot/failures'), '2\n')
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'legacy-unfinished', turn: 1, request: 'old turn stop' })
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const record = JSON.parse(await readFile(journalPath, 'utf8'))
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  lease.child.stdin.end()
+  await lease.child.done
+  await writeFile(journalPath, JSON.stringify({ ...JSON.parse(await readFile(journalPath, 'utf8')), schemaVersion: 1 }))
+  await writeFile(join(record.scratch, 'ledger.json'), JSON.stringify({ ...JSON.parse(await readFile(join(record.scratch, 'ledger.json'), 'utf8')), schemaVersion: 1 }))
+  await writeFile(join(record.scratch, 'finish.json'), JSON.stringify({ kind: 'finish', token: record.token,
+    reason: { kind: 'aborted', reason: { kind: 'user' } }, text: '' }))
+  const result = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(result.outcome, 'failed')
+  assert.equal(result.failureCountEffect, 'increment')
+  assert.equal(result.alreadyCommitted, false)
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '3\n')
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '3\n')
+})
 
 test('live workspace config is captured per operation and unloading removes tools and commands', async t => {
   const { ctx, ws, owner } = await app(t)

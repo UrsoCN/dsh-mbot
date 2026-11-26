@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, writeFile, access } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -110,6 +110,7 @@ try {
   await writeFile(join(root, 'release-writer'), '')
   await until(async () => await audit(2).getAttribute('data-phase') === 'rejected')
   assert.match(await audit(2).innerText(), /已停止|stopped/u)
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '0\n')
   assert.ok((await command('/mbot runtime')).includes('Queued: 1 next-turn'))
   assert.match(await command('/mbot stop'), /Stop completed; queued inputs retained/u)
   await send('wake')
@@ -117,24 +118,40 @@ try {
   assert.equal(git('rev-list', '--count', `${firstBase}..HEAD`), '4')
   await page.screenshot({ path: join(root, 'native-stop-and-audits.png'), fullPage: true })
 
+  // A cancelled native turn whose cleanup violates memory is a failed audit.
+  const memory = await readFile(join(ws, 'MEMORY.md'), 'utf8')
+  for (const name of ['writer-started', 'writer-cancelled', 'release-writer']) await rm(join(root, name))
+  await writeFile(join(root, 'violate-next-stop'), '')
+  await send('slow writer')
+  await until(() => exists('writer-started'))
+  await page.getByRole('button', { name: /停止|Stop/u }).last().click()
+  await until(() => exists('writer-cancelled'))
+  await writeFile(join(root, 'release-writer'), '')
+  await until(async () => await audit(5).getAttribute('data-phase') === 'rejected')
+  assert.match(await audit(5).innerText(), /未通过验收|did not pass/u)
+  assert.doesNotMatch(await audit(5).innerText(), /已停止|MBot stopped/u)
+  assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), memory)
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  await page.screenshot({ path: join(root, 'stopped-but-guard-failed.png'), fullPage: true })
+
   const beforeFailure = git('rev-parse', 'HEAD')
   await writeFile(join(root, 'fail-next-commit'), '')
   await send('fail audit')
-  await until(async () => await audit(5).getAttribute('data-phase') === 'failed')
-  assert.match(await audit(5).innerText(), /commit failed/u)
+  await until(async () => await audit(6).getAttribute('data-phase') === 'failed')
+  assert.match(await audit(6).innerText(), /commit failed/u)
   assert.equal(git('rev-parse', 'HEAD'), beforeFailure)
   assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).writerScope, 'agent-runtime')
   assert.match(await command('/mbot runtime'), /MBot Runtime: failed/u)
   const second = await context.newPage()
   await second.goto(`${server.url}#mbot-session=${sessionId}`)
-  await second.locator('[data-mbot-audit="5"][data-phase="failed"]').waitFor()
+  await second.locator('[data-mbot-audit="6"][data-phase="failed"]').waitFor()
   await page.reload()
-  await audit(5).waitFor()
-  assert.equal(await page.locator('[data-mbot-audit]').count(), 5)
+  await audit(6).waitFor()
+  assert.equal(await page.locator('[data-mbot-audit]').count(), 6)
   await page.screenshot({ path: join(root, 'audit-failure-replay.png'), fullPage: true })
   await second.close()
   const calls = (await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length
-  assert.equal(calls, 5)
+  assert.equal(calls, 6)
   assert.deepEqual(errors, [])
   console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/no-external-model')
 } catch (error) {

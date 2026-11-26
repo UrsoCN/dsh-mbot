@@ -313,6 +313,8 @@ test('the managed deadline cancels the actual model before the aborted turn audi
   assert.equal(git(ws, 'status', '--porcelain'), '')
   const log = await ctx.sessionQuery.readSession(agent.id)
   assert.equal(log.events.find(event => event.type === 'turn/end').data.reason.kind, 'aborted')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
 })
 
 test('a custom tool cannot launch a writer without a managed lifetime contract', { timeout: 30000 }, async t => {
@@ -488,4 +490,85 @@ test('stop returns its captured turn receipt without waiting for work accepted b
   releaseNext.resolve()
   await settle(ctx, agent)
   assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+})
+
+test('three clean user stops preserve earlier failures and the next genuine fault still trips the breaker', { timeout: 30000 }, async t => {
+  let entered = Promise.withResolvers()
+  const { ctx, ws, agent } = await app(t, async (options, count) => {
+    if (count > 3) throw new Error('genuine failure after stopped turns')
+    entered.resolve()
+    await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+    return response('cancelled stream')
+  })
+  await writeFile(join(ws, '.mbot/failures'), '2\n')
+  const base = git(ws, 'rev-parse', 'HEAD')
+  for (let turn = 1; turn <= 3; turn++) {
+    entered = Promise.withResolvers()
+    agent.followup(message(`user-stopped turn ${turn}`))
+    await entered.promise
+    const result = await ctx.mbotRuntime.stop(agent)
+    assert.equal(result.receipt.outcome, 'cancelled')
+    assert.equal(result.receipt.failureCountEffect, 'preserve')
+    assert.equal(result.receipt.success, false, 'Cancelled work is not a completed task')
+    assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '2\n')
+    assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), String(turn))
+    await assert.rejects(readFile(join(ws, '.mbot/PAUSED')), { code: 'ENOENT' })
+    const meta = JSON.parse(await readFile(join(ws, result.receipt.meta), 'utf8'))
+    assert.equal(meta.runtime.outcome_schema_version, 1)
+    assert.equal(meta.runtime.execution_fault, false)
+    assert.equal(meta.outcome, 'cancelled')
+  }
+  agent.followup(message('now fail'))
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '3\n')
+  assert.match(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'), /three failed/u)
+})
+
+test('user stop does not neutralize a guarded memory violation from late tool cleanup', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const { ctx, ws, agent } = await app(t, () => response('', { name: 'bad_stop_writer', args: {} }))
+  const memory = await readFile(join(ws, 'MEMORY.md'), 'utf8')
+  ctx.tools.register(defineTool({ name: 'bad_stop_writer', description: 'Fixture cleanup violates protected memory.', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, text) => [{ type: 'text', text }] },
+    async execute(_args, exec) {
+      entered.resolve()
+      await new Promise(resolve => exec.signal.addEventListener('abort', resolve, { once: true }))
+      await writeFile(join(ws, 'MEMORY.md'), 'forbidden stopped memory edit\n')
+      return 'stopped'
+    },
+  }))
+  t.after(ctx.mbotRuntime.foregroundTool('bad_stop_writer'))
+  agent.followup(message('stop this violating writer'))
+  await entered.promise
+  const result = await ctx.mbotRuntime.stop(agent)
+  assert.equal(result.receipt.reason, 'aborted')
+  assert.equal(result.receipt.outcome, 'failed')
+  assert.equal(result.receipt.failureCountEffect, 'increment')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), memory)
+  const meta = JSON.parse(await readFile(join(ws, result.receipt.meta), 'utf8'))
+  assert.ok(meta.violations.some(item => item.path === 'MEMORY.md'))
+})
+
+test('a recorded tool error remains a fault when the user stops the following model step', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const { ctx, ws, agent } = await app(t, async (options, count) => {
+    if (count === 1) return response('', { name: 'error_before_stop', args: {} })
+    entered.resolve()
+    await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+    return response('stopped after failed tool')
+  })
+  ctx.tools.register(defineTool({ name: 'error_before_stop', description: 'Fixture reports a genuine error.', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, text) => [{ type: 'text', text }] },
+    execute() { throw new Error('genuine tool failure') },
+  }))
+  t.after(ctx.mbotRuntime.foregroundTool('error_before_stop'))
+  agent.followup(message('try the failing tool then stop'))
+  await entered.promise
+  const result = await ctx.mbotRuntime.stop(agent)
+  assert.equal(result.receipt.outcome, 'failed')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  const meta = JSON.parse(await readFile(join(ws, result.receipt.meta), 'utf8'))
+  assert.equal(meta.runtime.execution_fault, true)
 })

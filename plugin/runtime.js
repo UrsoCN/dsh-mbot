@@ -15,6 +15,8 @@ function validReceipt(event) {
     && typeof data.botId === 'string' && typeof data.sessionId === 'string' && Number.isSafeInteger(data.turn) && data.turn > 0
     && receiptPhases.includes(data.phase)
     && ['runId', 'memoryCommit', 'head', 'meta', 'reason', 'error'].every(key => data[key] === undefined || typeof data[key] === 'string')
+    && (data.outcome === undefined || ['completed', 'cancelled', 'failed'].includes(data.outcome))
+    && (data.failureCountEffect === undefined || ['reset', 'preserve', 'increment'].includes(data.failureCountEffect))
     && (data.success === undefined || typeof data.success === 'boolean')
 }
 
@@ -225,6 +227,7 @@ class ManagedSession {
     const data = { schemaVersion: 1, botId: this.botId, sessionId: this.agent.id, turn: record.turn, phase,
       ...(record.lease ? { runId: record.lease.identity.runId, memoryCommit: record.lease.snapshot.head } : {}),
       ...(record.result ? { head: record.result.head, meta: record.result.meta, success: record.result.success } : {}),
+      ...(record.result?.outcome ? { outcome: record.result.outcome, failureCountEffect: record.result.failureCountEffect } : {}),
       ...(record.reason ? { reason: record.reason.kind } : {}), ...details }
     if (data.error !== undefined) data.error = record.lease
       ? await record.lease.redactResult(data.error)

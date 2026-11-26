@@ -15,10 +15,10 @@ mbot_turn_recover() {
   flock -n 8 || { mbot_error 'turn writer is active; cannot recover it'; return 1; }
   if [[ ! -e $ledger ]]; then printf '{"kind":"recovered","needed":false}\n'; return; fi
   [[ -f $ledger && ! -L $ledger ]] || { mbot_error 'invalid turn journal'; return 1; }
-  if jq -e '.schemaVersion==1 and .writerScope=="agent-runtime"' "$ledger" >/dev/null 2>&1; then
+  if jq -e '(.schemaVersion==1 or .schemaVersion==2) and .writerScope=="agent-runtime"' "$ledger" >/dev/null 2>&1; then
     mbot_error 'Agent Runtime recovery needs Agent/tool coordination; this recovery command only supports data-subprocesses'; return 1
   fi
-  jq -e --arg workspace "$MBOT_WS" '.schemaVersion==1 and .workspace==$workspace and .writerScope=="data-subprocesses"
+  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2) and .workspace==$workspace and .writerScope=="data-subprocesses"
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))
     and (.scratch|type)=="string" and (.scratch|test("^/tmp/mbot-turn\\.[A-Za-z0-9]+$"))
@@ -102,8 +102,8 @@ mbot_turn_recover() {
     settled=1
     rm -rf -- "$scratch"
     trap - EXIT
-    jq -cn --arg id "$MBOT_RUN_ID" --arg head "$commit" --arg meta "$meta" --argjson success "$((1-failed))" \
-      '{kind:"recovered",needed:true,alreadyCommitted:true,runId:$id,head:$head,meta:$meta,success:($success==1)}'
+    jq -cn --arg id "$MBOT_RUN_ID" --arg head "$commit" --arg meta "$meta" --argjson success "$((1-failed))" --arg outcome "$turn_outcome" --arg effect "$failure_count_effect" \
+      '{kind:"recovered",needed:true,alreadyCommitted:true,runId:$id,head:$head,meta:$meta,success:($success==1),outcome:$outcome,failureCountEffect:$effect}'
     return
   fi
   # The journal is a Host-owned control record: its abandoned phase is expected.

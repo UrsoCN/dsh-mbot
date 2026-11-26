@@ -12,7 +12,9 @@ export interface ContextSnapshot {
 }
 export interface TurnIdentity { readonly botId: string; readonly sessionId: string; readonly turn: number; readonly runId: string }
 export interface TurnOutcome { reason: { kind: string; [key: string]: unknown }; text: string }
-export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean }
+export type ManagedOutcome = 'completed' | 'cancelled' | 'failed'
+export type FailureCountEffect = 'reset' | 'preserve' | 'increment'
+export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean; readonly outcome: ManagedOutcome; readonly failureCountEffect: FailureCountEffect }
 export interface BeginTurnOptions { botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
 export declare class TurnLease {
   readonly identity: TurnIdentity

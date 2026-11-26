@@ -69,7 +69,7 @@ jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg r
   --arg started "$MBOT_STARTED" --argjson startedMs "$start" --argjson baseFailures "$base_failures" --arg ownerStart "${MBOT_OWNER_START:-}" --argjson ownerPid "${MBOT_OWNER_PID:-0}" \
   --arg pidStart "$(awk '{print $22}' "/proc/$$/stat")" \
   --arg gitDir "$MBOT_GIT_DIR" --arg gitInode "$MBOT_GIT_INODE" --arg locks "$(stat -c '%d:%i' "$MBOT_WS/.mbot/lock" "$MBOT_WS/.mbot/botctl.lock")" \
-  --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:1,phase:"active",runId:$id,token:$token[0],
+  --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:2,phase:"active",runId:$id,token:$token[0],
     botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:($header[0].writerScope // "data-subprocesses"),
     baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}' > "$MBOT_SCRATCH/ledger.json"
 mbot_turn_write_ledger active

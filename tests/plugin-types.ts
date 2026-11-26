@@ -24,6 +24,11 @@ const turn: Promise<plugin.TurnLease> = ctx.mbot.beginTurn({ botId: 'example', s
 void turn
 const recovery: Promise<plugin.RecoverTurnResult> = ctx.mbot.recoverTurn({ botId: 'example' })
 void recovery
+declare const managedResult: plugin.TurnResult
+const outcome: plugin.ManagedOutcome = managedResult.outcome
+const failureEffect: plugin.FailureCountEffect = managedResult.failureCountEffect
+void outcome
+void failureEffect
 ctx.plugin(runtime)
 declare const managedAgent: import('@deepseek-ai/dsh-agent').Agent
 ctx.mbotRuntime.attach(managedAgent, { botId: 'example' })

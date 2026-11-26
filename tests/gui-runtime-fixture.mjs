@@ -56,11 +56,16 @@ async function setup(ctx) {
       await writeFile(marker('writer-cancelled'), '')
       await wait('release-writer')
       const lease = ctx.mbotRuntime.dataLease(exec.agent)
+      if (existsSync(marker('violate-next-stop'))) {
+        await unlink(marker('violate-next-stop'))
+        await writeFile(join(lease.snapshot.workspace, 'MEMORY.md'), 'forbidden cancelled memory edit\n')
+      }
       await lease.execute('botctl', ['remember', 'GUI writer cleanup joined'])
       return 'GUI writer cleanup joined'
     },
   }))
   ctx.effect(() => ctx.mbotRuntime.foregroundTool('mbot_gui_writer'))
+  let toolSequence = 0
   class Scripted extends LlmAdapter {
     listModels() { return Promise.resolve([{ id: 'scripted', name: 'Scripted UI fixture' }]) }
     async *stream(request) {
@@ -76,7 +81,7 @@ async function setup(ctx) {
           lease.finish = async outcome => { await writeFile(marker('audit-waiting'), ''); await wait('release-audit'); return finish(outcome) }
         }
         if (text.includes('slow writer')) {
-          const block = { type: 'tool-call', id: 'gui-cleanup-writer', name: 'mbot_gui_writer', arguments: '{}' }
+          const block = { type: 'tool-call', id: `gui-cleanup-writer-${++toolSequence}`, name: 'mbot_gui_writer', arguments: '{}' }
           yield { type: 'block-start', index: 0, blockType: 'tool-call' }
           yield { type: 'block-end', index: 0, block }
           yield { type: 'finish', reason: { kind: 'tool-calls' } }

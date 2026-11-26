@@ -20,13 +20,13 @@ stop 取消调用时捕获的回合，保留 DSH Inbox，等待其工具静止�
 | active | 正在处理，已取得本轮数据 lease |
 | auditing | 模型/工具回合结束，Host 仍在验收 |
 | committed | Git 审计已提交且本轮通过验收 |
-| rejected | 已生成审计提交，但本轮未通过；用户停止时显示“已停止”及待办保留 |
+| rejected | 已生成审计提交，但本轮未通过；outcome=cancelled 时显示“已停止”及待办保留；停止时有故障仍显示未通过 |
 | failed | 验收或回执保存失败；若 Git 已确认提交，卡片保留提交引用并明确区分 |
 | cancelled | 在取得数据 lease 前停止，没有本轮 Git 审计提交 |
 
 每回合只展示一张更新中的卡片，不跟随其他窗口的广播跳转。卡片放在聊天区独立位置，避免被原生工具/过程详情折叠；同时提供中文和英文。Runtime 的异常、回执及停止调用报错会脱敏凭据/本轮 permit 字面值，不向界面泄漏许可。
 
-展示使用公开 appendPluginRecord 写入 `plugin:mbot/runtime-turn`，标记 ignorable，并通过公开 uiConversation/Chat slot 渲染。schemaVersion 1 保存 Bot/Session/turn、phase、可选 runId/memoryCommit/head/meta/success/reason/error；读取时校验版本及字段。它是可丢失的插件展示记录，不进入模型 surface，不成为准入/事务真相源，也不代替 Git 审计、active-turn journal 或未来 checkpoint。此 API 属于 DSH 的实验性插件记录扩展，迁移可能只尽力保留。
+展示使用公开 appendPluginRecord 写入 `plugin:mbot/runtime-turn`，标记 ignorable，并通过公开 uiConversation/Chat slot 渲染。schemaVersion 1 保存 Bot/Session/turn、phase、可选 runId/memoryCommit/head/meta/success/reason/error/outcome/failureCountEffect；读取时校验版本及字段。它是可丢失的插件展示记录，不进入模型 surface，不成为准入/事务真相源，也不代替 Git 审计、active-turn journal 或未来 checkpoint。此 API 属于 DSH 的实验性插件记录扩展，迁移可能只尽力保留。
 
 原生 run_code 支持后台执行，不再列入默认前台白名单；其名称属于原生 PTC 传输，不能注册/覆盖为普通工具；后续须接齐 PTC/后台执行的所有写者静止契约，不能因脚本返回 job 收据而结束审计。
 
@@ -42,4 +42,4 @@ source/tarball/Git 基础 profile 与 Web tarball 的真实安装均验证已提
 
 证据：全量 `/tmp/mbot-feedback-final-suite.log`，最终 Runtime `/tmp/mbot-feedback-final-runtime.log`，安装 `/tmp/mbot-plugin-install.Cum3yy`，原界面回归 `/tmp/mbot-gui-test.xtxxdX`，新浏览器流程 `/tmp/mbot-gui-runtime.azE33B`。
 
-compact/sleep/wake、统一来源/收据/可见域、Worker 与 Runtime journal 恢复仍在 P1；用户停止目前沿用既有受控 turn 的失败计数，后续单独区分用户停止与故障。管理面板仍在 P2。
+compact/sleep/wake、统一来源/收据/可见域、Worker 与 Runtime journal 恢复仍在 P1；用户停止与故障计数已在 [turn outcome](turn-outcomes.md) 区分；旧回执继续兼容。管理面板仍在 P2。

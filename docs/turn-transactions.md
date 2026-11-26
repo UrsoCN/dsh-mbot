@@ -27,7 +27,7 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 
 ## 断连与恢复边界
 
-.mbot/runs/active-turn.json 记录 schemaVersion、阶段、身份、基准及私有 scratch 引用。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
+.mbot/runs/active-turn.json 当前为 schemaVersion 2（reader 兼容完整 v1），记录阶段、身份、基准及私有 scratch 引用；旧 v1 reader 拒绝新版 journal，不能降级字段绕过。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
 
 dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot recover 和 mbot -C <目录> recover。恢复不调用模型，不自动 resume：
 
@@ -49,3 +49,5 @@ dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot rec
 - 实际 Chromium/tarball 的 init/import/list/select/status、多窗口、profile 隔离和重启回归通过。证据：/tmp/mbot-gui-test.D2fWYP。这证明原界面回归通过，不是主 Session 上下文的验收。
 
 下一步在组装系统提示之前接入 Runtime 的 lease 闸门、Agent-scoped SOUL/记忆提供者和受管理消息通道；验证真实模型视图中的旧快照 shadow、近期摘要与 compact，再完成实际工作区/主 Session 绑定。
+
+Managed turn 的结果现返回 outcome/failureCountEffect，审计 meta 保存版本化取消/故障判定。干净的原生用户停止保留 baseFailures，completed 归零、failed 递增；恢复使用相同校验与结算，旧 meta 按原 success 布尔值处理。规则与新增故障验收见 [turn outcome](turn-outcomes.md)。

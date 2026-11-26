@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type { BotRegistration, BotRegistrySnapshot } from './instances.js'
 import type { TurnLease, BeginTurnOptions } from './turn.js'
 export type { BotRegistration, BotRegistrySnapshot } from './instances.js'
-export type { TurnLease, BeginTurnOptions, ContextSnapshot, TurnResult } from './turn.js'
+export type { TurnLease, BeginTurnOptions, ContextSnapshot, TurnResult, ManagedOutcome, FailureCountEffect } from './turn.js'
 
 export declare const name: 'mbot'
 export declare const inject: string[]
@@ -18,6 +18,7 @@ export interface ImportOptions extends ManagementOptions { name?: string; defaul
 export interface ExecuteResult { exitCode: number; stdout: string; stderr: string; truncated: boolean; workspace?: string }
 export type RecoverTurnResult = { kind: 'recovered'; needed: false } | {
   kind: 'recovered'; needed: true; alreadyCommitted: boolean; runId: string; head: string; meta: string; transcript?: string; success: boolean
+  outcome: import('./turn.js').ManagedOutcome; failureCountEffect: import('./turn.js').FailureCountEffect
 }
 export declare class MBotService extends Service {
   static inject: string[]

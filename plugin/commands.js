@@ -55,7 +55,7 @@ export function apply(ctx) {
             const receipt = command.argv[0] === 'stop' ? status.receipt ?? status.lastReceipt : status.lastReceipt
             return { kind: status.state === 'failed' ? 'error' : 'success', text: await redact(
               `${command.argv[0] === 'stop' ? 'Stop completed; queued inputs retained.\n' : ''}MBot Runtime: ${status.state}\nBot: ${status.botId}\nSession: ${status.sessionId}\nQueued: ${status.queued.nextTurn} next-turn, ${status.queued.nextStep} next-step\n`
-              + (receipt ? `Last audit: turn ${receipt.turn}, ${receipt.phase}${receipt.head ? `, commit ${receipt.head}` : ''}\n` : 'No managed audit yet.\n')
+              + (receipt ? `Last audit: turn ${receipt.turn}, ${receipt.outcome ?? receipt.phase}${receipt.head ? `, commit ${receipt.head}` : ''}\n` : 'No managed audit yet.\n')
               + (status.error ? `${status.error}\n` : '')) }
           }
           if (command.argv[0] === 'list') return { kind: 'success', text: await ctx.mbot.describeBots() }

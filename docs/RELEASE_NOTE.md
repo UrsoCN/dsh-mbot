@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：正常停止与故障计数（未发布）
+
+- 规范化 managed turn outcome：成功 completed 归零，干净的原生 user 停止 cancelled 保留原计数，其他失败 failed 递增；三次正常停止不会增加故障，之前的故障也不会被取消清零。
+- 停止中的越权和已记录执行错误仍失败；聊天区、runtime/status 显示规范化结果，cancelled 仍为 success=false。审计 meta/Host 返回版本化 outcome/effect，journal 升至 v2 阻止旧 reader 误结算，Git 结算与恢复共用校验；旧 meta 继续原 success 语义，不一致的新格式保留现场。
+- 39 项 Cordis/Host、17 项 Runtime、64 组 Bash、四类安装与 Chromium 验收通过，覆盖 completed/cancelled/failed 的两个崩溃边界、旧格式及无重复结算；见 [停止语义](turn-outcomes.md)。没有调用真实 DeepSeek API。
+
+统一消息、Worker、睡眠/恢复和管理面板仍在 TODO；包仍为 0.1.1，未打新 tag。
+
 ## dev：主 Session 审计反馈与停止（未发布）
 
 - 聊天区独立 MBot 卡片区分处理、验收、已提交、本轮未通过和验收未完成；显示真实审计提交与脱敏错误，支持双窗口和刷新重放。展示记录不进入模型 surface，Git/journal 继续持有事务真相。

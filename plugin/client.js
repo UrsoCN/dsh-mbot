@@ -12,12 +12,15 @@ window.__ModuleLoader__.load({ id: 'dsh-mbot', factory: require => {
       || typeof data.botId !== 'string' || typeof data.sessionId !== 'string'
       || !Number.isSafeInteger(data.turn) || data.turn < 1 || !phases.includes(data.phase)
       || ['runId', 'memoryCommit', 'head', 'meta', 'reason', 'error'].some(key => data[key] !== undefined && typeof data[key] !== 'string')
+      || (data.outcome !== undefined && !['completed', 'cancelled', 'failed'].includes(data.outcome))
+      || (data.failureCountEffect !== undefined && !['reset', 'preserve', 'increment'].includes(data.failureCountEffect))
       || (data.success !== undefined && typeof data.success !== 'boolean')) return null
     return data
   }
   function AuditCard({ node, t }) {
     const data = node.data
-    const stopped = data.phase === 'cancelled' || (data.phase === 'rejected' && data.reason === 'aborted')
+    const stopped = data.phase === 'cancelled' || (data.phase === 'rejected'
+      && (data.outcome === 'cancelled' || (data.outcome === undefined && data.reason === 'aborted')))
     const failed = data.phase === 'failed' || (data.phase === 'rejected' && !stopped)
     const title = stopped ? 'stopped' : data.phase === 'failed' && data.head ? 'receiptFailed' : data.phase
     return jsxs('section', { 'data-mbot-audit': String(data.turn), 'data-phase': data.phase, role: 'status',

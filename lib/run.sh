@@ -35,7 +35,8 @@ mbot_status() {
   file=$(mbot_path .mbot/PAUSED)
   if [[ -f $file ]]; then printf 'PAUSED: %s\n' "$(cat -- "$file")"; else printf 'PAUSED: no\n'; fi
   for file in "$MBOT_WS/transcripts/"*/*.meta.json "$MBOT_WS/dream-reports/"*.meta.json; do [[ -n $latest && ! $file -nt $latest ]] || latest=$file; done
-  if [[ -n $latest ]]; then jq -r '"Latest: " + .run_id + " success=" + (.success|tostring)' "$latest"; else printf 'Latest: none\n'; fi
+  if [[ -n $latest ]]; then jq -r '"Latest: " + .run_id + " success=" + (.success|tostring)
+    + (if (.outcome|type)=="string" then " outcome="+.outcome else "" end)' "$latest"; else printf 'Latest: none\n'; fi
   if [[ -n $latest ]]; then
     push=$(mbot_path ".mbot/runs/$(jq -r .run_id "$latest").push.json")
     [[ ! -f $push ]] || jq -r '"Latest push: attempted=" + (.attempted|tostring) + " success=" + (.success|tostring) + " exit=" + (.exit_code|tostring)' "$push"

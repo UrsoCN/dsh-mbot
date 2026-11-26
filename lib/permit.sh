@@ -11,7 +11,7 @@ mbot_check_permit() {
     [[ -v MBOT_RUN_ID && -f $file && ! -L $file ]] || { mbot_error 'managed turn permit is no longer active'; return 1; }
     printf '%s\0%s' "$MBOT_RUN_ID" "$MBOT_PERMIT_TOKEN" | jq -Rse --argjson now "$(date +%s%3N)" --slurpfile permit "$file" '
       split("\u0000") as $identity | $permit[0] |
-      .schemaVersion==1 and .phase=="active" and .expiresAt>$now and .runId==$identity[0] and .token==$identity[1]' >/dev/null \
+      (.schemaVersion==1 or .schemaVersion==2) and .phase=="active" and .expiresAt>$now and .runId==$identity[0] and .token==$identity[1]' >/dev/null \
       || { mbot_error 'managed turn permit is stale or invalid'; return 1; }
     MBOT_BOT=$(jq -er .role "$file")
     [[ $MBOT_BOT =~ ^[a-z][a-z0-9_-]{0,31}$ && $MBOT_BOT != human ]] || { mbot_error 'invalid managed actor role'; return 1; }
