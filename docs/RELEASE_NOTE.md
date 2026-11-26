@@ -49,3 +49,7 @@ Markdown/Git 保存任务与长期记忆；工作 Bot 只读记忆，remember �
 - 修复中英文 locale 为 DSH 使用的 meta.title/meta.description，实际插件管理器读取通过。
 - 安装验收增加无开发依赖的 Git fixture；源码链接、Git、tarball 三种方式均验证元数据、激活、工具/命令、schema、bin 与卸载。
 - 纠正把 0.1 分支当 tag、把发布标签永久锁定到实现提交的说明；最新复查已有作者推送的 v0.1.0 → 27cb31c。使用完整版本 tag 的建议见 [发布检查](plugin-standard-review.md)；本轮优化未自动并入已有标签或另作发布。
+
+## 设计更新：受管理的主 Session（未实现）
+
+将“只读入口”的过渡方案明确为插件管理上下文的真实交互 Session；规定统一 botctl 门面、DSH Inbox/执行边界、对话域隔离、运行内工具通道、多窗口并发、跨 Bot 异步消息与 compact/睡眠 checkpoint。见 [Session Runtime](session-runtime.md)；本轮只更新设计与 TODO，不宣称新增运行能力。

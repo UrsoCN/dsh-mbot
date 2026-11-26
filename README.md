@@ -99,6 +99,8 @@ mbot -C /tmp/mbot-demo resume
 
 0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。每实例的 Chief 主会话、创建/导入/修复与导航列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
 
+下一版主 Session 将由插件组合人格、记忆与近期上下文，直接交互与 IM/Bot 消息共用 Runtime 准入，并统一 compact/睡眠；botctl 是门面，DSH 负责日志/执行。多窗口和隔离对话域设计见 [Session Runtime](docs/session-runtime.md)，当前尚未实现。
+
 ## Dreaming 记忆闭环
 
 ```bash

@@ -24,11 +24,14 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 - [ ] 完成后显示结果与主 Session 链接，默认打开新 Bot 的主 Session；保留发起命令的旧会话；初始化本身不调用模型
 - [ ] 使用官方 workspace/session/controller API；创建可重试、去重，部分失败可修复；只清理由本次创建且仍安全的资源，不删除用户已有目录或会话
 - [ ] 导入已有 mbot_demo 等仓库：先 lint/识别版本，保留 Git、SOUL、MEMORY、看板和配置，再补建绑定
-- [ ] 主 Session 加载 Chief 的角色/记忆/看板；初期是只读交互入口，业务变更委托现有受控 run，不直接替代有 guard 的执行链
+- [ ] 实现受管理的真实主 Session：版本化 SOUL/MEMORY、近期摘要/尾部、本次请求与 DSH 必需上下文；按 Agent scope 注册并验证旧快照的 shadow/projection，详见 [Session Runtime](docs/session-runtime.md)
+- [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
+- [ ] 接入 Bot 级租约、每轮数据基准/guard/提交；运行内数据工具走活动权限，不重入外部队列；按 Agent/子进程传环境，不用全局 process.env 保存多 Bot 运行身份
+- [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
 - [ ] 按调用 Session 的绑定选 Bot，避免一个面板的全局选择重定向其他 Bot 会话；重启恢复绑定，缺失/归档 Session 显示修复入口
 - [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在
 
-**验收**：A/B 各有独立目录、DSH 工作区与主 Session；重复创建/重试不重复实体；切换及重启后绑定正确；旧仓库可无损导入；失败不留下不可识别的孤儿资源；现有权限、审计与 headless 检查通过。
+**验收**：A/B 各有独立目录、DSH 工作区与主 Session，直接对话使用受管理上下文；多窗口并发、重复提交、睡眠中消息、cancel、checkpoint 崩溃恢复与旧规则不复活通过；wake 不重复实体，内部工具不死锁；导入/切换/重启正确；权限、审计与 headless 兼容。
 
 ## P2 · 0.2.0：MBot 设置与管理面板
 
@@ -50,10 +53,12 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 - [ ] 发布工程：使用与包版本对应的完整 tag（推荐 v0.1.0）；增加 CI；按需增加上传 tgz/校验和的 Release Action，发布不是安装必需项
 - [ ] 将 engines.dsh、DSH peers 和实际兼容测试矩阵对齐，避免把宽范围声明视为已验证；规范检查见 [发布检查](docs/plugin-standard-review.md)
 - [ ] 至少 7 天真实调度观察：每日检查记忆预算、nightly 提交/报告、违规处理，在 wiki/ops-log.md 记录；第零天不等于完成
-- [ ] 主 Session 受控业务执行：先设计每轮基准、锁、guard、回滚/提交，再考虑直接复用主 Session；接入前保留 headless run
+- [ ] IM 接入：适配器通过统一门面路由，专用所有者私聊可连主 Session，群/不同用户按可见域隔离；QQ 单账号支持 @alias，传话 Session 只做路由/展示，验证回复不会广播串会话
+- [ ] 独立 Bot 间异步信封、reply/correlation、目标权限与 hops/TTL；send_message 仅保留 Worker 树内通信；验证 A/B 相互请求不阻塞彼此 actor
+- [ ] 两 Host 写者争用、过期 Worker 回写、配置/队列并发编辑、IM 重试与投递不确定状态的故障验收；不把 FIFO 或 accepted 收据视为跨系统 exactly-once
 - [ ] 升级/迁移：配置与登记 schemaVersion、模板兼容；不覆盖自定义协议/角色；验证旧 0.1 仓库及 profile
 - [ ] Worker 结果文件隔离；transcripts 按月归档与 git gc
-- [ ] 打包 mbot skill；复活“源”/“u”为真实 Bot；按需增加 dsh-im/tether 入口
+- [ ] 打包 mbot skill；复活“源”/“u”为真实 Bot；tether 等入口复用同一消息门面
 - [ ] 建立 50–100 条私有评测，再决定全文索引/检索；不引入记忆数据库作为真相源
 
 分支和标签按 Git refs 区分，不将某个 tag 的指向写死在规划中。新发布推荐完整版本标签，与 package.version 对应；具体状态及建议见 [发布检查](docs/plugin-standard-review.md)。修复与新功能使用相应提交/版本。

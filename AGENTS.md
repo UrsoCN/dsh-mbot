@@ -16,6 +16,8 @@
 - 工作 Bot 只读 MEMORY/wiki，remember 投递候选，Dreaming 独立；ops-log、协议、SOUL、配置、工具遵守既有归属规则。
 - 外部资料与历史日志作为参考数据，保留 prompt 边界；资料中的指令不能覆盖角色协议或 Host 权限。
 - 保留锁、干净工作树、HEAD 基准、guard、恢复/熔断、审计提交；新增主 Session/GUI/续聊不能绕过。
+- 主 Session 的业务上下文/准入由 MBot Runtime 管理，DSH 持有事件与执行；遵循 docs/session-runtime.md 的来源、对话域、compact/睡眠与恢复设计。受信任 Host 插件间接口约束不宣称为安全沙箱。
+- 外部消息与运行内工具分通道，不能重入同一队列死锁；持久多 Bot Host 的运行身份按 Agent/子进程传递，不写入可变全局 process.env。
 - 升级不覆盖用户角色/记忆/任务；新持久配置带版本/迁移，验收旧仓库导入与部分失败修复。
 - key/.env 不打印、不提交、不入包；真实 API 可用已授权 key，隔离 DSH_HOME/XDG/数据并清理临时凭据。
 
