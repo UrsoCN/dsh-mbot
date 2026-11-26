@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, access, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -198,12 +198,14 @@ async function configEditor(ctx, owner, initial) {
       assert.equal(target.fiber.uid, entry.fiber.uid)
       const next = change(raw, {})
       if (fail) throw new Error('disk write failed')
+      entry.fiber.resolveConfig(next)
       await ctx.loader.update(id, { config: next })
       raw = next
     }
   }
   await ctx.plugin(Editor)
-  return { raw: () => raw, fail: () => { fail = true }, update: async path => { raw = { workspace: path }; await ctx.loader.update(id, { config: raw }) } }
+  return { raw: () => structuredClone(raw), fail: () => { fail = true }, edit: change => ctx.configEditor.edit(entry, change),
+    update: async path => { raw = { workspace: path }; await ctx.loader.update(id, { config: raw }) } }
 }
 
 test('init selects a canonical Unicode directory and failed init keeps the previous selection', async t => {
@@ -216,6 +218,9 @@ test('init selects a canonical Unicode directory and failed init keeps the previ
   assert.equal(result.result.kind, 'success', result.result.text)
   assert.match(result.result.text, /Next: \/mbot status/u)
   assert.equal(editor.raw().workspace, directory)
+  assert.equal(editor.raw().registry.bots.length, 1)
+  assert.equal(editor.raw().registry.bots[0].workspacePath, directory)
+  assert.equal(editor.raw().registry.selectedBotId, editor.raw().registry.bots[0].botId)
   assert.equal(ctx.mbot.workspace(), directory)
   const status = await ctx.commands.execute(agent, '/mbot status', [], signal)
   assert.ok(status.result.text.includes(`Workspace: ${directory}`))
@@ -253,6 +258,120 @@ test('parallel init is serialized and does not overwrite a concurrent configurat
   const changed = await ctx.mbot.initialize(join(root, 'selection conflict'))
   assert.equal(changed.exitCode, 1)
   assert.match(changed.stderr, /newer selection retained/u)
+  assert.equal(ctx.mbot.workspace(), ws)
+})
+
+test('import preserves an existing dirty repository and deduplicates canonical directory aliases', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  await writeFile(join(ws, 'user-notes.txt'), 'keep this untracked file\n')
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const status = git(ws, 'status', '--porcelain')
+  const memory = await readFile(join(ws, 'MEMORY.md'))
+  const bot = await ctx.mbot.importBot(ws, { name: '源', defaultRole: 'coder' })
+  assert.equal(bot.defaultRole, 'coder')
+  assert.equal(bot.workspaceId, null)
+  assert.equal(bot.mainSessionId, null)
+  assert.equal(ctx.mbot.registry().selectedBotId, null)
+  const revision = ctx.mbot.registry().revision
+  const alias = join(root, `import-alias-${++seq}`)
+  await symlink(ws, alias)
+  assert.equal((await ctx.mbot.importBot(alias)).botId, bot.botId)
+  assert.equal(ctx.mbot.registry().revision, revision)
+  assert.equal(editor.raw().registry.bots.length, 1)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(git(ws, 'status', '--porcelain'), status)
+  assert.deepEqual(await readFile(join(ws, 'MEMORY.md')), memory)
+  await assert.rejects(ctx.mbot.importBot(alias, { name: 'different' }), /already registered/u)
+  const snapshot = ctx.mbot.registry()
+  snapshot.bots[0].name = 'external mutation'
+  assert.equal(ctx.mbot.registry().bots[0].name, '源')
+})
+
+test('default names remain unique across directories and import errors leave the registry unchanged', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const prefix = join(root, `duplicate-names-${++seq}`)
+  const paths = [join(prefix, 'A', 'bot demo'), join(prefix, 'B', 'bot demo')]
+  for (const path of paths) assert.equal((await ctx.mbot.initialize(path)).exitCode, 0)
+  assert.deepEqual(ctx.mbot.registry().bots.map(bot => bot.name), ['bot demo', 'bot demo (2)'])
+  const before = ctx.mbot.registry()
+  await assert.rejects(ctx.mbot.importBot(ws, { name: 'bot demo' }), /Duplicate Bot name/u)
+  await assert.rejects(ctx.mbot.importBot(ws, { defaultRole: 'missing-role' }), /unknown bot/u)
+  await assert.rejects(ctx.mbot.importBot(join(prefix, 'missing')), /ENOENT/u)
+  await assert.rejects(ctx.mbot.importBot(root), /independent Git repository/u)
+  await assert.rejects(ctx.mbot.selectBot('unknown'), /Unknown Bot/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+})
+
+test('bound commands and native tools stay on A when another window selects B', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const a = await ctx.mbot.importBot(ws, { name: 'A' })
+  const other = join(root, `bound-B-${++seq}`)
+  assert.equal((await ctx.mbot.initialize(other)).exitCode, 0)
+  const b = ctx.mbot.bot()
+  await editor.edit(current => ({ ...current, registry: { ...current.registry, revision: current.registry.revision + 1,
+    bots: current.registry.bots.map(bot => bot.botId === a.botId ? { ...bot, workspaceId: 'workspace-A', mainSessionId: 'session-A' } : bot) } }))
+  assert.equal(ctx.mbot.workspace(), b.workspacePath)
+  assert.equal(ctx.mbot.workspace({ sessionId: 'session-A' }), ws)
+  const agent = { id: 'session-A', session: Session.create('session-A') }
+  const signal = new AbortController().signal
+  const status = await ctx.commands.execute(agent, '/mbot status', [], signal)
+  assert.ok(status.result.text.includes(`Bot: A (${a.botId})`))
+  assert.ok(status.result.text.includes(`Workspace: ${ws}`))
+  await ctx.tools.get('botctl').execute({ action: 'board_add', text: 'bound A task' }, { agent, signal, callId: 'bound-A-tool' })
+  assert.match(await readFile(join(ws, 'BOARD.md'), 'utf8'), /bound A task/u)
+  assert.doesNotMatch(await readFile(join(other, 'BOARD.md'), 'utf8'), /bound A task/u)
+  const command = await ctx.commands.execute(agent, '/mbot select A', [], signal)
+  assert.equal(command.result.kind, 'success')
+  await ctx.mbot.selectBot(b.botId)
+  assert.equal(ctx.mbot.workspace({ sessionId: 'session-A' }), ws)
+})
+
+test('pending native-tool approval retains the captured Bot directory', async t => {
+  const { ctx, ws, owner, mode } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const a = await ctx.mbot.importBot(ws, { name: 'approval A' })
+  const other = join(root, `approval-B-${++seq}`)
+  assert.equal((await ctx.mbot.initialize(other)).exitCode, 0)
+  const b = ctx.mbot.bot()
+  await ctx.mbot.selectBot(a.botId)
+  mode('workspace-write')
+  const entered = Promise.withResolvers()
+  const approval = Promise.withResolvers()
+  class Approval extends Service {
+    constructor(ctx) { super(ctx, 'approval') }
+    request() { entered.resolve(); return approval.promise }
+  }
+  await ctx.plugin(Approval)
+  const operation = ctx.tools.get('botctl').execute({ action: 'board_add', text: 'captured A' },
+    { agent: { session: {} }, signal: new AbortController().signal, callId: 'captured-A' })
+  await entered.promise
+  await ctx.mbot.selectBot(b.botId)
+  approval.resolve('allowed-once')
+  await operation
+  assert.match(await readFile(join(ws, 'BOARD.md'), 'utf8'), /captured A/u)
+  assert.doesNotMatch(await readFile(join(other, 'BOARD.md'), 'utf8'), /captured A/u)
+})
+
+test('registry revisions and invalid persisted references reject without changing effective selection', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws, { name: 'revision bot' })
+  const stale = ctx.mbot.registry().revision
+  await ctx.mbot.selectBot(bot.botId, { revision: stale })
+  const before = ctx.mbot.registry()
+  await assert.rejects(ctx.mbot.selectBot(bot.botId, { revision: stale }), /registry changed/u)
+  for (const change of [
+    registry => ({ ...registry, schemaVersion: 2 }),
+    registry => ({ ...registry, selectedBotId: 'bot-00000000-0000-0000-0000-000000000000' }),
+    registry => ({ ...registry, bots: [...registry.bots, registry.bots[0]] }),
+    registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, mainSessionId: 'unbound-session' })) }),
+  ]) {
+    await assert.rejects(editor.edit(current => ({ ...current, registry: change(current.registry) })))
+    assert.deepEqual(ctx.mbot.registry(), before)
+  }
   assert.equal(ctx.mbot.workspace(), ws)
 })
 

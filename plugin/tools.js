@@ -49,11 +49,14 @@ export function apply(ctx) {
     async execute(args, exec) {
       const command = toolCommand(args)
       if (process.env.MBOT_RUN_ID !== undefined) throw new Error('Managed runs use Bash botctl under the host guard; native botctl is unavailable here')
+      const selection = { sessionId: exec.agent?.id ?? exec.agent?.session?.id }
+      // Capture the target before approval so another window cannot redirect this call.
+      const workspace = ctx.mbot.workspace(selection)
       const policy = ctx.sandboxPolicy.resolve(exec.agent ? { session: exec.agent.session } : {})
       await approveEscalation({ requestedMode: 'danger-full-access', effectiveMode: policy.mode,
         subject: 'MBot workspace operation', justification: `botctl ${args.action} on the configured bot repository; updates create audited Git commits.` },
       { approver: ctx.get('approval'), agent: exec.agent, callId: exec.callId, toolName: 'botctl', signal: exec.signal })
-      const result = await ctx.mbot.execute(command.program, command.argv, { signal: exec.signal, input: command.input })
+      const result = await ctx.mbot.execute(command.program, command.argv, { signal: exec.signal, input: command.input, workspace })
       if (result.exitCode) throw new Error(result.stderr || result.stdout || `botctl failed (${result.exitCode})`)
       return result.stdout + (result.truncated ? '\n[Output truncated]' : '')
     },

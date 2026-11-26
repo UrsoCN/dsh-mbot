@@ -27,11 +27,16 @@ cat > "$root/probe.mjs" <<'JS'
 import { writeFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
 export const inject = ['mbot', 'tools', 'commands', 'pluginManager', 'appExit']
-export async function apply(ctx) {
+export function apply(ctx) { void setImmediate().then(() => probe(ctx)) }
+async function probe(ctx) {
   try {
     await setImmediate()
     const init = await ctx.mbot.execute('mbot', ['init'])
     if (init.exitCode) throw new Error(init.stderr)
+    const bot = await ctx.mbot.importBot(ctx.mbot.workspace(), { name: 'Installed Bot' })
+    await ctx.mbot.selectBot(bot.botId)
+    const importedAgain = await ctx.mbot.importBot(ctx.mbot.workspace())
+    if (importedAgain.botId !== bot.botId || ctx.mbot.registry().bots.length !== 1) throw new Error('Bot import was not idempotent')
     const definition = ctx.tools.get('botctl')
     if (!definition) throw new Error('native botctl tool missing')
     const signal = new AbortController().signal
@@ -43,7 +48,7 @@ export async function apply(ctx) {
     const meta = bundle?.meta
     if (meta?.error || meta?.title?.en !== 'MBot' || meta?.title?.zh !== 'MBot'
       || !meta?.description?.zh?.includes('记忆')) throw new Error('DSH localized plugin metadata not loaded')
-    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', output, status, meta }, null, 2))
+    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', output, status, meta, registry: ctx.mbot.registry() }, null, 2))
     ctx.appExit(status.kind==='success' ? 0 : 1)
   } catch (error) {
     await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: false, error: String(error) }))
@@ -63,9 +68,10 @@ for mode in tarball source git; do
   dsh --profile "$profile" --dump-config > "$root/$mode.config.yml"
   [[ $(cat "$root/$mode.config.yml") == *'# == dsh-mbot'* ]]
   ws=$root/$mode-workspace
-  printf '%s\n' '- id: mbot' '  config:' "    workspace: '$ws'" '- id: sandbox-policy' '  config:' '    mode: danger-full-access' '- insert:' "    - name: '$root/probe.mjs'" > "$root/probe.yml"
-  MBOT_INSTALL_RESULT="$root/$mode.result.json" timeout --kill-after=5s 30 dsh --profile "$profile" --patch "$root/probe.yml" > "$root/$mode.runtime.log" 2>&1
+  printf '%s\n' '- id: mbot' '  config:' "    workspace: '$ws'" '- id: sandbox-policy' '  config:' '    mode: danger-full-access' '- id: approval' '  config:' '    policy: never' '- insert:' '    - id: mbot-install-probe' "      name: '$root/probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
+  MBOT_INSTALL_RESULT="$root/$mode.result.json" timeout --kill-after=5s 30 dsh --profile "$profile" > "$root/$mode.runtime.log" 2>&1
   jq -e '.success and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
+  jq -e '.registry.schemaVersion==1 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   [[ -z $(git -C "$ws" status --porcelain) ]]
   [[ $(git -C "$ws" log -1 --format=%s) == 'human: board add 001'* ]]
   [[ -x $DSH_HOME/profiles/$profile/node_modules/.bin/mbot && -x $DSH_HOME/profiles/$profile/node_modules/.bin/botctl ]]

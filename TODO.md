@@ -8,12 +8,13 @@ P0 命令反馈与目录选择已完成，归入 [0.1.1 发布说明](docs/RELEA
 
 Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是实例内角色。0.1 的每次 run 都是新的 headless 会话，尚无持久主 Session。
 
-- [ ] 定义实例登记数据：稳定 botId、名称、数据目录、DSH workspaceId、mainSessionId、默认角色、创建时间、schemaVersion；按 profile 隔离，引用 DSH 实体，不复制其完整状态
-- [ ] 定义创建/列出/选择/导入/修复 Host API 与命令入口；新增语法在实现时定稿，不提前写成已可用
+实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
+
+- [ ] 在已有实例 API 上补齐 DSH 实体创建/修复与相应命令，完成部分失败的状态记录和重试
 - [ ] 插件 /mbot init 自动完成数据仓库初始化、DSH 工作区登记、Chief 主 Session 创建和绑定；CLI mbot init 继续只初始化数据仓库
 - [ ] 完成后显示结果与主 Session 链接，默认打开新 Bot 的主 Session；保留发起命令的旧会话；初始化本身不调用模型
 - [ ] 使用官方 workspace/session/controller API；创建可重试、去重，部分失败可修复；只清理由本次创建且仍安全的资源，不删除用户已有目录或会话
-- [ ] 导入已有 mbot_demo 等仓库：先 lint/识别版本，保留 Git、SOUL、MEMORY、看板和配置，再补建绑定
+- [ ] 为已校验导入的旧仓库补建 DSH 工作区/Session 绑定；迁移识别数据版本并保留原 Git、角色、记忆和看板
 - [ ] 实现受管理的真实主 Session：版本化 SOUL/MEMORY、近期摘要/尾部、本次请求与 DSH 必需上下文；按 Agent scope 注册并验证旧快照的 shadow/projection，详见 [Session Runtime](docs/session-runtime.md)
 - [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
 - [ ] 接入 Bot 级租约、每轮数据基准/guard/提交；运行内数据工具走活动权限，不重入外部队列；按 Agent/子进程传环境，不用全局 process.env 保存多 Bot 运行身份

@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：0.2 实例登记阶段（未发布）
+
+- 新增 profile 内稳定 Bot 登记、schemaVersion/revision、init 身份保存，以及 /mbot list/import/select 和对应 Host API。已有目录导入保留数据及历史，路径别名/重试复用身份；重名默认名称自动区分。
+- 业务操作优先使用调用 Session 的已存绑定，再使用 profile 默认；原生工具在权限等待前固定目录，避免跨窗口切换后写到另一 Bot。
+- 公开 schema 可导出，Host 初次加载/配置保存校验唯一性及引用；21 项 Cordis、64 组 Bash、真实三种安装与 Chromium 双实例/profile 隔离/重启验收通过。详见 [实例登记](bot-instances.md)。
+
+DSH 工作区、受管理主 Session、Runtime 消息/上下文/睡眠与管理面板仍在 TODO；本阶段不打新的发布 tag。
+
 ## 0.1.1（2026-11-27）
 
 - 修复只执行过 /mbot 命令的新会话没有结果：最小浏览器入口激活聊天视图，复用 DSH 原生命令卡片，支持状态、展开、重放与多窗口同步，不写入模型上下文。

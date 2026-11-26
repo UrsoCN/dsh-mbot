@@ -11,3 +11,8 @@ const result: Promise<plugin.ExecuteResult> = ctx.mbot.execute('botctl', ['lint'
 void result
 tools.toolCommand({ action: 'board_add', text: 'typed command' })
 commands.commandArgs('status')
+const registry: plugin.BotRegistrySnapshot = ctx.mbot.registry()
+const bot: Promise<plugin.BotRegistration> = ctx.mbot.importBot('/tmp/mbot-types', { name: 'example', revision: registry.revision })
+void bot
+ctx.mbot.workspace({ sessionId: 'main-session' })
+ctx.mbot.selectBot('example', { revision: registry.revision })

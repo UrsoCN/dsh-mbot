@@ -1,14 +1,14 @@
 # dsh-mbot：0.1 基线与 0.2 迭代设计
 
-当前包版本 0.1.1，发布 tag 使用对应完整版本，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。聊天区已通过真实界面验收，主 Session 和面板仍为规划。
+当前包版本 0.1.1，发布 tag 使用对应完整版本，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。聊天区已通过真实界面验收；dev 已增加 Bot 登记/导入/选择，主 Session 和面板仍为规划。
 
 ## 1. 当前能力与缺口
 
-| 已实现的 0.1 | 尚未实现/待修复 |
+| 已实现（含 dev） | 尚未实现/待修复 |
 |---|---|
 | 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 主 Session 与生命周期的原生交互 |
 | 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 实例绑定与导入/修复 |
-| 每次独立 headless Chief、fresh Worker、独立 Dreaming | Bot 实例登记、DSH 工作区登记、持久主 Session |
+| 每次独立 headless Chief、fresh Worker、独立 Dreaming、profile 内 Bot 登记 | DSH 工作区登记、持久主 Session |
 | volatile workspace 的 Host 校验与更新、最小浏览器入口 | 自有设置/管理面板 |
 | cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
@@ -29,14 +29,14 @@ DSH CommandResult 支持将结果保存在 command/run、command/done，客户�
 | 名词 | 含义 |
 |---|---|
 | 插件 | profile 中的 MBot 服务、工具、命令和未来 client 面板 |
-| Bot 实例（计划） | 稳定 botId、名称、独立数据目录、DSH 工作区与 Chief 主 Session 的绑定 |
+| Bot 实例（dev 已登记） | 稳定 botId、名称、独立数据目录与角色；DSH 工作区/主 Session 引用暂为 null，绑定仍待实现 |
 | 角色 | 实例内 chief/coder 和自定义 SOUL/MEMORY；不等于管理列表中的 Bot 实例 |
 | 数据仓库 | MEMORY、BOARD、tasks、inbox、wiki、报告和 Git 历史 |
 | DSH 工作区（计划登记） | Harness 原生实体，引用数据目录；目录存在不代表实体已登记 |
 | 主 Session（计划） | MBot 管理上下文和准入的默认 Chief 交互会话；稳定 ID，多窗口共用；可有隔离的其他 conversation |
 | 运行 Session | 0.1 run/tick/dream 每次新建的 headless 会话，与主 Session 区分 |
 
-实例登记只保存少量配置与引用，如 botId、workspacePath、workspaceId、mainSessionId、createdAt、schemaVersion；不复制 Session 事件或工作区完整状态。按 profile 隔离，优先核实官方持久化能力；需要轻量 JSON 时采用版本标记与原子写入，不引入新数据库。任务与记忆仍在原 Git 仓库。
+dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 schemaVersion、revision、selectedBotId 和少量 Bot 配置/引用；不复制 DSH 事件或工作区完整状态。由官方 ConfigEditor 按 profile 原子保存，普通 schema 可导出，Host 初次加载和保存前校验跨记录唯一性/引用。导入先 lint/boot 并 canonicalize 路径，保留原数据和历史；命令为 list/import/select，详见 [实例登记](bot-instances.md)。任务与记忆仍在原 Git 仓库。
 
 ## 4. 工程与数据布局
 
@@ -120,7 +120,7 @@ Host 串行初始化，通过 ConfigEditor 原子保存 canonical directory；�
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
-选择优先服从显式实例与调用 Session/对话域绑定，再用调用方选择/profile 默认；旧 workspace 为兼容来源。具体 API/语法和迁移在 P1 定稿。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
+当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定/对话域及迁移仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
 
 ## 9. 下一轮：设置与管理面板
 
