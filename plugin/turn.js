@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
-import { redact } from './redact.js'
+import { redact, redactValue } from './redact.js'
 import { processStart } from './recovery.js'
 
 function write(stream, value) {
@@ -18,12 +18,20 @@ export class TurnLease {
   #closed = false
   #finalizationTimeoutMs
   #transportEnded = false
+  #onExpiry
+  #onCancel
+  #cancellation
+  #botctl
 
-  constructor(mbot, child, frames, ready, identity, finalizationTimeoutMs) {
+  constructor(mbot, child, frames, ready, identity, finalizationTimeoutMs, onExpiry, onCancel, root) {
     this.mbot = mbot
     this.child = child
     this.frames = frames
     this.#token = ready.token
+    this.#onExpiry = onExpiry
+    this.#onCancel = onCancel
+    this.#botctl = join(root, 'bin', 'botctl')
+    Object.defineProperty(this, 'expiresAt', { value: ready.expiresAt })
     void child.done.then(() => { this.#transportEnded = true }, () => { this.#transportEnded = true })
     this.#finalizationTimeoutMs = finalizationTimeoutMs
     Object.defineProperty(this, 'identity', { value: Object.freeze({ ...identity, runId: ready.runId }) })
@@ -31,7 +39,7 @@ export class TurnLease {
     const scheduleExpiry = () => {
       if (this.#closed) return
       const remaining = ready.expiresAt - Date.now()
-      if (remaining <= 0) { void this.cancel('Managed turn timeout').catch(() => {}); return }
+      if (remaining <= 0) { void this.expire().catch(() => {}); return }
       this.#timer = setTimeout(scheduleExpiry, Math.min(remaining, 2147483647))
       this.#timer.unref()
     }
@@ -49,6 +57,22 @@ export class TurnLease {
   }
 
   get transportEnded() { return this.#transportEnded }
+
+  async expire() {
+    // Runtime owners must stop the model and every writer before any audit.
+    await this.#onExpiry?.()
+    return this.cancel('Managed turn timeout')
+  }
+
+  shellEnvironment() {
+    if (this.#closed) throw new Error('Managed turn is closed')
+    return { DSH_MBOT_WS: this.snapshot.workspace, DSH_MBOT_RUN_ID: this.identity.runId, DSH_MBOT_PERMIT_TOKEN: this.#token,
+      DSH_MBOT_BOTCTL: this.#botctl }
+  }
+
+  redactResult(value) {
+    return redactValue(value, this.snapshot.workspace, [this.#token])
+  }
 
   execute(program, args, options = {}) {
     if (this.#closed) return Promise.reject(new Error('Managed turn is closed'))
@@ -75,6 +99,12 @@ export class TurnLease {
 
   cancel(message = 'Managed turn cancelled') {
     this.#cancel.abort(new Error(message))
+    if (this.#completion) return this.#completion
+    if (this.#onCancel) {
+      this.#cancellation ??= Promise.resolve().then(() => this.#onCancel(message))
+        .then(() => this.finish({ reason: { kind: 'aborted', message }, text: '' }))
+      return this.#cancellation
+    }
     return this.finish({ reason: { kind: 'aborted', message }, text: '' })
   }
 
@@ -113,10 +143,14 @@ export class TurnLease {
 export async function openTurn(mbot, root, bot, options) {
   const finalizationTimeoutMs = options.finalizationTimeoutMs ?? 30000
   const header = { kind: 'begin', schemaVersion: 1, botId: bot.botId, sessionId: options.sessionId,
-    turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])] }
+    turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
     || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
     || header.requestIds.some(id => typeof id !== 'string' || !id || /[\0\r\n]/u.test(id))
+    || !['data-subprocesses', 'agent-runtime'].includes(header.writerScope)
+    || (options.onExpiry !== undefined && typeof options.onExpiry !== 'function')
+    || (options.onCancel !== undefined && typeof options.onCancel !== 'function')
+    || (header.writerScope === 'agent-runtime' && (!options.onExpiry || !options.onCancel))
     || !Number.isSafeInteger(finalizationTimeoutMs) || finalizationTimeoutMs < 1 || finalizationTimeoutMs > 2147483647) throw new Error('Invalid managed turn identity or request')
   const ownerStart = await processStart()
   options.signal?.throwIfAborted()
@@ -141,7 +175,7 @@ export async function openTurn(mbot, root, bot, options) {
     const ready = JSON.parse(value)
     if (ready.kind !== 'ready' || !/^[a-f0-9]{64}$/u.test(ready.token) || ready.snapshot?.workspace !== bot.workspacePath
       || !Number.isSafeInteger(ready.expiresAt) || ready.expiresAt <= Date.now()) throw new Error('Invalid managed turn admission')
-    const lease = new TurnLease(mbot, child, frames, ready, { botId: bot.botId, sessionId: header.sessionId, turn: header.turn }, finalizationTimeoutMs)
+    const lease = new TurnLease(mbot, child, frames, ready, { botId: bot.botId, sessionId: header.sessionId, turn: header.turn }, finalizationTimeoutMs, options.onExpiry, options.onCancel, root)
     mbot.leases.add(lease)
     if (mbot.closed) {
       await lease.cancel('MBot plugin disposed during admission')

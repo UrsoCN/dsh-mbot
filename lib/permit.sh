@@ -13,9 +13,15 @@ mbot_check_permit() {
       split("\u0000") as $identity | $permit[0] |
       .schemaVersion==1 and .phase=="active" and .expiresAt>$now and .runId==$identity[0] and .token==$identity[1]' >/dev/null \
       || { mbot_error 'managed turn permit is stale or invalid'; return 1; }
+    MBOT_BOT=$(jq -er .role "$file")
+    [[ $MBOT_BOT =~ ^[a-z][a-z0-9_-]{0,31}$ && $MBOT_BOT != human ]] || { mbot_error 'invalid managed actor role'; return 1; }
   elif [[ -e $file || -L $file ]]; then
     if [[ $mutation == 1 || -v MBOT_RUN_ID ]]; then mbot_error 'managed turn requires its active permit; inspect or recover the turn first'; return 1; fi
   fi
+}
+
+mbot_check_actor() {
+  [[ ! -v MBOT_PERMIT_TOKEN || $1 == "$MBOT_BOT" ]] || { mbot_error 'author must match the managed role'; return 1; }
 }
 
 mbot_require_no_turn() {

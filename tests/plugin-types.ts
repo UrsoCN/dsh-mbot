@@ -2,6 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import * as plugin from 'dsh-mbot'
 import * as tools from 'dsh-mbot/tools'
 import * as commands from 'dsh-mbot/commands'
+import * as runtime from 'dsh-mbot/runtime'
 
 const ctx = new Context()
 ctx.plugin(plugin, { workspace: '/tmp/mbot-types' })
@@ -20,3 +21,7 @@ const turn: Promise<plugin.TurnLease> = ctx.mbot.beginTurn({ botId: 'example', s
 void turn
 const recovery: Promise<plugin.RecoverTurnResult> = ctx.mbot.recoverTurn({ botId: 'example' })
 void recovery
+ctx.plugin(runtime)
+declare const managedAgent: import('@deepseek-ai/dsh-agent').Agent
+ctx.mbotRuntime.attach(managedAgent, { botId: 'example' })
+ctx.mbotRuntime.settled(managedAgent)

@@ -13,11 +13,15 @@ export interface ContextSnapshot {
 export interface TurnIdentity { readonly botId: string; readonly sessionId: string; readonly turn: number; readonly runId: string }
 export interface TurnOutcome { reason: { kind: string; [key: string]: unknown }; text: string }
 export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean }
-export interface BeginTurnOptions { botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number }
+export interface BeginTurnOptions { botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
 export declare class TurnLease {
   readonly identity: TurnIdentity
   readonly snapshot: ContextSnapshot
   readonly transportEnded: boolean
+  readonly expiresAt: number
+  /** Host-only environment; private token must be redacted from tool results. */
+  shellEnvironment(): Record<string, string>
+  redactResult<T>(value: T): Promise<T>
   record(event: SessionEvent): Promise<void>
   execute(program: 'mbot' | 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
   finish(outcome: TurnOutcome): Promise<TurnResult>

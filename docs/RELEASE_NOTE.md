@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：原生 Agent Runtime（未发布）
+
+- 将事务桥接入真实 DSH Agent：组装时取得 lease，Agent-scoped SOUL/协议/MEMORY 与原生近期历史组合；通过公开 surface replacement 更新旧系统段和记忆快照，保留原始 log 及 DSH 必需上下文。
+- 原生 botctl 与官方前台 Bash 共用本轮身份/审计；boot 固定人格/记忆基准，候选/结果署名绑定角色，工具结果进入 Session 前脱敏。取消/期限先停止 Agent 和前台写者，下一轮等待提交；Runtime 关闭保留闸门和待办，重载复用同一 Session。
+- 33 项既有 Cordis、9 项 Runtime、64 组 Bash 检查通过；三种安装实际创建 Agent 并通过本地 adapter 调用原生工具/提交，Chromium 回归通过，详见 [原生 Runtime](native-runtime.md)。没有调用真实 DeepSeek API。
+
+实际主 Session 创建/导航、Worker、完整消息门面、compact/sleep/checkpoint、Runtime journal 恢复及管理面板仍在 TODO；未打新 tag。
+
 ## dev：数据 turn 中断恢复（未发布）
 
 - 新增 Host recoverTurn、/mbot recover 与 CLI mbot recover；校验活写者、私有快照、PID 出生身份、Git/锁和保存的运行预算，恢复合法任务并回滚非法配置/记忆，保留 PAUSED 供明确复核。

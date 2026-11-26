@@ -26,7 +26,7 @@ git clone --bare --no-hardlinks "$root/git-source" "$root/plugin.git" > "$root/g
 cat > "$root/probe.mjs" <<'JS'
 import { writeFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
-export const inject = ['mbot', 'tools', 'commands', 'pluginManager', 'appExit']
+export const inject = ['mbot', 'mbotRuntime', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit']
 export function apply(ctx) { void setImmediate().then(() => probe(ctx)) }
 async function probe(ctx) {
   try {
@@ -48,6 +48,44 @@ async function probe(ctx) {
     if (recovered.kind !== 'recovered' || !recovered.needed || recovered.success) throw new Error('installed recovery failed')
     if ((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed) throw new Error('installed recovery was not idempotent')
     if ((await ctx.mbot.execute('mbot', ['resume'])).exitCode) throw new Error('installed recovery cannot resume')
+    const { createRequire } = await import('node:module')
+    const { realpath } = await import('node:fs/promises')
+    const { randomUUID } = await import('node:crypto')
+    const fromPackage = createRequire(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
+    const { LlmAdapter, createUserMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
+    let runtimeCalls = 0
+    class InstalledAdapter extends LlmAdapter {
+      async *stream(request) {
+        // The full Harness also makes auxiliary title requests. They are
+        // served locally and are not conversation steps or data writers.
+        if (request.purpose) {
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'Installed Bot' } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        runtimeCalls++
+        if (!JSON.stringify(request.messages).includes('# MBot role: chief')) throw new Error('installed managed context missing')
+        const block = runtimeCalls === 1 ? { type: 'tool-call', id: 'installed-runtime-tool', name: 'botctl',
+          arguments: JSON.stringify({ action: 'remember', text: 'installed Runtime native candidate' }) } : { type: 'text', text: 'installed Runtime succeeded' }
+        yield { type: 'block-start', index: 0, blockType: block.type }
+        yield { type: 'block-end', index: 0, block }
+        yield { type: 'finish', reason: { kind: runtimeCalls === 1 ? 'tool-calls' : 'stop' } }
+      }
+    }
+    ctx.llm.registerAdapter(['mbot-installation'], new InstalledAdapter())
+    const managed = await ctx.agents.create({ sessionId: `installation-${randomUUID()}`, meta: { cwd: ctx.mbot.workspace() },
+      agentOptions: { provider: 'mbot-installation', model: 'scripted' },
+      setup: (_scope, agent) => ctx.mbotRuntime.attach(agent, { botId: bot.botId }) })
+    managed.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'installed managed Runtime' }], source: { kind: 'user' } }))
+    await managed.agent.whenIdle()
+    await ctx.mbotRuntime.settled(managed.agent)
+    if (runtimeCalls !== 2) throw new Error(`installed Runtime made ${runtimeCalls} calls; expected tool and final response`)
+    const { readdir, readFile } = await import('node:fs/promises')
+    const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
+    const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')
+    if (!candidateText.includes('installed Runtime native candidate')) throw new Error('installed Runtime data tool did not commit its candidate')
+    await managed.dispose()
     const definition = ctx.tools.get('botctl')
     if (!definition) throw new Error('native botctl tool missing')
     const signal = new AbortController().signal
@@ -59,7 +97,7 @@ async function probe(ctx) {
     const meta = bundle?.meta
     if (meta?.error || meta?.title?.en !== 'MBot' || meta?.title?.zh !== 'MBot'
       || !meta?.description?.zh?.includes('记忆')) throw new Error('DSH localized plugin metadata not loaded')
-    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', output, status, meta, registry: ctx.mbot.registry() }, null, 2))
+    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', runtimeCalls, output, status, meta, registry: ctx.mbot.registry() }, null, 2))
     ctx.appExit(status.kind==='success' ? 0 : 1)
   } catch (error) {
     await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: false, error: String(error) }))
@@ -80,8 +118,8 @@ for mode in tarball source git; do
   [[ $(cat "$root/$mode.config.yml") == *'# == dsh-mbot'* ]]
   ws=$root/$mode-workspace
   printf '%s\n' '- id: mbot' '  config:' "    workspace: '$ws'" '- id: sandbox-policy' '  config:' '    mode: danger-full-access' '- id: approval' '  config:' '    policy: never' '- insert:' '    - id: mbot-install-probe' "      name: '$root/probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
-  MBOT_INSTALL_RESULT="$root/$mode.result.json" timeout --kill-after=5s 30 dsh --profile "$profile" > "$root/$mode.runtime.log" 2>&1
-  jq -e '.success and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
+  MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" > "$root/$mode.runtime.log" 2>&1
+  jq -e '.success and .runtimeCalls==2 and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
   jq -e '.registry.schemaVersion==1 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   [[ -z $(git -C "$ws" status --porcelain) ]]
   [[ $(git -C "$ws" log -1 --format=%s) == 'human: board add 001'* ]]

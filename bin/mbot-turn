@@ -53,6 +53,9 @@ jq -e 'def line: type=="string" and length>0 and (test("[\u0000\r\n]")|not);
   .kind=="begin" and .schemaVersion==1 and (.botId|line) and (.sessionId|line)
   and (.turn|type)=="number" and .turn>0 and (.turn|floor)==.turn and (.request|type)=="string" and (.request|contains("\u0000")|not)
   and (.requestIds|type)=="array" and all(.requestIds[]; line)' "$MBOT_SCRATCH/header.json" >/dev/null
+jq -e '(.writerScope // "data-subprocesses") as $scope | $scope=="data-subprocesses" or $scope=="agent-runtime"' "$MBOT_SCRATCH/header.json" >/dev/null
+jq -e '(.finalizationTimeoutMs // 30000) as $ms | ($ms|type)=="number" and $ms>0 and ($ms|floor)==$ms and $ms<=2147483647' "$MBOT_SCRATCH/header.json" >/dev/null
+transport_timeout=$((MBOT_TIMEOUT+($(jq -r '.finalizationTimeoutMs // 30000' "$MBOT_SCRATCH/header.json")+999)/1000))
 mkdir -p -- "$(mbot_path .mbot/runs)"
 exec 9> "$(mbot_path .mbot/botctl.lock)"
 flock 9
@@ -67,7 +70,7 @@ jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg r
   --arg pidStart "$(awk '{print $22}' "/proc/$$/stat")" \
   --arg gitDir "$MBOT_GIT_DIR" --arg gitInode "$MBOT_GIT_INODE" --arg locks "$(stat -c '%d:%i' "$MBOT_WS/.mbot/lock" "$MBOT_WS/.mbot/botctl.lock")" \
   --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:1,phase:"active",runId:$id,token:$token[0],
-    botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:"data-subprocesses",
+    botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:($header[0].writerScope // "data-subprocesses"),
     baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}' > "$MBOT_SCRATCH/ledger.json"
 mbot_turn_write_ledger active
 open=1
@@ -91,7 +94,7 @@ jq -n --arg head "$MBOT_BASE" --arg role "$role" --arg workspace "$MBOT_WS" \
 jq -cn --slurpfile ledger "$MBOT_SCRATCH/ledger.json" --slurpfile context "$MBOT_SCRATCH/context.json" \
   '{kind:"ready",runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}'
 flock -u 9
-while IFS= read -r -t "$MBOT_TIMEOUT" frame; do
+while IFS= read -r -t "$transport_timeout" frame; do
   printf '%s' "$frame" > "$MBOT_SCRATCH/frame.json"
   kind=$(jq -er .kind "$MBOT_SCRATCH/frame.json")
   if [[ $kind == event ]]; then

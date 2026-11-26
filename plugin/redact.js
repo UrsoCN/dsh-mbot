@@ -3,8 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** Keep host credentials out of native tool and slash-command transcript results. */
-export async function redact(text, workspace = '') {
-  const secrets = Object.entries(process.env).filter(([key]) => /(API_KEY|TOKEN|PASSWORD|SECRET)$/u.test(key)).map(([, value]) => value)
+async function redactor(workspace = '', extra = []) {
+  const secrets = [...extra, ...Object.entries(process.env).filter(([key]) => /(API_KEY|TOKEN|PASSWORD|SECRET)$/u.test(key)).map(([, value]) => value)]
   const files = [join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), '.env')]
   let target = workspace || process.env.MBOT_WS
   if (!target) {
@@ -30,8 +30,35 @@ export async function redact(text, workspace = '') {
       if (match) secrets.push(match[1].replace(/^(['"])(.*)\1$/u, '$2'))
     }
   }
-  for (const secret of secrets) if (secret?.length >= 8) text = text.split(secret).join('[REDACTED]')
-  return text.replace(/sk-[A-Za-z0-9_-]{12,}/gu, '[REDACTED]')
-    .replace(/(https?:\/\/)[^/@\s]+@/gu, '$1[REDACTED]@')
-    .replace(/Bearer [A-Za-z0-9._~+/-]{8,}/gu, 'Bearer [REDACTED]')
+  return text => {
+    for (const secret of secrets) if (secret?.length >= 8) text = text.split(secret).join('[REDACTED]')
+    return text.replace(/sk-[A-Za-z0-9_-]{12,}/gu, '[REDACTED]')
+      .replace(/(https?:\/\/)[^/@\s]+@/gu, '$1[REDACTED]@')
+      .replace(/Bearer [A-Za-z0-9._~+/-]{8,}/gu, 'Bearer [REDACTED]')
+  }
+}
+
+export async function redact(text, workspace = '') { return (await redactor(workspace))(text) }
+
+/** Keep the JSON shape while redacting string values and keys before logging. */
+export async function redactValue(value, workspace = '', extra = []) {
+  const filter = await redactor(workspace, extra)
+  const walk = input => {
+    if (typeof input === 'string') return filter(input)
+    if (Array.isArray(input)) {
+      const next = input.map(walk)
+      return next.some((value, index) => value !== input[index]) ? next : input
+    }
+    if (input && typeof input === 'object') {
+      let changed = false
+      const next = Object.entries(input).map(([key, value]) => {
+        const name = filter(key), item = walk(value)
+        changed ||= name !== key || item !== value
+        return [name, item]
+      })
+      return changed ? Object.fromEntries(next) : input
+    }
+    return input
+  }
+  return walk(value)
 }

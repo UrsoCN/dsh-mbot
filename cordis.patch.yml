@@ -5,3 +5,5 @@
       name: dsh-mbot/tools
     - id: command-mbot
       name: dsh-mbot/commands
+    - id: mbot-runtime
+      name: dsh-mbot/runtime

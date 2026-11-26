@@ -105,6 +105,7 @@ mbot_task() {
     result)
       [[ $# == 0 || ( $# == 2 && $1 == --as ) ]] || { mbot_error 'usage: botctl task result <id> [--as bot] < text'; return 1; }
       actor=${2:-$actor}; mbot_role "$actor"
+      mbot_check_actor "$actor"
       mbot_result_section "$file"
       [[ ! -t 0 ]] || { mbot_error 'task result requires text on stdin'; return 1; }
       body=$(cat)
@@ -134,6 +135,7 @@ mbot_remember() {
   mbot_line "$fact" && [[ -n ${fact//[[:space:]]/} ]] || { mbot_error 'fact must be a nonempty single line'; return 1; }
   mbot_line "${MBOT_RUN_ID:-human}" || { mbot_error 'invalid run id'; return 1; }
   mbot_role "$actor"
+  mbot_check_actor "$actor"
   [[ -z $task ]] || mbot_task_path "$task" >/dev/null
   mbot_path inbox >/dev/null
   rel=inbox/$(date +%F).md

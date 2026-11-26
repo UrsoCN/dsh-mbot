@@ -4,6 +4,8 @@ shopt -s nullglob globstar
 umask 077
 MBOT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
 source "$MBOT_ROOT/lib/config.sh"
+source "$MBOT_ROOT/lib/shell-permit.sh"
+mbot_import_shell_permit
 source "$MBOT_ROOT/lib/ws.sh"
 source "$MBOT_ROOT/lib/lint.sh"
 source "$MBOT_ROOT/lib/board.sh"

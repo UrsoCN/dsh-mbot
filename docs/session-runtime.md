@@ -119,4 +119,4 @@ DSH send_message 继续用于 Chief 与当前 fresh Worker 树内的纠偏/恢�
 
 API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有能力包括 Agent scoped 注册、queue/steer/inject、requestId、compactNow 与命令事件；MBot 的统一 gate、来源策略、睡眠事务、运行内权限和 IM/Bot 路由仍需实现。
 
-dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据调用许可、审计与遗留数据 turn 的恢复。journal 明确标记 writerScope=data-subprocesses；这只涵盖桥启动的 fresh 数据子进程及 botctl 写锁。实际 Agent、Worker、通用工具、后台任务及可能经 IPC 获得权限的既有进程须扩展所有权/静止协议后才能启用主 Session。
+dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。Worker、后台/跨系统写者、统一来源/收据与 compaction/sleep/checkpoint 仍需接齐；实际主 Session 实体与导航也未交付。

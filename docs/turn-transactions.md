@@ -1,6 +1,6 @@
 # 受管理的 turn 事务桥（dev）
 
-2026-11-27。本阶段实现主 Session 所需的事务基础与数据 turn 恢复，尚未接入 Agent 循环或创建实际主 Session，不代表 0.2 已交付。会话上下文投影、消息准入、Worker 权限与睡眠/checkpoint 仍按 [TODO](../TODO.md) 推进。
+2026-11-27。本文说明事务基础与数据 turn 恢复；dev 已通过 [原生 Runtime](native-runtime.md) 接入真实 Agent，实际主 Session 实体/导航仍未创建，不代表 0.2 已交付。完整消息准入、Worker 与睡眠/checkpoint 继续按 [TODO](../TODO.md) 推进。
 
 ## Host 接口与数据边界
 
@@ -12,6 +12,8 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 - cancel() 取消并等待拥有的数据进程，再完成失败审计。published turn 的 signal 仅负责准入取消，活动中的取消由调用方显式管理。
 
 这条桥不管理 DSH Inbox，也不创建第二套模型队列。Runtime 接入时须先让 Agent、Worker、工具静止，再交给 finish/cancel；当前桥只跟踪经自身 execute 发起的进程，不能把这部分验收当作所有原生工具/Worker 已接齐。
+
+原生 Runtime 使用 writerScope=agent-runtime，并提供 onExpiry/onCancel 的所有者收尾回调：先取消 Agent、等待本轮 end 与前台写者，再调用桥完成。默认 data-subprocesses 继续用于独立桥；两种 scope 的恢复能力不能混用。完成期限仍由 finalizationTimeoutMs 控制，管道读期限另留出对应收尾时间。
 
 ## 锁、许可与审计
 

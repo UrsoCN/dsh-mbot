@@ -15,6 +15,9 @@ mbot_turn_recover() {
   flock -n 8 || { mbot_error 'turn writer is active; cannot recover it'; return 1; }
   if [[ ! -e $ledger ]]; then printf '{"kind":"recovered","needed":false}\n'; return; fi
   [[ -f $ledger && ! -L $ledger ]] || { mbot_error 'invalid turn journal'; return 1; }
+  if jq -e '.schemaVersion==1 and .writerScope=="agent-runtime"' "$ledger" >/dev/null 2>&1; then
+    mbot_error 'Agent Runtime recovery needs Agent/tool coordination; this recovery command only supports data-subprocesses'; return 1
+  fi
   jq -e --arg workspace "$MBOT_WS" '.schemaVersion==1 and .workspace==$workspace and .writerScope=="data-subprocesses"
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))

@@ -44,7 +44,8 @@ dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 sch
 |---|---|
 | plugin/index.js | mbot 服务、volatile workspace、受管理子进程、初始化与配置保存 |
 | plugin/client.js | DSH lazy-CJS 浏览器入口；命令活动贡献，复用原生卡片 |
-| plugin/turn.js、bin/mbot-turn、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与数据恢复：快照/锁/许可/审计、写者核实和准确 commit 识别；实际会话/Worker/checkpoint 接入仍待完成 |
+| plugin/turn.js、bin/mbot-turn、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与数据恢复：快照/锁/许可/审计、写者核实和准确 commit 识别；Worker/checkpoint 与 Runtime 恢复仍待完成 |
+| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体、Worker、消息与生命周期恢复仍待完成 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
 | bin/mbot、bin/botctl、lib/ | 配置、事务、lint、运行、渲染、guard、Dreaming、调度、备份 |
 | templates/workspace/ | 新仓库模板；gitignore 在 init 时生成 .gitignore |
@@ -119,7 +120,7 @@ Host 串行初始化，通过 ConfigEditor 原子保存 canonical directory；�
 
 主 Session 的目标是受插件管理的真实交互会话：按版本组合 SOUL、MEMORY、近期摘要/原始尾部与本次请求，配合 compact 和睡眠。DSH 持有 Session 日志/Inbox/Agent，MBot Runtime 持有业务上下文、准入、来源和写事务；启用业务对话前接入每轮基准、锁、guard 与审计，不再以长期“只读入口”作为目标。0.1 headless 入口保留兼容，Worker/Dreaming 不复用主 Session。详见 [Session Runtime](session-runtime.md)。
 
-dev 已实现 [turn 事务桥](turn-transactions.md) 及数据 turn 恢复，验证上下文文件固定、跨 Host flock、活动/过期 permit、原有 guard/提交、取消、异常 journal、私有快照校验和提交回执中断。它尚未接入 Agent 循环，Runtime 必须在 system-prompt/assemble 前取得 lease；仅在 agent/pre-step 加锁太晚，因为 DSH 已组装提示。旧业务快照的 shadow、全部工具/Worker 静止、消息准入与 checkpoint 恢复仍须在实际会话中验证。
+dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收，Worker、实际主 Session 创建、统一来源/收据、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
