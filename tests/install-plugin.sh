@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -41,6 +41,13 @@ async function probe(ctx) {
     await turn.execute('botctl', ['remember', 'installed managed candidate', '--as', 'chief'])
     const turnResult = await turn.finish({ reason: { kind: 'completed' }, text: 'installed transaction succeeded' })
     if (!turnResult.success) throw new Error('installed transaction bridge failed')
+    const interrupted = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 2, request: 'installed recovery' })
+    interrupted.child.stdin.end()
+    await interrupted.child.done
+    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    if (recovered.kind !== 'recovered' || !recovered.needed || recovered.success) throw new Error('installed recovery failed')
+    if ((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed) throw new Error('installed recovery was not idempotent')
+    if ((await ctx.mbot.execute('mbot', ['resume'])).exitCode) throw new Error('installed recovery cannot resume')
     const definition = ctx.tools.get('botctl')
     if (!definition) throw new Error('native botctl tool missing')
     const signal = new AbortController().signal

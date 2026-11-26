@@ -18,3 +18,5 @@ ctx.mbot.workspace({ sessionId: 'main-session' })
 ctx.mbot.selectBot('example', { revision: registry.revision })
 const turn: Promise<plugin.TurnLease> = ctx.mbot.beginTurn({ botId: 'example', sessionId: 'session', turn: 1, request: 'hello' })
 void turn
+const recovery: Promise<plugin.RecoverTurnResult> = ctx.mbot.recoverTurn({ botId: 'example' })
+void recovery

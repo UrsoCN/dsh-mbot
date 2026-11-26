@@ -12,10 +12,13 @@ export interface Config { workspace: Volatile<string>; registry: Volatile<BotReg
 export declare const Config: z<{ workspace?: string | null; registry?: BotRegistrySnapshot | null }, Config>
 export declare const packageRoot: string
 export interface BotSelection { botId?: string; sessionId?: string }
-export interface ExecuteOptions extends BotSelection { signal?: AbortSignal; input?: string; /** Trusted Host override; not exposed to the model tool. */ workspace?: string; /** Host-held active transaction identity. */ permit?: { runId: string; token: string } }
+export interface ExecuteOptions extends BotSelection { signal?: AbortSignal; input?: string; /** Trusted Host override; not exposed to the model tool. */ workspace?: string; /** Host-held active transaction identity. */ permit?: { runId: string; token: string }; /** Host asserts its owned data calls have settled. */ recoveryOwner?: { pid: number; start: string } }
 export interface ManagementOptions { signal?: AbortSignal; revision?: number }
 export interface ImportOptions extends ManagementOptions { name?: string; defaultRole?: string }
 export interface ExecuteResult { exitCode: number; stdout: string; stderr: string; truncated: boolean; workspace?: string }
+export type RecoverTurnResult = { kind: 'recovered'; needed: false } | {
+  kind: 'recovered'; needed: true; alreadyCommitted: boolean; runId: string; head: string; meta: string; transcript?: string; success: boolean
+}
 export declare class MBotService extends Service {
   static inject: string[]
   constructor(ctx: Context, config: Config)
@@ -26,6 +29,7 @@ export declare class MBotService extends Service {
   selectBot(identity: string, options?: ManagementOptions): Promise<BotRegistration>
   describeBots(): Promise<string>
   beginTurn(options: BeginTurnOptions): Promise<TurnLease>
+  recoverTurn(options?: BotSelection & { signal?: AbortSignal }): Promise<RecoverTurnResult>
   initialize(directory?: string, options?: ExecuteOptions): Promise<ExecuteResult>
   execute(program: 'mbot' | 'botctl', args: string[], options?: ExecuteOptions): Promise<ExecuteResult>
 }

@@ -19,8 +19,9 @@ if [[ ${1:-} == -C ]]; then
   MBOT_CLI_WS=$2; shift 2
 fi
 case ${1:---help} in
-  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\n       mbot [-C dir] run [bot] "request" [--task id]\n       mbot [-C dir] tick|archive|dream|status|pause [reason]|resume\n' ;;
+  -h|--help) printf 'Usage: mbot [-C dir] init [dir]\n       mbot [-C dir] run [bot] "request" [--task id]\n       mbot [-C dir] tick|archive|dream|status|pause [reason]|resume|recover\n' ;;
   init) shift; mbot_init "$@" ;;
+  recover) shift; [[ $# == 0 ]] || { mbot_error 'usage: mbot recover'; exit 2; }; mbot_select_workspace; "$MBOT_ROOT/bin/mbot-turn" -C "$MBOT_WS" --recover ;;
   run|tick|archive|dream|status|pause|resume)
     command=$1; shift
     if [[ ( $command == run || $command == tick || $command == archive || $command == dream ) && -v MBOT_RUN_ID ]]; then mbot_error "nested mbot $command is forbidden (MBOT_RUN_ID is set)"; exit 1; fi

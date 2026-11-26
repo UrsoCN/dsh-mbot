@@ -2,7 +2,7 @@ import { redact } from './redact.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | select <botId or name> | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | select <botId or name> | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -12,6 +12,7 @@ export function commandArgs(raw) {
   const rest = match?.[2] ?? ''
   if (action === 'help') return null
   if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
+  if (action === 'recover' && !rest) return { program: 'host', argv: ['recover'] }
   if (['import', 'select'].includes(action)) {
     if (!rest) throw new Error(usage)
     return { program: 'host', argv: [action, rest] }
@@ -36,6 +37,10 @@ export function apply(ctx) {
         const options = { signal: invocation.signal, sessionId: invocation.agent?.id ?? invocation.agent?.session?.id }
         if (command.program === 'host') {
           if (command.argv[0] === 'list') return { kind: 'success', text: await ctx.mbot.describeBots() }
+          if (command.argv[0] === 'recover') {
+            const result = await ctx.mbot.recoverTurn(options)
+            return { kind: 'success', text: result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
+          }
           if (command.argv[0] === 'import') {
             const bot = await ctx.mbot.importBot(command.argv[1], options)
             return { kind: 'success', text: await redact(`Imported Bot: ${bot.name} (${bot.botId})\nNext: /mbot select ${bot.botId}\n`, bot.workspacePath) }

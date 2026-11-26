@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { redact } from './redact.js'
+import { processStart } from './recovery.js'
 
 function write(stream, value) {
   return new Promise((resolve, reject) => stream.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()))
@@ -16,12 +17,14 @@ export class TurnLease {
   #timer
   #closed = false
   #finalizationTimeoutMs
+  #transportEnded = false
 
   constructor(mbot, child, frames, ready, identity, finalizationTimeoutMs) {
     this.mbot = mbot
     this.child = child
     this.frames = frames
     this.#token = ready.token
+    void child.done.then(() => { this.#transportEnded = true }, () => { this.#transportEnded = true })
     this.#finalizationTimeoutMs = finalizationTimeoutMs
     Object.defineProperty(this, 'identity', { value: Object.freeze({ ...identity, runId: ready.runId }) })
     Object.defineProperty(this, 'snapshot', { value: Object.freeze(ready.snapshot) })
@@ -44,6 +47,8 @@ export class TurnLease {
     void this.#writes.catch(() => {})
     return this.#writes
   }
+
+  get transportEnded() { return this.#transportEnded }
 
   execute(program, args, options = {}) {
     if (this.#closed) return Promise.reject(new Error('Managed turn is closed'))
@@ -110,12 +115,14 @@ export async function openTurn(mbot, root, bot, options) {
   const header = { kind: 'begin', schemaVersion: 1, botId: bot.botId, sessionId: options.sessionId,
     turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])] }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
-    || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string'
+    || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
     || header.requestIds.some(id => typeof id !== 'string' || !id || /[\0\r\n]/u.test(id))
     || !Number.isSafeInteger(finalizationTimeoutMs) || finalizationTimeoutMs < 1 || finalizationTimeoutMs > 2147483647) throw new Error('Invalid managed turn identity or request')
+  const ownerStart = await processStart()
   options.signal?.throwIfAborted()
   const child = mbot.ctx.subprocess.spawn({ argv: [join(root, 'bin', 'mbot-turn'), '-C', bot.workspacePath, bot.defaultRole],
-    cwd: root, env: { DSH_HOME: process.env.DSH_HOME, PATH: `${join(root, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+    cwd: root, env: { DSH_HOME: process.env.DSH_HOME, MBOT_OWNER_PID: String(process.pid), MBOT_OWNER_START: ownerStart,
+      PATH: `${join(root, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}` },
     graceMs: 5000, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: { maxBytes: 128000 } } })
   mbot.active.add(child)
   child.stdin.on('error', () => {})

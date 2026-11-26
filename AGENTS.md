@@ -19,6 +19,7 @@
 - 主 Session 的业务上下文/准入由 MBot Runtime 管理，DSH 持有事件与执行；遵循 docs/session-runtime.md 的来源、对话域、compact/睡眠与恢复设计。受信任 Host 插件间接口约束不宣称为安全沙箱。
 - 外部消息与运行内工具分通道，不能重入同一队列死锁；持久多 Bot Host 的运行身份按 Agent/子进程传递，不写入可变全局 process.env。
 - turn 桥见 docs/turn-transactions.md：组装系统提示前取得 lease；只跟踪经桥发起的数据调用不等于所有写者静止。Runtime 必须协调 Agent/Worker/全部工具及期限；遗留 journal 不能靠删除或普通 resume 掩盖，许可 token 不入 prompt/审计。
+- 数据 turn 恢复已有 recoverTurn / mbot recover：验证私有快照、PID 出生身份、Git/锁和 commit intent；journal 的 writerScope=data-subprocesses 仅覆盖 fresh 数据子进程。增加 Agent/Worker/IPC 写者前扩展静止协议，不能沿用该 scope 的范围假设；已提交但未回执的 turn 只能结算一次。
 - 升级不覆盖用户角色/记忆/任务；新持久配置带版本/迁移，验收旧仓库导入与部分失败修复。
 - key/.env 不打印、不提交、不入包；真实 API 可用已授权 key，隔离 DSH_HOME/XDG/数据并清理临时凭据。
 

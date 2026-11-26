@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：数据 turn 中断恢复（未发布）
+
+- 新增 Host recoverTurn、/mbot recover 与 CLI mbot recover；校验活写者、私有快照、PID 出生身份、Git/锁和保存的运行预算，恢复合法任务并回滚非法配置/记忆，保留 PAUSED 供明确复核。
+- 提交前记录准确 commit intent，能识别 Git 已完成但未回执的 turn，仅结算一次；重复恢复为 no-op。SIGKILL 遗留许可在恢复写入前失效，恢复失败仍保留证据；无法确认的现场拒绝继续。
+- 类型、33 项 Cordis、64 组 Bash 检查通过；source/tarball/Git 安装实测中断与恢复，真实 Chromium 回归通过。强制退出验收包括提交后和 committed 回执后两个位置；详见 [turn 事务与恢复](turn-transactions.md)。
+
+恢复明确限定为 data-subprocesses，不覆盖真实 Agent/Worker、通用工具或睡眠 checkpoint。主 Session/Runtime/管理面板仍未交付，本阶段不打新发布 tag。
+
 ## dev：主 Session 事务基础（未发布）
 
 - 新增 Host turn 事务桥：固定 Git/上下文快照、Bot flock、运行内 permit 数据调用、事件记录、guard/脱敏审计与单次提交；旧 CLI/headless 行为保留。

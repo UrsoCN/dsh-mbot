@@ -1,6 +1,6 @@
 # 受管理的 turn 事务桥（dev）
 
-2026-11-27。本阶段实现主 Session 所需的事务基础，尚未接入 Agent 循环或创建实际主 Session，不代表 0.2 已交付。会话上下文投影、消息准入、Worker 权限、睡眠/checkpoint 和恢复仍按 [TODO](../TODO.md) 推进。
+2026-11-27。本阶段实现主 Session 所需的事务基础与数据 turn 恢复，尚未接入 Agent 循环或创建实际主 Session，不代表 0.2 已交付。会话上下文投影、消息准入、Worker 权限与睡眠/checkpoint 仍按 [TODO](../TODO.md) 推进。
 
 ## Host 接口与数据边界
 
@@ -19,7 +19,7 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 
 运行内调用携带 runId/token，按子进程传递 MBOT_RUN_ID、MBOT_PERMIT_TOKEN 和目录，不修改 Host 的全局 process.env。botctl 在自己的事务锁内检查活动状态、身份、token 与期限；缺失、过期或另一代 permit 不能写入。旧 headless run 在没有活动 turn 时仍使用原接口。活动/遗留 journal 存在时，legacy 模型调用及人类写入也不能绕过；人类只读查询仍可检查现场。
 
-完成后复用现有 guard：恢复非法记忆/协议/历史写入、HEAD 移动和控制路径异常，校验任务/看板，生成脱敏 transcript/meta，统一提交合法产出与审计。metadata 增加 Bot、Session、turn 和请求身份；失败沿用计数/暂停规则。提交前进入 committing 阶段，停止新的许可写入，成功后移除活动 journal。原始 Session 日志位于已有忽略目录 .mbot/runs，凭据和许可不入 Git。
+完成后复用现有 guard：恢复非法记忆/协议/历史写入、HEAD 移动和控制路径异常，校验任务/看板，生成脱敏 transcript/meta，统一提交合法产出与审计。metadata 增加 Bot、Session、turn 和请求身份；失败沿用计数/暂停规则。提交前进入 committing 阶段并在私有快照中保存 commit-intent.json（准确 tree、父提交、ref、提交说明和审计路径），停止新的许可写入；成功后移除活动 journal。原始 Session 日志位于已有忽略目录 .mbot/runs，凭据和许可不入 Git。
 
 默认完成阶段有 30 秒期限；完成等待失控会终止桥并保留恢复证据，不能假称提交成功。模型执行阶段的期限来自数据仓库 MBOT_TIMEOUT；真正接入 Runtime 时，还必须将期限与 Agent 取消/Worker 静止协调，而不是只停止数据调用。
 
@@ -27,13 +27,23 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 
 .mbot/runs/active-turn.json 记录 schemaVersion、阶段、身份、基准及私有 scratch 引用。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
 
-本阶段证明“保留证据并拒绝危险续跑”，**自动/人工辅助的完整恢复命令尚未实现**，仍须补齐活写者核实、阶段/commit 识别、恢复/补偿以及 checkpoint 协调后再开放主 Session。恢复不能只删除 journal 或把一次未知投递当作 exactly-once 完成。
+dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot recover 和 mbot -C <目录> recover。恢复不调用模型，不自动 resume：
+
+1. 非阻塞取得 Bot 锁，核实 journal 与私有 ledger/header/token 一致、scratch 所有者/700 权限、必需文件及所有祖先路径。合法忽略文件的叶子软链可原样保留，不能通过祖先软链读写快照外的文件；缺失或不完整的快照留待人工核查。
+2. 结合 PID 和 /proc 出生身份检查 helper/Host 与许可子进程，避免把 PID 复用或僵尸当存活写者。Host API 先取消并等待本服务的已断连 lease，再确认同进程所有者；普通 CLI 不替一个仍活着的 Host 作此确认，应从该 Host 执行 /mbot recover 或先停止它。
+3. 核实 Git 绑定/目录 inode、两把锁 inode，取得 botctl 锁。SIGKILL 遗留的 active permit 先变为 abandoned，即使恢复随后失败，旧许可也不能继续写。使用保存的六项预算/期限，不先加载可能已被非法改坏的配置。
+4. 若 HEAD 与保存的 commit intent 的 tree、唯一父提交、ref、完整提交说明及 Bot/Session 审计匹配，说明提交已完成，仅结算计数和移除 journal；不重做提交。HEAD 不匹配时保留现场并拒绝，不能删除人类后来的提交。
+5. 尚无完成提交时，使用已保存的 finish，或生成 aborted outcome；复用 guard、脱敏审计与提交，合法任务保留，非法 MEMORY/协议/配置恢复。新审计带 runtime.recovered。恢复再次中断仍保留证据；失败计数根据本轮基准结算，重试不累加同一轮。
+
+恢复结果的 kind=recovered，needed=false 表示已无活动 journal；needed=true 时返回 runId/head/meta/success 和 alreadyCommitted。恢复成功仍保持 PAUSED，检查 status/审计后显式 resume。不要手动删除 journal 代替恢复。
+
+**范围**：journal 的 writerScope=data-subprocesses 明确限定为本桥启动的 fresh 数据子进程及其 botctl 写锁。进程检查对读取不到环境的新进程保守拒绝；出生早于 helper 的受保护守护进程不属于本桥的新数据写者，旧 Host 则单独检查。既有进程经 IPC 获得权限、真实 Agent/Worker、通用 shell/FS 或后台任务尚不受这套范围假设覆盖，必须扩展所有权和静止协议。旧 dev journal 缺少新恢复字段时明确拒绝自动恢复；0.1 发布版本没有此类 journal。完整 Runtime、Session checkpoint 与跨系统投递恢复仍待实现。
 
 ## 验收
 
-- 类型检查与 28 项 Cordis 检查通过；新增真实 Bash/Node IPC 覆盖固定上下文、运行内工具不死锁、单次审计提交、非法 MEMORY/HEAD 回滚、过期 permit、两 Host 锁争用及等待取消、Session 工具/usage 事件、凭据脱敏、活动调用取消、脏目录/断连证据与完成超时。
+- 类型检查与 33 项 Cordis 检查通过；真实 Bash/Node IPC 覆盖固定上下文、运行内工具不死锁、单次审计提交、非法 MEMORY/HEAD 回滚、过期 permit、两 Host 锁争用及等待取消、Session 工具/usage 事件、凭据脱敏、活动调用取消、脏目录/断连证据与完成超时。恢复新增存活许可进程、SIGKILL 后旧许可失效、损坏 completion 的重试、坏配置恢复、快照/软链/锁拒绝，以及 Git 提交后和 committed 回执后的两处真实强制退出；核对只产生一次提交及计数。
 - 原有 64 组 Bash 检查通过，覆盖 legacy run/tick/Dreaming/运维与恢复行为；没有读取真实 profile 或调用模型。
-- source/tarball/Git 安装探针实际调用 beginTurn → remember → finish，再验证原有工具/命令/schema/bin/卸载。证据：/tmp/mbot-plugin-install.VgJQD5。
-- 实际 Chromium/tarball 的 init/import/list/select/status、多窗口、profile 隔离和重启回归通过。证据：/tmp/mbot-gui-test.nCjUvz。这证明原界面回归通过，不是主 Session 上下文的验收。
+- source/tarball/Git 安装探针实际调用 beginTurn → remember → finish，以及中断 → recover → 重试 no-op → resume，再验证原有工具/命令/schema/bin/卸载。证据：/tmp/mbot-plugin-install.0oZimU。
+- 实际 Chromium/tarball 的 init/import/list/select/status、多窗口、profile 隔离和重启回归通过。证据：/tmp/mbot-gui-test.D2fWYP。这证明原界面回归通过，不是主 Session 上下文的验收。
 
 下一步在组装系统提示之前接入 Runtime 的 lease 闸门、Agent-scoped SOUL/记忆提供者和受管理消息通道；验证真实模型视图中的旧快照 shadow、近期摘要与 compact，再完成实际工作区/主 Session 绑定。

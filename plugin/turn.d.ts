@@ -17,6 +17,7 @@ export interface BeginTurnOptions { botId?: string; sessionId: string; turn: num
 export declare class TurnLease {
   readonly identity: TurnIdentity
   readonly snapshot: ContextSnapshot
+  readonly transportEnded: boolean
   record(event: SessionEvent): Promise<void>
   execute(program: 'mbot' | 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
   finish(outcome: TurnOutcome): Promise<TurnResult>

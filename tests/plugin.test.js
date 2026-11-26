@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -140,6 +140,7 @@ test('slash commands execute without a model and treat request text literally', 
   assert.equal((await command.handler({ rawInput: 'unknown', signal: new AbortController().signal })).kind, 'error')
   assert.deepEqual(commands.commandArgs('run say hello; $(touch /tmp/should-not-execute)'), { program: 'mbot', argv: ['run', 'chief', 'say hello; $(touch /tmp/should-not-execute)'] })
   assert.deepEqual(commands.commandArgs('init /tmp/path with spaces'), { program: 'mbot', argv: ['init', '/tmp/path with spaces'] })
+  assert.deepEqual(commands.commandArgs('recover'), { program: 'host', argv: ['recover'] })
 })
 
 test('commands.execute persists native lifecycle events without model-visible content', async t => {
@@ -521,6 +522,167 @@ test('stalled finalization is bounded and keeps a paused recovery journal', asyn
   assert.equal(ledger.phase, 'abandoned')
   assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
 })
+
+test('recovery audits an interrupted turn once and retains PAUSED for explicit resume', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'recovery-session', turn: 1, request: 'interrupted work' })
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const memory = await readFile(join(ws, 'MEMORY.md'), 'utf8')
+  const config = await readFile(join(ws, '.mbot/config'), 'utf8')
+  const record = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /still active/u)
+  assert.equal((await lease.execute('botctl', ['board', 'add', 'preserved task'])).exitCode, 0)
+  await writeFile(join(ws, 'MEMORY.md'), 'forbidden interrupted memory edit\n')
+  process.kill(record.pid, 'SIGKILL')
+  await lease.child.done
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).phase, 'active')
+  await writeFile(join(record.scratch, 'finish.json'), '{}')
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /invalid saved turn completion/u)
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).phase, 'abandoned')
+  const stale = await ctx.mbot.execute('botctl', ['board', 'add', 'late recovery write'],
+    { permit: { runId: record.runId, token: record.token } })
+  assert.equal(stale.exitCode, 1)
+  assert.match(stale.stderr, /stale or invalid/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  await rm(join(record.scratch, 'finish.json'))
+  // Recovery uses the saved limits even when the live configuration is corrupt.
+  await writeFile(join(ws, '.mbot/config'), 'invalid configuration\n')
+  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.success, false)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  assert.match(await readFile(join(ws, 'BOARD.md'), 'utf8'), /preserved task/u)
+  assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), memory)
+  assert.equal(await readFile(join(ws, '.mbot/config'), 'utf8'), config)
+  const meta = JSON.parse(await readFile(join(ws, recovered.meta), 'utf8'))
+  assert.equal(meta.runtime.recovered, true)
+  assert.ok(meta.violations.some(item => item.path === 'MEMORY.md'))
+  assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  const head = git(ws, 'rev-parse', 'HEAD')
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal((await ctx.mbot.execute('mbot', ['resume'])).exitCode, 0)
+  const next = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'recovery-session', turn: 2, request: 'next turn' })
+  assert.equal((await next.finish({ reason: { kind: 'completed' }, text: 'resumed' })).success, true)
+})
+
+test('recovery refuses a surviving permit process and succeeds after it settles', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'writer-session', turn: 1, request: 'writer loss' })
+  const record = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  const writer = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'],
+    { env: { ...process.env, MBOT_PERMIT_TOKEN: record.token }, stdio: ['ignore', 'pipe', 'ignore'] })
+  t.after(() => writer.kill('SIGKILL'))
+  const exited = new Promise(resolve => writer.once('exit', resolve))
+  await new Promise(resolve => writer.stdout.once('data', resolve))
+  lease.child.stdin.end()
+  await lease.child.done
+  const head = git(ws, 'rev-parse', 'HEAD')
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /permit-bearing process/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.ok(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  writer.kill('SIGTERM')
+  await exited
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, false)
+})
+
+test('recovery preserves evidence when private snapshot, journal or lock identity is invalid', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'snapshot-session', turn: 1, request: 'snapshot loss' })
+  lease.child.stdin.end()
+  await lease.child.done
+  const journal = join(ws, '.mbot/runs/active-turn.json')
+  const text = await readFile(journal, 'utf8')
+  const record = JSON.parse(text)
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  const base = git(ws, 'rev-parse', 'HEAD')
+  await writeFile(journal, JSON.stringify({ ...record, turn: record.turn + 1 }))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /does not match/u)
+  await writeFile(journal, text)
+  const saved = join(record.scratch, 'ignored/.mbot')
+  const backup = join(record.scratch, 'ignored-mbot-backup')
+  const outside = join(root, `outside-snapshot-${++seq}`)
+  await mkdir(outside)
+  await writeFile(join(outside, 'marker'), 'untouched\n')
+  await rename(saved, backup)
+  await symlink(outside, saved)
+  try { await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /unsafe.*snapshot|unsafe.*ancestor/iu) }
+  finally { await rm(saved); await rename(backup, saved) }
+  assert.equal(await readFile(join(outside, 'marker'), 'utf8'), 'untouched\n')
+  const settings = join(record.scratch, 'settings')
+  const limits = await readFile(settings, 'utf8')
+  await writeFile(settings, limits.split('\n').slice(1).join('\n'))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /missing saved turn limit/u)
+  await writeFile(settings, limits)
+  const lock = join(ws, '.mbot/botctl.lock')
+  await rename(lock, `${lock}.original`)
+  await writeFile(lock, '')
+  try { await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /lock identity changed/u) }
+  finally { await rm(lock); await rename(`${lock}.original`, lock) }
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal(await readFile(journal, 'utf8'), text)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, false)
+})
+
+for (const crashAt of ['commit', 'receipt']) {
+  test(`recovery recognizes a completed Git commit after a crash at ${crashAt}`, async t => {
+    const { ctx, ws, owner } = await app(t)
+    await configEditor(ctx, owner, ws)
+    const bot = await ctx.mbot.importBot(ws)
+    const path = process.env.PATH
+    const fixture = join(root, `crash-bin-${++seq}`)
+    await mkdir(fixture)
+    // A fixture-only wrapper kills the Bash owner at the actual durability boundary.
+    const executable = crashAt === 'commit' ? 'git' : 'rm'
+    const matches = crashAt === 'commit'
+      ? 'for arg in "$@"; do [[ $arg != commit ]] || crash=1; done'
+      : 'for arg in "$@"; do [[ $arg != */active-turn.json ]] || crash=1; done'
+    await writeFile(join(fixture, executable), `#!/usr/bin/env bash\ncrash=0\n${matches}\n`
+      + (crashAt === 'commit' ? '/usr/bin/git "$@" || exit $?\n' : '')
+      + 'if ((crash)); then kill -KILL "$PPID"; exit 0; fi\n'
+      + (crashAt === 'receipt' ? 'exec /usr/bin/rm "$@"\n' : ''), { mode: 0o700 })
+    const base = git(ws, 'rev-parse', 'HEAD')
+    let lease
+    try {
+      process.env.PATH = `${fixture}:${path}`
+      lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: `crash-${crashAt}`, turn: 1, request: 'durable outcome' })
+    } finally { process.env.PATH = path }
+    const record = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+    t.after(() => rm(record.scratch, { recursive: true, force: true }))
+    await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: 'committed outcome' }))
+    const head = git(ws, 'rev-parse', 'HEAD')
+    assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+    assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).phase,
+      crashAt === 'commit' ? 'committing' : 'committed')
+    if (crashAt === 'commit') {
+      await writeFile(join(ws, 'human-work'), 'later human commit\n')
+      git(ws, 'add', 'human-work')
+      git(ws, 'commit', '-m', 'fixture: later human commit')
+      const later = git(ws, 'rev-parse', 'HEAD')
+      await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /HEAD does not match/u)
+      assert.equal(git(ws, 'rev-parse', 'HEAD'), later)
+      git(ws, 'reset', '--hard', head)
+    }
+    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    assert.equal(recovered.alreadyCommitted, true)
+    assert.equal(recovered.success, true)
+    assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+    assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '0\n')
+    assert.ok(await readFile(join(ws, '.mbot/PAUSED'), 'utf8'))
+    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+    assert.equal(git(ws, 'status', '--porcelain'), '')
+  })
+}
 
 test('live workspace config is captured per operation and unloading removes tools and commands', async t => {
   const { ctx, ws, owner } = await app(t)

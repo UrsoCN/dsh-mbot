@@ -8,7 +8,7 @@ DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记�
 
 dev 分支已推进实例登记：`/mbot list`、`/mbot import <目录>`、`/mbot select <botId 或名称>` 可用，插件 init 同时登记稳定 Bot 身份；这些变更尚未进入发布标签。登记和选择会按 profile 保存，DSH 工作区/主 Session 绑定仍待实现。详见 [实例登记](docs/bot-instances.md)。
 
-dev 也已实现供主 Session 使用的 [turn 事务基础](docs/turn-transactions.md)，尚未接入实际会话的上下文、工具和生命周期；当前仍使用独立 headless run。
+dev 也已实现供主 Session 使用的 [turn 事务基础及中断恢复](docs/turn-transactions.md)，可用 `/mbot recover` 检查并恢复遗留数据 turn；尚未接入实际会话的上下文、工具和生命周期，当前仍使用独立 headless run。
 
 ## 通过 DSH 安装
 
@@ -97,7 +97,7 @@ Host 字段为 volatile，后续操作读取新值，在途操作保留原目录
 
 模型的原生 botctl 操作包括 boot、status、lint、board_show/add/set、task_show/result、remember。它管理 Host 配置的数据仓库，需要完整权限或一次 DSH 审批；不能写 MEMORY 或启动另一个模型。受控 Chief/Worker 继续使用 Bash botctl 与运行 guard。
 
-人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
+人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help；dev 另有 list/import/select/recover。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
 
 ## 单次运行与恢复
 
@@ -111,6 +111,8 @@ mbot -C /tmp/mbot-demo resume
 每次 run 是新的 headless 会话，使用 workspace-write/never、超时、全局锁和干净基准。Host 恢复越权/非追加写入、检查看板，保存脱敏 transcript/meta 并提交；失败保留审计，三次熔断，HEAD/控制路径异常立即暂停。原始日志在忽略的 .mbot/runs 中，保留私有权限。详情见 [设计](docs/design.md#61-受控运行)、[M2](docs/m2-run.md)。
 
 0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。每实例的 Chief 主会话、创建/导入/修复与导航列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
+
+dev 的 managed turn 若中断，journal 和私有快照会保留。用 `/mbot recover`（或 Host 已停止时的 `mbot -C <目录> recover`）核实写者并恢复审计，检查 status 后显式 resume；未确定写者/快照或提交身份时拒绝恢复。此命令不恢复旧 headless run，也尚未覆盖真实 Agent/Worker 或睡眠 checkpoint。
 
 下一版主 Session 将由插件组合人格、记忆与近期上下文，直接交互与 IM/Bot 消息共用 Runtime 准入，并统一 compact/睡眠；botctl 是门面，DSH 负责日志/执行。多窗口和隔离对话域设计见 [Session Runtime](docs/session-runtime.md)，当前尚未实现。
 
@@ -143,7 +145,7 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-当前有公开类型、16 项 Cordis、64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、工具/命令 handler、schema、bin、展示元数据及卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+dev 当前有公开类型、33 项 Cordis、64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、工具/命令 handler、turn/恢复、schema、bin、展示元数据及卸载。real-plugin 使用已授权 key 验证原生工具与包内 Dreaming；产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 `npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。设置页和主 Session 仍需各自验收。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 

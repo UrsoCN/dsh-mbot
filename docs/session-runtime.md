@@ -58,6 +58,8 @@ flowchart LR
 
 Snapshot 记录 botId、conversationId、Session ID、memoryCommit、contextEpoch、sourceCut/事件边界、运行身份。使用 Agent 范围的 systemPrompt.section/context 和受支持的准入挂钩组装；保留 DSH 必需内容，不从未记录的请求拦截里偷偷重写模型 prompt。A/B 的提供者、环境和缓存不能共享一个可变全局对象。
 
+DSH 0.2.2-rc.5 在 agent/pre-step 前已经组装系统提示。因此 lease 必须在 system-prompt/assemble 或更早的可等待闸门取得；动态 context 的 refresh 不会刷新静态 sections，SOUL 也不能依赖仅刷新 context 生效。turn/end 事件本身不等待异步 finalization，下一轮组装还须等待上一轮审计/提交完成。所有入口共用这些 Host 闸门，网页原生提交无需变成执行 Bash 的调用。
+
 SOUL/MEMORY 不是对话摘要的一部分；改版本后，下次请求使用新视图。原始 Session log 仍 append-only；旧业务上下文快照的 shadow/projection 规则需验证，不能手改 log 去掉历史，也不能让旧 MEMORY 的复述变成当前配置。近期摘要是派生工作状态，不自动升级为长期事实。
 
 其他 Bot、IM 与用户的发言都会影响对话，这是交互本身；要控制的是来源、权限和信任等级。对方消息作为带来源的数据保留，不能直接写人格、替换上下文提供者或绕过 remember/Dreaming 修改长期记忆。摘要必须保留原消息/事件引用及可见域，不把 peer 的请求压缩成“系统规则”或“所有者已确认偏好”。
@@ -116,3 +118,5 @@ DSH send_message 继续用于 Chief 与当前 fresh Worker 树内的纠偏/恢�
 重点验收：两个窗口同时发送/编辑/取消；网页与 TG 同时发；睡眠/compact 时新消息；崩溃发生在收据、Git、checkpoint、回复投递之间；两个 Host 抢同一 Bot；A/B 异步请求；过期 Worker 回写；不同用户/群线程不串上下文；其他插件 inject 不覆盖业务上下文；新版 MEMORY 生效而旧摘要不复活规则；重复 wake 不创建第二个主 Session。
 
 API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有能力包括 Agent scoped 注册、queue/steer/inject、requestId、compactNow 与命令事件；MBot 的统一 gate、来源策略、睡眠事务、运行内权限和 IM/Bot 路由仍需实现。
+
+dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据调用许可、审计与遗留数据 turn 的恢复。journal 明确标记 writerScope=data-subprocesses；这只涵盖桥启动的 fresh 数据子进程及 botctl 写锁。实际 Agent、Worker、通用工具、后台任务及可能经 IPC 获得权限的既有进程须扩展所有权/静止协议后才能启用主 Session。
