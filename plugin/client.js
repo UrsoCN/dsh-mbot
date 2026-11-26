@@ -38,6 +38,44 @@ window.__ModuleLoader__.load({ id: 'dsh-mbot', factory: () => {
       activate()
       return stop
     })
+    // Local Remote acknowledgments only: broadcasts/replay never move other
+    // windows. Defer until the composer's submit transaction has settled.
+    ctx.inject(['uiWorkspace', 'commandUi', 'workspaces'], scope => {
+      let navigationTimer
+      const deferOpen = id => {
+        clearTimeout(navigationTimer)
+        navigationTimer = setTimeout(() => {
+          navigationTimer = undefined
+          scope.uiWorkspace.openSession(id)
+        }, 0)
+      }
+      const openLink = () => {
+        const id = /^#mbot-session=(session-[0-9a-f-]+)$/u.exec(window.location.hash)?.[1]
+        if (id && scope.sessions.list.getSnapshot().phase === 'ready'
+          && scope.workspaces.list.getSnapshot().phase === 'ready') {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search)
+          deferOpen(id)
+        }
+      }
+      scope.effect(() => {
+        window.addEventListener('hashchange', openLink)
+        const stopSessions = scope.sessions.list.subscribe(openLink)
+        const stopWorkspaces = scope.workspaces.list.subscribe(openLink)
+        openLink()
+        return () => {
+          window.removeEventListener('hashchange', openLink)
+          stopSessions()
+          stopWorkspaces()
+          clearTimeout(navigationTimer)
+        }
+      })
+      scope.on('command/executed', (sessionId, name, result) => {
+        if (name !== 'mbot' || result.kind !== 'success') return
+        const target = /^Open main Session: (session-[0-9a-f-]+)$/mu.exec(result.text ?? '')?.[1]
+        if (!target) return
+        deferOpen(target)
+      })
+    })
   }
   return { name: 'mbot-client', inject: ['uiConversation', 'sessions'], apply }
 } })

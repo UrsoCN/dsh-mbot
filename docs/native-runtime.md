@@ -1,12 +1,12 @@
 # 原生 Agent Runtime 接入（dev）
 
-2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。仍未自动创建 DSH 工作区/主 Session，未交付 Worker、完整消息门面、compact/sleep/checkpoint 或 Runtime 崩溃恢复；这些继续在 [TODO](../TODO.md) 推进。
+2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。dev 已通过 [主会话绑定](main-session.md) 自动创建 DSH 工作区/主 Session；未交付 Worker、完整消息门面、compact/sleep/checkpoint 或 Runtime 崩溃恢复；这些继续在 [TODO](../TODO.md) 推进。
 
 ## Host 接口
 
 bundle 现在加载 dsh-mbot/runtime，提供 ctx.mbotRuntime。可信 Host 可在 Agent 开始工作前调用 attach(agent, {botId})，常用位置是官方 agents.create 的 setup 或 agent/created。Session 的实际 cwd 必须匹配已登记数据目录；不能把同一个受管理 Session 重定向到另一个 Bot。并发重复 attachment 复用 Promise。
 
-Runtime 会识别登记中的 mainSessionId，加载/重载时接入对应 Agent。当前登记的 DSH 绑定仍待实体创建阶段补齐；attach 是开发中的 Host 接口，不是已经交付的 /mbot 主 Session 创建命令。普通未绑定 Session 与独立 headless run 保持原行为。
+Runtime 会识别登记中的 mainSessionId，加载/重载时接入对应 Agent。创建阶段会先保存 pendingSessionId，Runtime 在 agent/created 中接管预留 Agent；绑定失败或尚在创建时拒绝业务执行并保留 Inbox。成功后 mainSessionId 接替预留引用。普通未绑定 Session 与独立 headless run 保持原行为。
 
 managed(agent) 查询是否已接入；dataLease(agent) 只在本轮活动期间取得数据许可；settled(agent) 等待当前审计/提交完成，不能只把 agent.whenIdle 当作 Git 已提交。
 
@@ -42,4 +42,4 @@ Worker 的固定角色快照、共享事务和生命周期尚未连接，spawn_a
 - source/tarball/Git 三种真实 DSH 安装通过：实际创建 Agent、attach、经两次会话模型调用使用原生 remember 并审计；标题等辅助请求由本地 adapter 单独处理。产物 /tmp/mbot-plugin-install.oRj75f。
 - Chromium 的原有 init/import/list/select/status、多标签页、profile 隔离及重启回归通过，产物 /tmp/mbot-gui-test.gb4U1U。尚不代表自动主 Session 导航或设置面板已验收。
 
-下一阶段将这套真实 Runtime 接到官方工作区/Session 创建与修复，再完成 Worker、生命周期与消息入口，达到 0.2 发布条件。
+后续 Worker、生命周期、消息入口与 Runtime 恢复继续推进，达到 0.2 发布条件。

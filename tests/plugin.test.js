@@ -283,6 +283,10 @@ test('import preserves an existing dirty repository and deduplicates canonical d
   assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
   assert.equal(git(ws, 'status', '--porcelain'), status)
   assert.deepEqual(await readFile(join(ws, 'MEMORY.md')), memory)
+  const imported = await ctx.commands.execute({ session: Session.create('headless-import') }, `/mbot import ${alias}`, [], new AbortController().signal)
+  assert.equal(imported.result.kind, 'success')
+  assert.match(imported.result.text, /Native main Session is unavailable/u)
+  assert.equal(ctx.mbot.registry().revision, revision)
   await assert.rejects(ctx.mbot.importBot(alias, { name: 'different' }), /already registered/u)
   const snapshot = ctx.mbot.registry()
   snapshot.bots[0].name = 'external mutation'
@@ -369,6 +373,8 @@ test('registry revisions and invalid persisted references reject without changin
     registry => ({ ...registry, selectedBotId: 'bot-00000000-0000-0000-0000-000000000000' }),
     registry => ({ ...registry, bots: [...registry.bots, registry.bots[0]] }),
     registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, mainSessionId: 'unbound-session' })) }),
+    registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, binding: { state: 'ready', pendingSessionId: null, error: null } })) }),
+    registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, binding: { state: 'provisioning', pendingSessionId: null, error: null } })) }),
   ]) {
     await assert.rejects(editor.edit(current => ({ ...current, registry: change(current.registry) })))
     assert.deepEqual(ctx.mbot.registry(), before)

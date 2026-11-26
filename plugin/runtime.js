@@ -147,6 +147,8 @@ class ManagedSession {
         signal.throwIfAborted()
         if (this.closing || this.runtime.closed) throw new Error('MBot Runtime is unavailable')
         if (this.error) throw this.error
+        const bot = this.runtime.ctx.mbot.bot({ botId: this.botId })
+        if (bot.binding && bot.binding.state !== 'ready') throw new Error('MBot main Session binding needs /mbot repair before business turns')
         const request = record.messages.map(message => JSON.stringify({ id: message.id, source: message.source, content: message.content })).join('\n')
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
           requestIds: record.messages.map(message => message.source.requestId).filter(value => typeof value === 'string'),
@@ -205,7 +207,7 @@ export class MBotRuntime extends Service {
     this.attachments = new Map()
     this.closed = false
     ctx.on('agent/created', async ({ agent }) => {
-      const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id)
+      const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
       if (bot) await this.attach(agent, { botId: bot.botId })
     })
     ctx.on('agent/disposed', ({ agent }) => {
@@ -236,7 +238,7 @@ export class MBotRuntime extends Service {
 
   async [Service.init]() {
     for (const agent of this.ctx.agents.list()) {
-      const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id)
+      const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
       if (!bot) continue
       if (agent.status !== 'idle') {
         agent.cancel({ kind: 'hook', reason: 'Preparing managed MBot Session' }, { keepInbox: true })

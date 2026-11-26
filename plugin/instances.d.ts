@@ -6,6 +6,8 @@ export interface BotRegistration {
   workspacePath: string
   workspaceId: string | null
   mainSessionId: string | null
+  /** Null for legacy/unbound registrations; reservations survive partial setup. */
+  binding: { state: 'provisioning' | 'ready' | 'failed'; pendingSessionId: string | null; error: string | null } | null
   defaultRole: string
   createdAt: string
 }

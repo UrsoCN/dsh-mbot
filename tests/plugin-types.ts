@@ -17,6 +17,9 @@ const bot: Promise<plugin.BotRegistration> = ctx.mbot.importBot('/tmp/mbot-types
 void bot
 ctx.mbot.workspace({ sessionId: 'main-session' })
 ctx.mbot.selectBot('example', { revision: registry.revision })
+const binding: Promise<plugin.BotRegistration> = ctx.mbot.ensureBinding('example', { revision: registry.revision })
+void binding
+ctx.mbot.resolveMainSession('example', { revision: registry.revision })
 const turn: Promise<plugin.TurnLease> = ctx.mbot.beginTurn({ botId: 'example', sessionId: 'session', turn: 1, request: 'hello' })
 void turn
 const recovery: Promise<plugin.RecoverTurnResult> = ctx.mbot.recoverTurn({ botId: 'example' })

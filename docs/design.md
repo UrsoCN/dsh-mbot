@@ -1,14 +1,14 @@
 # dsh-mbot：0.1 基线与 0.2 迭代设计
 
-当前包版本 0.1.1，发布 tag 使用对应完整版本，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。聊天区已通过真实界面验收；dev 已增加 Bot 登记/导入/选择，主 Session 和面板仍为规划。
+当前包版本 0.1.1，发布 tag 使用对应完整版本，与分支区分，状态见 [发布检查](plugin-standard-review.md)。本文件区分已实现的 Host/事务核心与计划中的交互产品；完成记录见 [RELEASE_NOTE](RELEASE_NOTE.md)，执行顺序见 [TODO](../TODO.md)。聊天区已通过真实界面验收；dev 已增加 Bot 登记/导入/选择，dev 已创建受管理主 Session；完整生命周期和面板仍为规划。
 
 ## 1. 当前能力与缺口
 
 | 已实现（含 dev） | 尚未实现/待修复 |
 |---|---|
-| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 主 Session 与生命周期的原生交互 |
-| 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 实例绑定与导入/修复 |
-| 每次独立 headless Chief、fresh Worker、独立 Dreaming、profile 内 Bot 登记 | DSH 工作区登记、持久主 Session |
+| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 主 Session 的 Worker、统一消息与睡眠生命周期 |
+| 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 缺失实体主动诊断与跨版本迁移 |
+| 每次独立 headless Chief、fresh Worker、独立 Dreaming、profile 内 Bot 登记 | 统一来源/收据、compact/sleep/checkpoint |
 | volatile workspace 的 Host 校验与更新、最小浏览器入口 | 自有设置/管理面板 |
 | cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
@@ -29,11 +29,11 @@ DSH CommandResult 支持将结果保存在 command/run、command/done，客户�
 | 名词 | 含义 |
 |---|---|
 | 插件 | profile 中的 MBot 服务、工具、命令和未来 client 面板 |
-| Bot 实例（dev 已登记） | 稳定 botId、名称、独立数据目录与角色；DSH 工作区/主 Session 引用暂为 null，绑定仍待实现 |
+| Bot 实例（dev 已登记） | 稳定 botId、名称、独立数据目录与角色；引用官方 DSH 工作区/主 Session，持久预留与失败状态支持修复 |
 | 角色 | 实例内 chief/coder 和自定义 SOUL/MEMORY；不等于管理列表中的 Bot 实例 |
 | 数据仓库 | MEMORY、BOARD、tasks、inbox、wiki、报告和 Git 历史 |
-| DSH 工作区（计划登记） | Harness 原生实体，引用数据目录；目录存在不代表实体已登记 |
-| 主 Session（计划） | MBot 管理上下文和准入的默认 Chief 交互会话；稳定 ID，多窗口共用；可有隔离的其他 conversation |
+| DSH 工作区（dev 已登记） | Harness 原生实体，引用数据目录；目录存在不代表实体已登记 |
+| 主 Session（dev 已创建） | MBot 管理上下文和准入的默认 Chief 交互会话；稳定 ID，多窗口共用；可有隔离的其他 conversation |
 | 运行 Session | 0.1 run/tick/dream 每次新建的 headless 会话，与主 Session 区分 |
 
 dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 schemaVersion、revision、selectedBotId 和少量 Bot 配置/引用；不复制 DSH 事件或工作区完整状态。由官方 ConfigEditor 按 profile 原子保存，普通 schema 可导出，Host 初次加载和保存前校验跨记录唯一性/引用。导入先 lint/boot 并 canonicalize 路径，保留原数据和历史；命令为 list/import/select，详见 [实例登记](bot-instances.md)。任务与记忆仍在原 Git 仓库。
@@ -45,7 +45,8 @@ dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 sch
 | plugin/index.js | mbot 服务、volatile workspace、受管理子进程、初始化与配置保存 |
 | plugin/client.js | DSH lazy-CJS 浏览器入口；命令活动贡献，复用原生卡片 |
 | plugin/turn.js、bin/mbot-turn、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与数据恢复：快照/锁/许可/审计、写者核实和准确 commit 识别；Worker/checkpoint 与 Runtime 恢复仍待完成 |
-| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体、Worker、消息与生命周期恢复仍待完成 |
+| plugin/binding.js | dev 的官方实体创建/修复、持久预留与只读主会话打开 |
+| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体已接入，Worker、消息与生命周期恢复仍待完成 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
 | bin/mbot、bin/botctl、lib/ | 配置、事务、lint、运行、渲染、guard、Dreaming、调度、备份 |
 | templates/workspace/ | 新仓库模板；gitignore 在 init 时生成 .gitignore |
@@ -107,24 +108,24 @@ UI 可见、Session 事件持久化、模型可见是不同问题。Chief 确需
 
 Host 串行初始化，通过 ConfigEditor 原子保存 canonical directory；保存时核对调用前的 workspace 值，保留并发的新选择。缺少 profile 保存能力时创建前报错；初始化失败保留旧选择，仓库创建后保存失败明确报告部分成功。每次业务操作仍捕获一次 workspace，在途操作不被重定向。真实 tarball 浏览器验收覆盖命令显示、错误/跳过、多标签页、刷新与重启；取消由 commands.execute/AbortSignal 验证。
 
-## 8. 下一轮：创建与主 Session
+## 8. dev：创建与主 Session
 
-插件 /mbot init 的目标流程：
+Web profile 的插件 /mbot init 已接入以下流程，详见 [主会话](main-session.md)：
 
 1. 校验数据路径/实例身份，识别新建或导入，初始化/校验 Git 仓库。
 2. 通过 DSH 原生能力登记工作区，创建或恢复 Chief 主 Session。
 3. 保存 botId/workspaceId/mainSessionId 绑定和当前选择。
 4. 在发起 Session 显示结果，默认打开主 Session，保留旧会话；不以跳转掩盖失败。
 
-跨文件、Git 与 DSH 实体没有单一事务，须定义阶段状态/补偿：重试去重、部分成功可修复，不删除用户已有仓库/Session；缺失 DSH 能力先报错，不留下虚假绑定。创建不调用模型。CLI init 保留独立行为。
+跨文件、Git 与 DSH 实体没有单一事务，须定义阶段状态/补偿：重试去重、部分成功可修复，不删除用户已有仓库/Session；基础 headless profile 缺少 DSH Controller 时只登记身份并明确提示；open/repair 要求原生能力，不留下虚假绑定。创建不调用模型。CLI init 保留独立行为。
 
 主 Session 的目标是受插件管理的真实交互会话：按版本组合 SOUL、MEMORY、近期摘要/原始尾部与本次请求，配合 compact 和睡眠。DSH 持有 Session 日志/Inbox/Agent，MBot Runtime 持有业务上下文、准入、来源和写事务；启用业务对话前接入每轮基准、锁、guard 与审计，不再以长期“只读入口”作为目标。0.1 headless 入口保留兼容，Worker/Dreaming 不复用主 Session。详见 [Session Runtime](session-runtime.md)。
 
-dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收，Worker、实际主 Session 创建、统一来源/收据、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
+dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收，Worker、统一来源/收据、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
-当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定/对话域及迁移仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
+当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定已接入；对话域、迁移与完整生命周期仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
 
 ## 9. 下一轮：设置与管理面板
 
@@ -140,6 +141,6 @@ UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工
 
 0.1.1 已修交互缺陷，0.2.0 增加实例和管理产品。新登记带 schemaVersion，导入先验证再迁移，模板采用差异合并，不 reset/re-init 用户数据。保留 Bash、模型工具、headless、源码/tarball 安装兼容矩阵。
 
-0.1 保留公开类型、11 项 Cordis、64 组 Bash 和真实模型的历史验收；0.1.1 新增 commands.execute 与浏览器验收，见 [P0](p0-feedback.md)。主 Session/面板仍待实现。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
+0.1 保留公开类型、11 项 Cordis、64 组 Bash 和真实模型的历史验收；0.1.1 新增 commands.execute 与浏览器验收，见 [P0](p0-feedback.md)。dev 主 Session 已补齐实体与导航；完整生命周期/面板仍待实现。依据见 [M0](m0-spike.md)、[M2](m2-run.md)、[M3](m3-dream.md)、[M4](m4-schedule.md)、[M5](m5-ops.md)、[plugin](plugin.md)。
 
 包版本为 0.1.1，具体发布标签在验收通过的提交上创建，以 Git refs 为准；不将它固定绑定到某个实现提交。完整版本 tag 有利于索引发现；GitHub Release/Actions 非必需。每阶段同步 TODO、发布说明与 README，按 [AGENTS](../AGENTS.md) 提交。

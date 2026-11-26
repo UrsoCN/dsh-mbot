@@ -27,6 +27,10 @@ export declare class MBotService extends Service {
   workspace(options?: BotSelection & { workspace?: string }): string
   importBot(directory: string, options?: ImportOptions): Promise<BotRegistration>
   selectBot(identity: string, options?: ManagementOptions): Promise<BotRegistration>
+  /** Create/verify the official workspace and stable managed main Session. */
+  ensureBinding(identity: string, options?: ManagementOptions): Promise<BotRegistration>
+  /** Open a healthy main without excluding its active data turn. */
+  resolveMainSession(identity: string, options?: ManagementOptions): Promise<BotRegistration>
   describeBots(): Promise<string>
   beginTurn(options: BeginTurnOptions): Promise<TurnLease>
   recoverTurn(options?: BotSelection & { signal?: AbortSignal }): Promise<RecoverTurnResult>

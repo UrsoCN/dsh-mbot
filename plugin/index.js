@@ -8,6 +8,7 @@ import { redact } from './redact.js'
 import { BotRegistry, BotRegistrySchema, emptyRegistry, findBot, registration, revise, uniqueName } from './instances.js'
 import { openTurn } from './turn.js'
 import { processStart } from './recovery.js'
+import { nativeBindingAvailable, provisionBinding, resolveBinding, sessionResult } from './binding.js'
 
 export const name = 'mbot'
 export const inject = ['subprocess']
@@ -33,6 +34,7 @@ export class MBotService extends Service {
     ctx.effect(() => async () => {
       this.closed = true
       await Promise.allSettled([...this.leases].map(lease => lease.cancel('MBot plugin disposed')))
+      await this.initializing
       for (const child of this.active) child.terminate()
       await Promise.allSettled([...this.active].map(child => child.waitForExit()))
     })
@@ -47,7 +49,7 @@ export class MBotService extends Service {
   bot(options = {}) {
     const registry = this.config.registry.get()
     if (options.botId !== undefined) return findBot(registry, options.botId)
-    const bound = options.sessionId === undefined ? undefined : registry.bots.find(bot => bot.mainSessionId === options.sessionId)
+    const bound = options.sessionId === undefined ? undefined : registry.bots.find(bot => bot.mainSessionId === options.sessionId || bot.binding?.pendingSessionId === options.sessionId)
     return bound ?? (registry.selectedBotId === null ? undefined : findBot(registry, registry.selectedBotId))
   }
 
@@ -131,11 +133,21 @@ export class MBotService extends Service {
     })
   }
 
+  ensureBinding(identity, options = {}) {
+    options = { ...options }
+    return this.manage(() => provisionBinding(this, identity, options))
+  }
+
+  resolveMainSession(identity, options = {}) {
+    if (this.closed) return Promise.reject(new Error('MBot plugin is disposed'))
+    return resolveBinding(this, identity, { ...options })
+  }
+
   async describeBots() {
     const registry = this.registry()
     if (!registry.bots.length) return 'No registered Bots. Use /mbot init <directory> or /mbot import <directory>.\n'
     const rows = await Promise.all(registry.bots.map(bot => redact(
-      `${bot.botId === registry.selectedBotId ? '* ' : '  '}Bot: ${bot.name} (${bot.botId})\n  Workspace: ${bot.workspacePath}\n  Role: ${bot.defaultRole}\n  DSH workspace: ${bot.workspaceId ?? 'not bound'}\n  Main Session: ${bot.mainSessionId ?? 'not bound'}\n`, bot.workspacePath)))
+      `${bot.botId === registry.selectedBotId ? '* ' : '  '}Bot: ${bot.name} (${bot.botId})\n  Workspace: ${bot.workspacePath}\n  Role: ${bot.defaultRole}\n  DSH workspace: ${bot.workspaceId ?? 'not bound'}\n  Main Session: ${bot.mainSessionId ?? 'not bound'}\n  Binding: ${bot.binding?.state ?? 'unbound'}${bot.binding?.error ? ` (${bot.binding.error})` : ''}\n`, bot.workspacePath)))
     return `Bot registry revision: ${registry.revision}\n${rows.join('')}`
   }
 
@@ -169,7 +181,16 @@ export class MBotService extends Service {
       } catch (error) {
         return { ...result, exitCode: 1, stderr: `${result.stderr}Repository initialized, but selection was not saved: ${error.message}\nSet the MBot workspace in the plugin configuration to use this repository.\n` }
       }
-      return { ...result, stdout: await redact(`${result.stdout}Bot: ${created.name} (${created.botId})\nSelected for subsequent /mbot and native botctl operations.\nNext: /mbot status\n`, result.workspace) }
+      let binding = 'Native main Session is unavailable in this Host. Use /mbot repair in a full DSH profile.\n'
+      if (nativeBindingAvailable(this)) {
+        try {
+          created = await provisionBinding(this, created.botId, options)
+          binding = sessionResult(created, true)
+        } catch (error) {
+          return { ...result, exitCode: 1, stderr: await redact(`${result.stderr}Bot data and identity saved, but main Session setup failed: ${error.message}\n`, result.workspace) }
+        }
+      }
+      return { ...result, stdout: await redact(`${result.stdout}Bot: ${created.name} (${created.botId})\nSelected for subsequent /mbot and native botctl operations.\n${binding}Next: /mbot status\n`, result.workspace) }
     })
   }
 

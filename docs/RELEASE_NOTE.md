@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：原生工作区与主 Session（未发布）
+
+- Web 的 /mbot init 自动登记官方工作区、创建受管理主 Session 并在发起窗口打开；import 补建旧仓库的绑定，open/repair 支持导航和重试，原会话保留，创建不调用模型。
+- 持久预留 Session ID 与 provisioning/ready/failed 状态；发布 Agent 前接入 Runtime，失败准入保留 Inbox。Bot 数据锁覆盖跨进程实体操作，ConfigEditor 更新保留独立的新选择，已开始会话先 resolve，用户标题与部分资源保留。
+- 33 项 Cordis、9 项 Runtime、64 组 Bash 回归，基础 headless 三种安装与 Web tarball 真实主 Session/工具审计、故障探针及 Chromium 双实例/多窗口/重启/链接验证。详见 [主会话](main-session.md)。真实模型使用本地 scripted adapter，没有调用 DeepSeek API。
+
+基础 headless profile 缺少 Controller 时保留只登记能力并提示；CLI init 仍只初始化数据。Worker、统一消息、取消/审计反馈、compact/sleep/checkpoint、Runtime 恢复与管理面板继续在 TODO，包仍为 0.1.1，未打新 tag。
+
 ## dev：原生 Agent Runtime（未发布）
 
 - 将事务桥接入真实 DSH Agent：组装时取得 lease，Agent-scoped SOUL/协议/MEMORY 与原生近期历史组合；通过公开 surface replacement 更新旧系统段和记忆快照，保留原始 log 及 DSH 必需上下文。

@@ -78,22 +78,41 @@ try {
   const welcome = page.getByRole('button', { name: '继续', exact: true })
   await welcome.waitFor({ timeout: 3000 }).then(() => welcome.click(), () => {})
   const commandRows = page.locator('[data-variant="others"][data-state]')
+  const observed = async () => (await readFile(eventsPath, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
   async function submit(line) {
-    const before = await commandRows.count()
+    const before = (await observed()).filter(row => row.event.type === 'command/done').length
     const input = page.locator('[contenteditable=true]')
     await input.fill(line)
     await input.press('Enter')
-    await until(async () => await commandRows.count() === before + 1 && await commandRows.last().getAttribute('data-state') !== 'running')
-    return commandRows.last().innerText()
+    const done = await until(async () => {
+      const rows = (await observed()).filter(row => row.event.type === 'command/done')
+      return rows.length > before ? rows.at(-1) : undefined
+    })
+    const text = done.event.data.text ?? ''
+    if (!text.includes('Open main Session:')) await until(async () => (await commandRows.last().innerText()).includes(text.split('\n')[0]))
+    await delay(100)
+    return text
   }
+  const witness = await context.newPage()
+  await witness.goto(server.url)
+  await witness.locator('[contenteditable=true]').waitFor()
   const workspace = join(root, '文档', 'bot demo')
   const init = await submit(`/mbot init ${workspace}`)
   assert.ok(init.includes(`Initialized ${workspace}`), init)
   assert.ok(init.includes('Selected for subsequent'), init)
   assert.ok(init.includes('Next: /mbot status'), init)
+  const mainId = /^Main Session: (session-[0-9a-f-]+)$/mu.exec(init)[1]
+  const originalId = (await observed()).find(row => row.event.type === 'command/done').sessionId
+  assert.ok((await submit('/mbot status')).includes(`Main Session: ${mainId}`))
+  assert.equal((await observed()).filter(row => row.event.type === 'command/done').at(-1).sessionId, mainId, 'Initiating window must open the main Session')
+  await until(async () => await witness.locator('[data-variant="others"][data-state]').count() === 1)
+  assert.ok((await witness.locator('[data-variant="others"][data-state]').innerText()).includes('Initialized'), 'Other window must stay on the original Session')
+  await witness.close()
   const firstList = await submit('/mbot list')
   assert.ok(firstList.includes('Bot: bot demo'), firstList)
-  assert.ok(firstList.includes('Main Session: not bound'), firstList)
+  assert.ok(firstList.includes(`Main Session: ${mainId}`), firstList)
+  assert.ok(firstList.includes('Binding: ready'), firstList)
+  assert.ok((await submit('/mbot repair')).includes(`Main Session: ${mainId}`))
   const firstBotId = /Bot: bot demo \((bot-[0-9a-f-]+)\)/u.exec(firstList)[1]
   const importedPath = join(root, '文档', 'second bot')
   await run(join(repo, 'bin', 'mbot'), ['init', importedPath])
@@ -104,8 +123,11 @@ try {
   const twoBots = await submit('/mbot list')
   assert.equal((twoBots.match(/Bot: second bot \(/gu) ?? []).length, 1)
   await submit('/mbot select second bot')
+  assert.ok((await submit('/mbot status')).includes(`Workspace: ${workspace}`), 'Bound main Session must stay on its own Bot after global selection changes')
+  await submit('/mbot open second bot')
   assert.ok((await submit('/mbot status')).includes(`Workspace: ${importedPath}`))
   await submit(`/mbot select ${firstBotId}`)
+  await submit(`/mbot open ${firstBotId}`)
   assert.equal(await run('git', ['-C', importedPath, 'rev-parse', 'HEAD']), importHead)
   assert.ok((await submit('/mbot status')).includes(`Workspace: ${workspace}`))
   const restored = await submit('/mbot list')
@@ -156,9 +178,13 @@ try {
   server.child.kill('SIGINT')
   await server.child.finished
   server = await host()
-  await page.goto(server.url)
+  await page.goto(`${server.url}#mbot-session=${mainId}`)
   await page.locator('[contenteditable=true]').waitFor()
-  await until(async () => await commandRows.count() === count + 1)
+  await until(async () => await commandRows.count() === count + 1).catch(async error => {
+    await page.screenshot({ path: join(root, 'restart-failure.png'), fullPage: true })
+    await writeFile(join(root, 'restart-failure.txt'), await page.locator('body').innerText())
+    throw error
+  })
   const afterRestart = await submit('/mbot status')
   assert.ok(afterRestart.includes(`Workspace: ${workspace}`))
   assert.ok(afterRestart.includes(firstBotId), 'Restart must restore the selected Bot identity, not just the legacy directory')
@@ -166,12 +192,20 @@ try {
   assert.ok(afterRestartList.includes(firstBotId))
   assert.equal((afterRestartList.match(/Bot: second bot \(/gu) ?? []).length, 1)
   await page.screenshot({ path: join(root, 'restart.png'), fullPage: true })
-  const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line).event)
+  // Deep links use the plugin's hash handoff; native navigation owns the view.
+  await page.goto(`${server.url}#mbot-session=${originalId}`)
+  await page.locator('[contenteditable=true]').waitFor()
+  await until(async () => await commandRows.count() === 1)
+  assert.ok((await commandRows.innerText()).includes('Initialized'), 'Original command Session must be retained')
+  await page.goto(`${server.url}#mbot-session=${mainId}`)
+  await page.locator('[contenteditable=true]').waitFor()
+  assert.ok((await submit('/mbot status')).includes(firstBotId))
+  const events = (await observed()).map(row => row.event)
   assert.ok(events.some(event => event.type === 'command/run'))
   assert.ok(events.some(event => event.type === 'command/done'))
   assert.ok(events.every(event => !['user/message', 'assistant/message', 'turn/start', 'llm/request'].includes(event.type)), 'Control commands must not send model content or start turns')
   assert.deepEqual(errors, [])
-  console.log('GUI PASS: tarball/blank-session/init/import/list/select/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/no-model')
+  console.log('GUI PASS: tarball/init-auto-main/import/list/select/open/repair/bound-routing/original-session/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/deep-link/no-model')
 } finally {
   await browser?.close()
   for (const child of processes) child.kill('SIGINT')

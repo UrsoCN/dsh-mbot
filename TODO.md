@@ -10,20 +10,15 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
 
-Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体/导航、Worker、统一消息与睡眠/checkpoint 尚未交付。
+Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；Worker、统一消息与睡眠/checkpoint 尚未交付。
 
-- [ ] 在已有实例 API 上补齐 DSH 实体创建/修复与相应命令，完成部分失败的状态记录和重试
-- [ ] 插件 /mbot init 自动完成数据仓库初始化、DSH 工作区登记、Chief 主 Session 创建和绑定；CLI mbot init 继续只初始化数据仓库
-- [ ] 完成后显示结果与主 Session 链接，默认打开新 Bot 的主 Session；保留发起命令的旧会话；初始化本身不调用模型
-- [ ] 使用官方 workspace/session/controller API；创建可重试、去重，部分失败可修复；只清理由本次创建且仍安全的资源，不删除用户已有目录或会话
-- [ ] 为已校验导入的旧仓库补建 DSH 工作区/Session 绑定；迁移识别数据版本并保留原 Git、角色、记忆和看板
-- [ ] 将已验证的版本化 SOUL/MEMORY 与原生历史 surface 接到实际主 Session，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
+- [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
 - [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
 - [ ] 接齐 Worker 的固定角色快照、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
 - [ ] 补齐主 Session 的审计结果反馈、默认保留待办的原生取消入口，以及 Runtime 生命周期命令；不将模型已输出或 agent.whenIdle 视为 Host 验收成功
 - [ ] 将已验证的数据 turn 恢复扩展到 Runtime/Agent/Worker：明确所有写者的所有权及静止证明，协调会话事件与 checkpoint；不将现有 data-subprocesses 的进程核实视为全部工具/IPC 写者已覆盖
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
-- [ ] 按调用 Session 的绑定选 Bot，避免一个面板的全局选择重定向其他 Bot 会话；重启恢复绑定，缺失/归档 Session 显示修复入口
+- [ ] 在列表/管理页主动检查缺失/归档实体，显示修复入口；已完成调用 Session 路由、持久绑定与 open/repair，继续验收多 Host writer-held、实体意外返回与故障重启
 - [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在
 
 **验收**：A/B 各有独立目录、DSH 工作区与主 Session，直接对话使用受管理上下文；多窗口并发、重复提交、睡眠中消息、cancel、checkpoint 崩溃恢复与旧规则不复活通过；wake 不重复实体，内部工具不死锁；导入/切换/重启正确；权限、审计与 headless 兼容。

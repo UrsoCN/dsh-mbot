@@ -37,6 +37,13 @@ async function probe(ctx) {
     await ctx.mbot.selectBot(bot.botId)
     const importedAgain = await ctx.mbot.importBot(ctx.mbot.workspace())
     if (importedAgain.botId !== bot.botId || ctx.mbot.registry().bots.length !== 1) throw new Error('Bot import was not idempotent')
+    const native = !!ctx.get('sessionController')
+    const bound = native ? await ctx.mbot.ensureBinding(bot.botId) : null
+    if (native) {
+      if (bound.binding.state !== 'ready' || !bound.workspaceId || !bound.mainSessionId) throw new Error('installed native binding missing')
+      const repeated = await ctx.mbot.ensureBinding(bot.botId)
+      if (repeated.mainSessionId !== bound.mainSessionId || repeated.workspaceId !== bound.workspaceId) throw new Error('binding retry minted another entity')
+    }
     const turn = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 1, request: 'installed transaction bridge' })
     await turn.execute('botctl', ['remember', 'installed managed candidate', '--as', 'chief'])
     const turnResult = await turn.finish({ reason: { kind: 'completed' }, text: 'installed transaction succeeded' })
@@ -74,9 +81,13 @@ async function probe(ctx) {
       }
     }
     ctx.llm.registerAdapter(['mbot-installation'], new InstalledAdapter())
-    const managed = await ctx.agents.create({ sessionId: `installation-${randomUUID()}`, meta: { cwd: ctx.mbot.workspace() },
-      agentOptions: { provider: 'mbot-installation', model: 'scripted' },
-      setup: (_scope, agent) => ctx.mbotRuntime.attach(agent, { botId: bot.botId }) })
+    const managed = native ? await ctx.get('sessionController').resolveAgent(bound.mainSessionId)
+      : await ctx.agents.create({ sessionId: `installation-${randomUUID()}`, meta: { cwd: ctx.mbot.workspace() },
+        agentOptions: { provider: 'mbot-installation', model: 'scripted' },
+        setup: (_scope, agent) => ctx.mbotRuntime.attach(agent, { botId: bot.botId }) })
+    if ('error' in managed) throw managed.error
+    if (!ctx.mbotRuntime.managed(managed.agent)) throw new Error('main Session was not automatically managed')
+    if (native) managed.agent.model.select({ provider: 'mbot-installation', model: 'scripted' })
     managed.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'installed managed Runtime' }], source: { kind: 'user' } }))
     await managed.agent.whenIdle()
     await ctx.mbotRuntime.settled(managed.agent)
@@ -85,7 +96,10 @@ async function probe(ctx) {
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')
     if (!candidateText.includes('installed Runtime native candidate')) throw new Error('installed Runtime data tool did not commit its candidate')
-    await managed.dispose()
+    if (native) {
+      const afterTurn = await ctx.mbot.ensureBinding(bot.botId)
+      if (afterTurn.mainSessionId !== bound.mainSessionId) throw new Error('repair replaced a started Session')
+    } else await managed.dispose()
     const definition = ctx.tools.get('botctl')
     if (!definition) throw new Error('native botctl tool missing')
     const signal = new AbortController().signal
@@ -97,7 +111,7 @@ async function probe(ctx) {
     const meta = bundle?.meta
     if (meta?.error || meta?.title?.en !== 'MBot' || meta?.title?.zh !== 'MBot'
       || !meta?.description?.zh?.includes('记忆')) throw new Error('DSH localized plugin metadata not loaded')
-    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', runtimeCalls, output, status, meta, registry: ctx.mbot.registry() }, null, 2))
+    await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: status.kind==='success', native, runtimeCalls, output, status, meta, registry: ctx.mbot.registry() }, null, 2))
     ctx.appExit(status.kind==='success' ? 0 : 1)
   } catch (error) {
     await writeFile(process.env.MBOT_INSTALL_RESULT, JSON.stringify({ success: false, error: String(error) }))
@@ -105,28 +119,41 @@ async function probe(ctx) {
   }
 }
 JS
-for mode in tarball source git; do
+for mode in tarball source git web-tarball; do
   case $mode in
-    tarball) spec=$tarball ;;
+    tarball|web-tarball) spec=$tarball ;;
     source) spec=$repo ;;
     git) spec="git+file://$root/plugin.git#$git_commit" ;;
   esac
   profile=mbot-$mode
+  if [[ $mode == web-tarball ]]; then
+    dsh --profile "$profile" --from-default-profile web --dump-config > "$root/$mode.default.yml"
+  fi
   dsh plugin --profile "$profile" add "$spec" --store-dir "$root/pnpm-store" --ignore-scripts > "$root/$mode.install.log" 2>&1
   jq -e '.dsh.profile.bundles | index("dsh-mbot") != null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
   dsh --profile "$profile" --dump-config > "$root/$mode.config.yml"
   [[ $(cat "$root/$mode.config.yml") == *'# == dsh-mbot'* ]]
   ws=$root/$mode-workspace
   printf '%s\n' '- id: mbot' '  config:' "    workspace: '$ws'" '- id: sandbox-policy' '  config:' '    mode: danger-full-access' '- id: approval' '  config:' '    policy: never' '- insert:' '    - id: mbot-install-probe' "      name: '$root/probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
-  MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" > "$root/$mode.runtime.log" 2>&1
+  app_args=()
+  if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
+  MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/$mode.runtime.log" 2>&1
   jq -e '.success and .runtimeCalls==2 and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
   jq -e '.registry.schemaVersion==1 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
+  if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
   [[ $(git -C "$ws" log -1 --format=%s) == 'human: board add 001'* ]]
   [[ -x $DSH_HOME/profiles/$profile/node_modules/.bin/mbot && -x $DSH_HOME/profiles/$profile/node_modules/.bin/botctl ]]
   "$DSH_HOME/profiles/$profile/node_modules/.bin/botctl" -C "$ws" lint > "$root/$mode.lint.log"
-  dsh --profile "$profile" --dump-config-schema > "$root/$mode.schema.json"
-  jq -e '..|objects|select(.properties?.workspace? != null)|.properties.workspace["x-cordis"].volatile==true' "$root/$mode.schema.json" >/dev/null
+  if [[ $mode != web-tarball ]]; then
+    dsh --profile "$profile" --dump-config-schema > "$root/$mode.schema.json"
+    jq -e '..|objects|select(.properties?.workspace? != null)|.properties.workspace["x-cordis"].volatile==true' "$root/$mode.schema.json" >/dev/null
+  fi
+  if [[ $mode == web-tarball ]]; then
+    printf '%s\n' '- insert:' '    - id: mbot-binding-probe' "      name: '$repo/tests/binding-probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
+    MBOT_BINDING_WS="$root/binding-faults" MBOT_BINDING_RESULT="$root/binding.result.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/binding.runtime.log" 2>&1
+    jq -e '.success and .bot.binding.state=="ready"' "$root/binding.result.json" >/dev/null
+  fi
   dsh plugin --profile "$profile" remove dsh-mbot --store-dir "$root/pnpm-store" > "$root/$mode.remove.log" 2>&1
   jq -e '.dsh.profile.bundles | index("dsh-mbot") == null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
   [[ -f $ws/BOARD.md && -z $(git -C "$ws" status --porcelain) ]]

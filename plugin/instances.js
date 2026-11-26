@@ -12,6 +12,11 @@ export const BotRegistration = z.object({
   workspacePath: z.string().pattern(/^\/[^\0\r\n]+$/u).required(),
   workspaceId: reference,
   mainSessionId: reference,
+  binding: z.union([z.const(null), z.object({
+    state: z.union(['provisioning', 'ready', 'failed'].map(value => z.const(value))).required(),
+    pendingSessionId: reference,
+    error: z.union([z.const(null), z.string().min(1).pattern(/^[^\0]+$/u)]).default(null),
+  })]).default(null),
   defaultRole: z.string().pattern(/^(?!human$)[a-z][a-z0-9_-]{0,31}$/u).default('chief'),
   createdAt: z.string().pattern(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u).required(),
 })
@@ -35,8 +40,13 @@ export function BotRegistry(input) {
     if (bot.name.trim() !== bot.name || !bot.name.trim()) throw new Error('Bot name must be trimmed and nonempty')
     if (!Number.isFinite(Date.parse(bot.createdAt)) || new Date(bot.createdAt).toISOString() !== bot.createdAt) throw new Error('Invalid Bot creation time')
     if (bot.mainSessionId && !bot.workspaceId) throw new Error('Main Session binding requires a DSH workspace binding')
+    if (bot.binding?.state === 'ready' && (!bot.workspaceId || !bot.mainSessionId || bot.binding.pendingSessionId || bot.binding.error)) throw new Error('Ready Bot binding requires verified references')
+    if (bot.binding?.pendingSessionId && bot.mainSessionId) throw new Error('Bot binding cannot have both pending and main Sessions')
+    if (bot.binding?.state === 'provisioning' && !bot.mainSessionId && !bot.binding.pendingSessionId) throw new Error('Provisioning Bot binding requires a reserved Session')
     if (registry.bots.some(other => other.botId !== bot.botId && other.botId === bot.name)) throw new Error('Bot name collides with another Bot id')
   }
+  const sessions = registry.bots.flatMap(bot => [bot.mainSessionId, bot.binding?.pendingSessionId].filter(Boolean))
+  if (new Set(sessions).size !== sessions.length) throw new Error('Duplicate Bot reserved Session')
   if (registry.selectedBotId !== null && !registry.bots.some(bot => bot.botId === registry.selectedBotId)) throw new Error('Selected Bot is not registered')
   return registry
 }
