@@ -15,7 +15,7 @@ export interface TurnOutcome { reason: { kind: string; [key: string]: unknown };
 export type ManagedOutcome = 'completed' | 'cancelled' | 'failed'
 export type FailureCountEffect = 'reset' | 'preserve' | 'increment'
 export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean; readonly outcome: ManagedOutcome; readonly failureCountEffect: FailureCountEffect }
-export interface BeginTurnOptions { botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
+export interface BeginTurnOptions { botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Native claimed input, required to seal agent-runtime replies. */ messages?: readonly import('@deepseek-ai/dsh-llm').UserMessage[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
 export declare class TurnLease {
   readonly identity: TurnIdentity
   readonly snapshot: ContextSnapshot

@@ -32,11 +32,23 @@ export interface MessageDeliveryReceipt {
   conversationKey: string; replyRoute: string
   delivery: 'queued' | 'claimed' | 'ended' | 'cancelled'; turn?: number; reason?: string
 }
+export interface VerifiedReply {
+  schemaVersion: 1; replyId: string; botId: string; sessionId: string; requestId: string; rpcId: string; messageId: string
+  conversationKey: string; replyRoute: string; adapterId: string; ownerId: string; correlationId?: string
+  turn: number; outcome: import('./turn.js').ManagedOutcome; commit: string; endEventSeq: number; assistantEventSeq: number | null; text: string
+}
+export interface MessageResult {
+  schemaVersion: 1; status: 'queued' | 'running' | 'auditing' | 'recovering' | 'unverified' | import('./turn.js').ManagedOutcome
+  final: boolean; observedThroughSeq: number; error?: string; reply?: VerifiedReply
+  audit?: { commit: string; observedHead: string; runId: string; meta: string; memoryCommit: string;
+    outcome: import('./turn.js').ManagedOutcome; failureCountEffect: import('./turn.js').FailureCountEffect; success: boolean }
+}
+export interface MessageReceipt extends MessageDeliveryReceipt { result: MessageResult }
 export interface OwnerMailbox {
   readonly binding: Readonly<OwnerMailboxBinding & { schemaVersion: 1; botId: string }>
   /** Returns after admission flush, never waits for a model response. */
   send(input: OwnerMessageInput): Promise<MessageDeliveryReceipt>
-  receipt(requestId: string): Promise<MessageDeliveryReceipt | undefined>
+  receipt(requestId: string): Promise<MessageReceipt | undefined>
   dispose(): void
 }
 export declare class MBotRuntime extends Service {

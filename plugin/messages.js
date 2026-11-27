@@ -48,6 +48,7 @@ export class MessageIndex {
     this.offset = 0
     this.claimed = new Set()
     this.inheritedMessages = new Set()
+    this.turns = new Map()
   }
 
   apply(event, inheritedEventCount = 0) {
@@ -57,7 +58,10 @@ export class MessageIndex {
     if (event.seq < inheritedEventCount) {
       for (const message of event.type === 'agent/inbox/spliced' ? event.data.inserted : event.type === 'user/message' ? [event.data] : []) this.inheritedMessages.add(message.id)
     }
-    if (event.type === 'turn/start') { this.turn = event.data.turn; this.claimed = new Set() }
+    if (event.type === 'turn/start') {
+      this.turn = event.data.turn; this.claimed = new Set()
+      this.turns.set(this.turn, { startSeq: event.seq })
+    }
     if (event.type === 'agent/inbox/spliced') {
       const data = event.data
       const removed = this.pending[data.target].splice(data.start, data.removedCount ?? 0, ...data.inserted)
@@ -65,7 +69,7 @@ export class MessageIndex {
       for (const message of removed) {
         const record = this.requests.get(requestIdentity(message))
         if (!record) continue
-        if (data.outcome === 'canceled') record.delivery = 'cancelled'
+        if (data.outcome === 'canceled') { record.delivery = 'cancelled'; record.cancelSeq = event.seq }
         else { record.delivery = 'claimed'; record.turn = this.turn; this.claimed.add(record) }
       }
       for (const message of data.inserted) {
@@ -78,7 +82,7 @@ export class MessageIndex {
           previous.fingerprint = fingerprint(message)
         }
         const record = this.remember(message)
-        if (record) { record.delivery = 'queued'; delete record.reason; delete record.turn }
+        if (record) { record.delivery = 'queued'; delete record.reason; delete record.turn; delete record.cancelSeq; delete record.endSeq }
       }
     }
     if (event.type === 'user/message') {
@@ -86,10 +90,12 @@ export class MessageIndex {
       if (record) { record.delivery = 'claimed'; record.turn = this.turn; this.claimed.add(record) }
     }
     if (event.type === 'turn/end') {
+      const turn = this.turns.get(event.data.turn)
+      if (turn) { turn.endSeq = event.seq; turn.reason = event.data.reason }
       for (const record of this.claimed) {
         // Admission can return an unexecuted claim to the native Inbox.
         if (record.delivery !== 'claimed') continue
-        record.delivery = 'ended'; record.reason = event.data.reason.kind
+        record.delivery = 'ended'; record.reason = event.data.reason.kind; record.endSeq = event.seq
       }
       this.turn = undefined
       this.claimed = new Set()

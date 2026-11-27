@@ -38,8 +38,9 @@ stdout 是 JSON，包含 schemaVersion、transportId、profileId、instanceId、
 | 1 | 宿主不可用，或操作明确拒绝 |
 | 2 | CLI 参数/输入错误或试图从 managed run 调所有者入口 |
 | 3 | 传输/持久确认不确定；talk 用原 requestId 查回/重试 |
+| 4 | receipt --wait 截止，执行继续；用原 ID 再查询 |
 
-`value.confirmation` 和 `value.delivery` 沿用消息准入的两个维度。queued/claimed/ended/cancelled 不等同于 guard/Git 提交成功，查询 runtime 看事务结果；缺失 requestId 查询返回 null。当前不会等待完整模型回答、输出聊天流或向 IM 投递结果。
+`value.confirmation` 和 `value.delivery` 沿用消息准入的两个维度。queued/claimed/ended/cancelled 不等同于 guard/Git 提交成功，查询 runtime 看事务结果；缺失 requestId 查询返回 null。dev 的 receipt 另带 [已核验结果/回答](request-replies.md)，--wait 可等待该请求终态；尚不输出聊天流或向 IM 投递结果。
 
 连接默认等待 15 秒。关闭终端、超时或断连仅结束观察，不取消已转交的输入。不会自动重连重发，更不会为了得到回执创建另一个 Agent。stop 通过专用控制通道等待捕获回合的原生工具/审计，并保留待办；传输不确定时先查询状态，重复 stop 可能捕获后来的回合，不能当成同一次取消的重试。
 

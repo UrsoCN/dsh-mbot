@@ -42,7 +42,8 @@ const mailbox: runtime.OwnerMailbox = ctx.mbotRuntime.ownerMailbox(managedAgent,
   visibility: 'owner-private', adapterId: 'tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'private-chat',
 })
 const delivery: Promise<runtime.MessageDeliveryReceipt> = mailbox.send({ requestId: 'platform-event-id', text: 'hello' })
-mailbox.receipt('platform-event-id')
+const receipt: Promise<runtime.MessageReceipt | undefined> = mailbox.receipt('platform-event-id')
+void receipt
 mailbox.dispose()
 void delivery
 ctx.plugin(ipc, { directory: '/tmp/mbot-ipc-types' })

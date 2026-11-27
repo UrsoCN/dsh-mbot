@@ -143,7 +143,8 @@ export class TurnLease {
 export async function openTurn(mbot, root, bot, options) {
   const finalizationTimeoutMs = options.finalizationTimeoutMs ?? 30000
   const header = { kind: 'begin', schemaVersion: 1, botId: bot.botId, sessionId: options.sessionId,
-    turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs }
+    turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs,
+    ...(options.messages === undefined ? {} : { messages: structuredClone(options.messages) }) }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
     || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
     || header.requestIds.some(id => typeof id !== 'string' || !id || /[\0\r\n]/u.test(id))
@@ -151,6 +152,8 @@ export async function openTurn(mbot, root, bot, options) {
     || (options.onExpiry !== undefined && typeof options.onExpiry !== 'function')
     || (options.onCancel !== undefined && typeof options.onCancel !== 'function')
     || (header.writerScope === 'agent-runtime' && (!options.onExpiry || !options.onCancel))
+    || (header.writerScope === 'agent-runtime' && (!Array.isArray(header.messages) || header.messages.some(message =>
+      message.role !== 'user' || typeof message.id !== 'string' || !message.id || !Array.isArray(message.content) || typeof message.source?.kind !== 'string')))
     || !Number.isSafeInteger(finalizationTimeoutMs) || finalizationTimeoutMs < 1 || finalizationTimeoutMs > 2147483647) throw new Error('Invalid managed turn identity or request')
   const ownerStart = await processStart()
   options.signal?.throwIfAborted()

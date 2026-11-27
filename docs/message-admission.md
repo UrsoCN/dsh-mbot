@@ -59,7 +59,7 @@ flush/来源/租约准入失败且未执行的输入返回唯一原生 Inbox，�
 
 缺失 requestId 查询返回 undefined；跨回复路线查询和已检测的请求冲突拒绝。返回原 requestId、rpcId、MessageId、botId、对话键和已绑定回复路线，调用方可精确关联；当前没有向 IM 发送回复或广播的实现。
 
-`ended` 不证明 guard/Git 审计成功：Agent 可能已经空闲，Host 仍在验收/提交。用 [Runtime 审计状态](runtime-feedback.md) 查看事务结果；后续统一终态收据须交叉核验 journal/Git，不能把展示事件当提交证明。外部平台副作用/回复 exactly-once 不在这里承诺。
+`ended` 不证明 guard/Git 审计成功：Agent 可能已经空闲，Host 仍在验收/提交。用 [Runtime 审计状态](runtime-feedback.md) 查看事务结果；dev 的 [请求结果](request-replies.md) 已交叉核验原生事件/journal/Git 并提供稳定回答信封，不能把展示事件当提交证明。外部平台副作用/回复 exactly-once 不在这里承诺。
 
 DSH 0.2.2-rc.5 没有公开的仅唤醒接口。对于持久化失败后停在 Inbox 的输入，同 ID 重试只确认并复用原消息；下一条新 followup 会恢复 FIFO 消费。不会通过创建第二个 Agent、访问私有 wakeDriver 或合成空业务消息来唤醒。独立 wake 与睡眠/checkpoint 的可靠恢复仍在 TODO；进程崩溃留下 agent-runtime journal 也仍需后续恢复协议，不能用数据 recover 或删除 journal 绕过。
 

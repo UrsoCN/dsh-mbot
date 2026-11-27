@@ -1,5 +1,14 @@
 # 发布说明
 
+## dev：按请求核验并查回回答（未发布）
+
+- receipt 增加独立的 result/audit/reply，按原生请求/回合和可达 Git 审计查回实际回答，稳定 replyId/固定原路线；CLI receipt --wait 支持等待及截止。后续对话、重载、merge 或当前文件编辑不替换原回答，展示卡片不参与证明。
+- 新审计保存原生结束位置、目标和回答指纹，并用可重建的脱敏掩码绑定最终文本；outcome 的 jq 校验由提交/计数/查询共享。Git 已提交但 journal 未结算时不释放回答；提交失败/原生持久确认失败可查明，不重复启动模型。
+- 修复源码链接下旧运行中 Host 请求头遇到新脚本时的验收失败：无新增消息头字段继续原审计，旧记录不伪造新版证明。已中断 journal 仍保留，需后续 Runtime 协调恢复。
+- 91 项 Host/Runtime、类型、64 组 Bash、四类安装及 Chromium 实际 CLI/重启回答验收通过，见 [请求回答](request-replies.md)。未调用真实 DeepSeek API。
+
+本阶段完成查回与待投递回复信封；外部 outbox 投递/确认、Bot 删除/退休绑定、Runtime 恢复、Worker、IM/peer、compact/睡眠和管理面板继续推进。包仍为 0.1.1，未打新 tag。
+
 ## dev：botctl 本地宿主 IPC（未发布）
 
 - 新增 talk/receipt/runtime/stop/bots 外部 CLI，按明确的 profile/Bot 身份连接实际主 Session；复用所有者信封、原生 Inbox 和审计，正文支持 UTF-8 stdin/字面 shell 字符。同 ID 重试复用消息，断连不取消共享执行，收据仍区分持久确认与模型/审计完成。

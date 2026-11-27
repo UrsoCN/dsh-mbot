@@ -25,24 +25,23 @@ mbot_turn_finalize() {
   elapsed=$(($(date +%s%3N)-start))
   request=$(jq -r .request "$MBOT_SCRATCH/header.json")
   mbot_render "$request" "$elapsed" "$rc" "$role" ''
-  jq --slurpfile header "$MBOT_SCRATCH/header.json" --slurpfile journal "$MBOT_SCRATCH/ledger.json" --slurpfile session "$MBOT_SCRATCH/session-events.jsonl" '
-    def cancellation_error: .=="ABORTED" or .=="ABORTED_BEFORE_DISPATCH" or .=="APPROVAL_CANCELLED";
-    any($session[];
-      ((.type=="assistant/message" or .type=="assistant/attempt") and any(.data.stream[]?;
-        .chunk.type=="finish" and (.chunk.reason.kind=="max-tokens"
-          or (.chunk.reason.kind=="error" and (.chunk.reason.failure.code | cancellation_error | not)))))
-      or (.type=="tool/result" and .data.message.isError==true and (.data.error.code | cancellation_error | not))) as $execution_fault |
+  node "$MBOT_ROOT/bin/turn-reply.mjs" "$MBOT_SCRATCH/header.json" "$MBOT_SCRATCH/session-events.jsonl" "$MBOT_SCRATCH/finish.json" > "$MBOT_SCRATCH/reply.json"
+  jq -L "$MBOT_ROOT/lib" --slurpfile header "$MBOT_SCRATCH/header.json" --slurpfile journal "$MBOT_SCRATCH/ledger.json" --slurpfile session "$MBOT_SCRATCH/session-events.jsonl" --slurpfile reply "$MBOT_SCRATCH/reply.json" '
+    include "turn-outcome";
+    mbot_execution_fault($session) as $execution_fault |
     (if .success then "completed"
      elif $journal[0].schemaVersion==2 and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
      else "failed" end) as $outcome |
     . + {outcome:$outcome, failure_count_effect:(if $outcome=="completed" then "reset" elif $outcome=="cancelled" then "preserve" else "increment" end),
-      runtime:{kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,
+      runtime:({kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,
         bot_id:$header[0].botId,session_id:$header[0].sessionId,turn:$header[0].turn,
         request_ids:(reduce ($header[0].requestIds[], ($session[] | select(.type=="user/message") | .data.source |
           select(.kind=="user" or .kind=="retry") | (.rpcId // .requestId) | select(type=="string" and length>0))) as $id
-          ([]; if index($id)==null then . + [$id] else . end))}}' \
+          ([]; if index($id)==null then . + [$id] else . end))}
+          + (if $reply[0]==null then {} else {writer_scope:"agent-runtime",journal_schema_version:$journal[0].schemaVersion,reply:$reply[0]} end))}' \
     "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
-  mv -- "$MBOT_SCRATCH/managed-meta.json" "$MBOT_SCRATCH/meta.json"
+  node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" > "$MBOT_SCRATCH/sealed-meta.json"
+  mv -- "$MBOT_SCRATCH/sealed-meta.json" "$MBOT_SCRATCH/meta.json"
   mbot_turn_outcome "$MBOT_SCRATCH/meta.json" || return 1
   if [[ ${MBOT_RECOVERING:-0} == 1 ]]; then
     jq '.runtime.recovered=true' "$MBOT_SCRATCH/meta.json" > "$MBOT_SCRATCH/recovered-meta.json"
@@ -81,17 +80,7 @@ mbot_turn_outcome() {
   local file=$1
   # Legacy commits keep their original boolean settlement. New outcome records
   # are validated before touching the counter; recovery never guesses from text.
-  turn_outcome=$(jq -er --slurpfile journal "$MBOT_SCRATCH/ledger.json" '
-    if (.success|type)!="boolean" then error("invalid success")
-    elif $journal[0].schemaVersion==2 and .runtime.outcome_schema_version!=1 then error("v2 journal requires versioned outcome")
-    elif (has("outcome") or has("failure_count_effect") or .runtime.outcome_schema_version!=null) then
-      if .runtime.outcome_schema_version!=1 or (.runtime.execution_fault|type)!="boolean" or (.violations|type)!="array" then error("invalid outcome version")
-      elif .outcome=="completed" and .success==true and .failure_count_effect=="reset" and (.violations|length)==0 then .outcome
-      elif .outcome=="cancelled" and .success==false and .failure_count_effect=="preserve"
-        and $journal[0].schemaVersion==2 and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and .runtime.execution_fault==false then .outcome
-      elif .outcome=="failed" and .success==false and .failure_count_effect=="increment" then .outcome
-      else error("invalid outcome effect") end
-    elif .success then "completed" else "failed" end' "$file") \
+  turn_outcome=$(jq -L "$MBOT_ROOT/lib" -er --slurpfile journal "$MBOT_SCRATCH/ledger.json" 'include "turn-outcome"; mbot_outcome($journal[0].schemaVersion)' "$file") \
     || { mbot_error 'invalid managed outcome; retained for recovery'; return 1; }
   case $turn_outcome in
     completed) failure_count_effect=reset ;;

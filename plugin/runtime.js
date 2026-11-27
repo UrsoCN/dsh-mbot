@@ -4,6 +4,7 @@ import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { botSections, reconcileContext, turnContext } from './context.js'
 import { redact } from './redact.js'
 import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSource, deliveryReceipt, operationalSource } from './messages.js'
+import { messageReceipt } from './receipts.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
@@ -205,6 +206,7 @@ class ManagedSession {
         await this.confirmInput(record, signal)
         const request = record.messages.map(message => JSON.stringify({ id: message.id, source: message.source, content: message.content })).join('\n')
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
+          messages: record.messages,
           requestIds: record.messages.map(requestIdentity).filter(value => typeof value === 'string'),
           signal, writerScope: 'agent-runtime', onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
         await this.publish(record, 'active').catch(error => { record.feedbackError = error })
@@ -461,16 +463,21 @@ export class MBotRuntime extends Service {
           }
         })
       },
-      receipt: requestId => operation(async () => {
+      receipt: async requestId => {
+        check()
         const probe = ownerMessage(binding, { requestId, text: 'receipt lookup' })
         const record = state.messageIndex.requests.get(requestIdentity(probe))
         if (!record) return undefined
         if (record.conflict) throw new Error('Request identity was reused with changed content or duplicate native input')
         const source = record.message.source.mbot
         if (!source || Object.keys(binding).some(key => source[key] !== binding[key])) throw new Error('Request belongs to a different owner route')
-        try { await this.ctx.sessions.flush(agent.session); check(); return deliveryReceipt(record, 'confirmed') }
-        catch { return deliveryReceipt(record, 'unconfirmed') }
-      }),
+        let confirmation = 'confirmed'
+        try { await this.ctx.sessions.flush(agent.session); check() }
+        catch { confirmation = 'unconfirmed' }
+        const receipt = await messageReceipt(this, agent, state.botId, record.rpcId, binding, confirmation)
+        check()
+        return receipt
+      },
       dispose: () => { revoked = true },
     })
   }

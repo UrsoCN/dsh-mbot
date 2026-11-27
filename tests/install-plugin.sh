@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -101,7 +101,8 @@ async function probe(ctx) {
       const retried = await mailbox.send({ requestId: 'installed-event-1', text: 'installed managed Runtime' })
       const receipt = await mailbox.receipt('installed-event-1')
       if (submitted.confirmation !== 'confirmed' || retried.messageId !== submitted.messageId || receipt.delivery !== 'ended'
-        || runtimeCalls !== 2) throw new Error('installed owner mailbox failed native-history deduplication')
+        || receipt.result?.final !== true || receipt.result.reply.text !== 'installed Runtime succeeded'
+        || runtimeCalls !== 2) throw new Error('installed owner mailbox failed native-history deduplication or audited reply proof')
     }
     const { readdir, readFile } = await import('node:fs/promises')
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
@@ -131,7 +132,8 @@ async function probe(ctx) {
       const again = await hostCall(cliInput)
       const receipt = await hostCall(['receipt', '--bot', bot.botId, '--request-id', 'installed-cli-1'])
       if (cli.value.confirmation !== 'confirmed' || again.value.messageId !== cli.value.messageId || receipt.value.delivery !== 'ended'
-        || runtimeCalls !== 3) throw new Error('installed external CLI request was not deduplicated')
+        || receipt.value.result?.final !== true || receipt.value.result.reply.text !== 'installed Runtime succeeded'
+        || runtimeCalls !== 3) throw new Error('installed external CLI request was not deduplicated or audited')
     } else if (cli.ok || runtimeCalls !== 2) throw new Error('basic Host IPC created an unmanaged main Session')
     if (native) {
       const afterTurn = await ctx.mbot.ensureBinding(bot.botId)

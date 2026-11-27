@@ -28,6 +28,7 @@ import * as runtime from '../plugin/runtime.js'
 import Commands from '@deepseek-ai/dsh-commands'
 import * as botCommands from '../plugin/commands.js'
 import { MessageIndex } from '../plugin/messages.js'
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
 
@@ -683,6 +684,282 @@ test('tampered owner envelope versions and fingerprints cannot dispatch business
   await settle(ctx, agent)
   assert.equal(requests.length, 1)
   assert.equal(agent.inbox.nextTurn[0].id, pending.id)
+})
+
+test('audited receipts return the original answer after later work and Runtime reload', { timeout: 30000 }, async t => {
+  const { ctx, bot, ws, agent, requests, owner } = await app(t, (_options, count) => response(`sealed answer ${count}`), { main: true })
+  let mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'reply-one', text: 'first request', correlationId: 'thread-one' })
+  await settle(ctx, agent)
+  const first = await mailbox.receipt('reply-one')
+  assert.equal(first.result.final, true, JSON.stringify(first.result))
+  assert.equal(first.result.status, 'completed')
+  assert.equal(first.result.reply.text, 'sealed answer 1')
+  assert.equal(first.result.reply.replyRoute, privateRoute.replyRoute)
+  assert.equal(first.result.reply.correlationId, 'thread-one')
+  assert.equal(first.result.audit.commit, git(ws, 'rev-parse', 'HEAD'))
+  await mailbox.send({ requestId: 'reply-two', text: 'second request' })
+  await settle(ctx, agent)
+  const afterLaterWork = await mailbox.receipt('reply-one')
+  assert.equal(afterLaterWork.result.reply.replyId, first.result.reply.replyId)
+  assert.equal(afterLaterWork.result.reply.text, 'sealed answer 1')
+  assert.equal((await mailbox.receipt('reply-two')).result.reply.text, 'sealed answer 2')
+  await owner.dispose()
+  await ctx.plugin(runtime)
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  mailbox = mainMailbox(ctx, agent)
+  assert.equal((await mailbox.receipt('reply-one')).result.reply.replyId, first.result.reply.replyId)
+  assert.equal(requests.length, 2)
+})
+
+test('Agent idle and forged presentation cards do not release replies before Git settlement', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, bot, agent } = await app(t, (_options, _count, ctx) => {
+    const lease = ctx.mbotRuntime.dataLease(ctx.agents.list()[0])
+    const finish = lease.finish.bind(lease)
+    lease.finish = async outcome => { entered.resolve(); await release.promise; return finish(outcome) }
+    return response('do not publish before audit')
+  }, { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'audit-pending', text: 'pending audit' })
+  await entered.promise
+  assert.equal(agent.status, 'idle')
+  appendPluginRecord(agent.session, runtime.runtimeRecordType, { schemaVersion: 1, botId: bot.botId, sessionId: agent.id,
+    turn: 1, phase: 'committed', head: 'f'.repeat(40), success: true, outcome: 'completed', failureCountEffect: 'reset' })
+  const pending = await mailbox.receipt('audit-pending')
+  assert.equal(pending.result.status, 'auditing')
+  assert.equal(pending.result.final, false)
+  assert.equal(pending.result.reply, undefined)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal((await mailbox.receipt('audit-pending')).result.final, true)
+})
+
+test('user stop and guard failure produce distinct verified terminal replies', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const stopped = await app(t, async () => { entered.resolve(); await release.promise; return response('stopped text') }, { main: true })
+  const mailbox = mainMailbox(stopped.ctx, stopped.agent)
+  await mailbox.send({ requestId: 'stopped', text: 'stop this' })
+  await entered.promise
+  const stopping = stopped.ctx.mbotRuntime.stop(stopped.agent)
+  release.resolve()
+  await stopping
+  const cancelled = await mailbox.receipt('stopped')
+  assert.equal(cancelled.result.final, true)
+  assert.equal(cancelled.result.status, 'cancelled')
+  assert.equal(cancelled.result.audit.failureCountEffect, 'preserve')
+  assert.equal(cancelled.result.reply.outcome, 'cancelled')
+  const violated = await app(t, async (_options, _count, ctx) => {
+    const lease = ctx.mbotRuntime.dataLease(ctx.agents.list()[0])
+    await writeFile(join(lease.snapshot.workspace, 'MEMORY.md'), 'illegal memory edit\n')
+    return response('claimed success')
+  }, { main: true })
+  const faulty = mainMailbox(violated.ctx, violated.agent)
+  await faulty.send({ requestId: 'guard-failed', text: 'guard this' })
+  await settle(violated.ctx, violated.agent)
+  const failed = await faulty.receipt('guard-failed')
+  assert.equal(failed.result.final, true)
+  assert.equal(failed.result.status, 'failed')
+  assert.equal(failed.result.reply.outcome, 'failed')
+  assert.equal(failed.result.audit.success, false)
+})
+
+test('sealed native text, route, source cut and outcome contradictions cannot become replies', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent } = await app(t, () => response('original sealed text'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'sealed', text: 'sealed request' })
+  await settle(ctx, agent)
+  const valid = await mailbox.receipt('sealed')
+  assert.equal(valid.result.final, true)
+  const path = valid.result.audit.meta
+  const original = JSON.parse(git(ws, 'show', `HEAD:${path}`))
+  const changes = [
+    meta => { meta.runtime.reply.text = 'forged reply'; meta.runtime.reply.textHash = '0'.repeat(64) },
+    meta => { meta.runtime.reply.targets[0].replyRoute = 'other-chat' },
+    meta => { meta.runtime.reply.endEventSeq++ },
+    meta => { meta.failure_count_effect = 'preserve' },
+    meta => { delete meta.runtime.journal_schema_version },
+  ]
+  for (const change of changes) {
+    const modified = structuredClone(original)
+    change(modified)
+    await writeFile(join(ws, path), JSON.stringify(modified) + '\n')
+    git(ws, 'add', path)
+    git(ws, 'commit', '--amend', '--no-edit')
+    const receipt = await mailbox.receipt('sealed')
+    assert.equal(receipt.result.final, false)
+    assert.equal(receipt.result.status, 'unverified')
+    assert.equal(receipt.result.reply, undefined)
+  }
+})
+
+test('working-tree edits and later failure do not rewrite an earlier verified Git reply', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('immutable answer'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'immutable', text: 'immutable' })
+  await settle(ctx, agent)
+  const original = await mailbox.receipt('immutable')
+  await writeFile(join(ws, original.result.audit.meta), '{"fake":"working-tree reply"}\n')
+  const receipt = await mailbox.receipt('immutable')
+  assert.equal(receipt.result.reply.replyId, original.result.reply.replyId)
+  assert.equal(receipt.result.reply.text, 'immutable answer')
+  git(ws, 'restore', original.result.audit.meta)
+  agent.followup(createUserMessage({ content: [{ type: 'text', text: 'unknown producer' }], source: { kind: 'unmanaged-peer' } }))
+  await settle(ctx, agent)
+  assert.equal((await mailbox.receipt('immutable')).result.reply.replyId, original.result.reply.replyId)
+  assert.equal(requests.length, 1)
+})
+
+test('an audited reply remains verifiable through a merge and later transcript removal', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent } = await app(t, () => response('answer from merged branch'), { main: true })
+  const originalBranch = git(ws, 'branch', '--show-current')
+  git(ws, 'switch', '-c', 'reply-side')
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'merged-reply', text: 'branch reply' })
+  await settle(ctx, agent)
+  const original = await mailbox.receipt('merged-reply')
+  git(ws, 'switch', originalBranch)
+  await writeFile(join(ws, 'human-note'), 'human branch work\n')
+  git(ws, 'add', 'human-note')
+  git(ws, 'commit', '-m', 'human branch work')
+  git(ws, 'merge', '--no-ff', 'reply-side', '-m', 'merge audited reply')
+  assert.equal((await mailbox.receipt('merged-reply')).result.audit.commit, original.result.audit.commit)
+  git(ws, 'rm', original.result.audit.meta)
+  git(ws, 'commit', '-m', 'human: remove current transcript copy')
+  const historical = await mailbox.receipt('merged-reply')
+  assert.equal(historical.result.reply.replyId, original.result.reply.replyId)
+  assert.equal(historical.result.reply.text, 'answer from merged branch')
+})
+
+test('a presentation commit without a reachable Git audit remains unverified', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent } = await app(t, () => response('historical answer'), { main: true })
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'unreachable', text: 'unreachable' })
+  await settle(ctx, agent)
+  assert.equal((await mailbox.receipt('unreachable')).result.final, true)
+  git(ws, 'reset', '--hard', base)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  const receipt = await mailbox.receipt('unreachable')
+  assert.equal(receipt.result.final, false)
+  assert.equal(receipt.result.status, 'unverified')
+})
+
+test('commit failure preserves journal and withholds a terminal reply for coordinated recovery', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent } = await app(t, () => response('not committed'), { main: true })
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  const shim = join(root, `reply-git-fail-${++sequence}`)
+  await mkdir(shim)
+  await writeFile(join(shim, 'git'), '#!/bin/sh\nfor arg do\n  if [ "$arg" = commit ]; then exit 1; fi\ndone\nexec /usr/bin/git "$@"\n')
+  await chmod(join(shim, 'git'), 0o700)
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot-turn') ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'commit-failed', text: 'commit failure' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent))
+  const receipt = await mailbox.receipt('commit-failed')
+  assert.equal(receipt.result.final, false)
+  assert.equal(receipt.result.status, 'recovering')
+  assert.equal(receipt.result.reply, undefined)
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).writerScope, 'agent-runtime')
+})
+
+test('SIGKILL after Git commit exposes the verified commit but withholds reply until counter settlement', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('committed before interruption'), { main: true })
+  await writeFile(join(ws, '.mbot/failures'), '2\n')
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  const shim = join(root, `reply-crash-${++sequence}`)
+  await mkdir(shim)
+  await writeFile(join(shim, 'git'), '#!/usr/bin/env bash\ncrash=0\nfor arg in "$@"; do [[ $arg != commit ]] || crash=1; done\nif ((crash)); then\n  /usr/bin/git "$@" || exit $?\n  kill -KILL "$PPID"\n  exit 143\nfi\nexec /usr/bin/git "$@"\n')
+  await chmod(join(shim, 'git'), 0o700)
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot-turn') ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'commit-cut', text: 'commit then interrupt' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent))
+  const receipt = await mailbox.receipt('commit-cut')
+  assert.equal(receipt.result.final, false)
+  assert.equal(receipt.result.status, 'recovering')
+  assert.equal(receipt.result.audit.commit, git(ws, 'rev-parse', 'HEAD'))
+  assert.equal(receipt.result.audit.outcome, 'completed')
+  assert.equal(receipt.result.reply, undefined)
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '2\n')
+  assert.equal(JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')).phase, 'committing')
+  await mailbox.send({ requestId: 'commit-cut', text: 'commit then interrupt' })
+  assert.equal(requests.length, 1)
+})
+
+test('reply redaction is traceable to native text and a later successful flush recovers a committed result', { timeout: 30000 }, async t => {
+  let token, emitted = false, failed = false
+  const { ctx, agent } = await app(t, (_options, _count, ctx) => {
+    token = ctx.mbotRuntime.dataLease(ctx.agents.list()[0]).shellEnvironment().DSH_MBOT_PERMIT_TOKEN
+    emitted = true
+    return response(`before ${token} after\n中文 suffix`)
+  }, { main: true })
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { if (emitted && !failed) { failed = true; throw new Error('fixture receipt flush failure') } return flush(session) }
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'redacted', text: 'redaction' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent))
+  const receipt = await mailbox.receipt('redacted')
+  assert.equal(receipt.result.final, true)
+  assert.equal(receipt.result.status, 'completed')
+  assert.equal(receipt.result.reply.text, 'before [REDACTED] after\n中文 suffix')
+  assert.ok(!JSON.stringify(receipt).includes(token))
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+})
+
+test('a warm older Host header still commits using legacy audit without fabricating sealed replies', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('warm Host reply'), { main: true })
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  ctx.subprocess.spawn = spec => {
+    const child = spawn(spec)
+    if (spec.argv[0].endsWith('/bin/mbot-turn')) {
+      const write = child.stdin.write.bind(child.stdin)
+      child.stdin.write = (chunk, ...args) => {
+        let frame
+        try { frame = JSON.parse(chunk) } catch {}
+        if (frame?.kind === 'begin') { delete frame.messages; chunk = JSON.stringify(frame) + '\n' }
+        return write(chunk, ...args)
+      }
+    }
+    return child
+  }
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'warm-old-header', text: 'old header' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '0\n')
+  const receipt = await mailbox.receipt('warm-old-header')
+  assert.equal(receipt.result.final, false)
+  assert.equal(receipt.result.status, 'unverified')
+  assert.match(receipt.result.error, /Historical audit/u)
+})
+
+test('CLI receipt wait returns verified text or a deadline while preserving shared execution', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, bot, agent, endpoint, requests } = await ipcApp(t, async () => { entered.resolve(); await release.promise; return response('CLI sealed reply') })
+  const options = ['--endpoint-dir', endpoint.directory, '--bot', bot.botId, '--request-id', 'cli-wait']
+  await cli(['talk', ...options, '--text', 'wait for result'])
+  await entered.promise
+  const timeout = await cli(['receipt', ...options, '--wait', '--timeout-ms', '200'])
+  assert.equal(timeout.exitCode, 4)
+  assert.equal(JSON.parse(timeout.stdout).wait.status, 'timed-out')
+  assert.equal(requests.length, 1)
+  const pending = await cli(['receipt', ...options])
+  assert.equal(JSON.parse(pending.stdout).value.result.status, 'running')
+  release.resolve()
+  await settle(ctx, agent)
+  const done = await cli(['receipt', ...options, '--wait', '--timeout-ms', '2000'])
+  assert.equal(done.exitCode, 0, done.stderr || done.stdout)
+  assert.equal(JSON.parse(done.stdout).value.result.reply.text, 'CLI sealed reply')
+  assert.equal(JSON.parse(done.stdout).value.result.final, true)
+  assert.equal(requests.length, 1)
 })
 
 test('real Agent uses managed context and native botctl, then creates one turn audit', { timeout: 30000 }, async t => {
