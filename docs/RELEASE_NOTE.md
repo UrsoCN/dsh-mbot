@@ -1,5 +1,14 @@
 # 发布说明
 
+## dev：主 Session 上下文与入口设计细化（设计更新）
+
+- 明确默认私人主 Session、多窗口共用和按可见域隔离的 conversation；botctl 是 Runtime 门面，Web 原生提交、Cordis 适配器与 CLI IPC 归入同一管理协议。
+- 区分 Git 人格/记忆、原生历史、Runtime 近期摘要策略与 checkpoint；checkpoint 绑定知识内容 hash、有序 surface 来源、原始日志 cut 和维护阶段，普通任务 Git 提交不等于记忆更新。
+- 独立 Bot 默认异步 peer 对话域，不复用 ownerMailbox 身份或树内 send_message；compact/sleep/wake 明确来源约束、Writer 静止、Inbox 保留与分阶段恢复。
+- TODO 合并重复生命周期事项，执行顺序调整为 checkpoint/compact → sleep/wake → 对话域/IM/peer/outbox → Worker 写工具；README 与维护约定同步。见 [Session Runtime](session-runtime.md)。
+
+本阶段仅更新设计与规划，没有新增运行 API，也未发布新版本或标签。验证为文档链接、阶段一致性与 diff 检查；既有代码验收记录见下文。
+
 ## dev：Worker v3 恢复、交接与默认启用（未发布）
 
 - `/mbot recover`/`botctl recover` 接入 scoped botctl Worker 的 v3 契约：父/子原生 writer、公开 native closers、固定 Actor/快照、子事件/输出/用量和全部派生 permit 进程一起核验；不启动子模型或恢复旧 assignment。

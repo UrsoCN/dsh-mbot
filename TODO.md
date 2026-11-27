@@ -12,13 +12,14 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，[停止/故障计数](docs/turn-outcomes.md) 已区分。[所有者消息准入](docs/message-admission.md) 已提供可信 Host 门面、来源/flush 闸门及原生日志去重收据；[botctl 宿主 IPC](docs/host-ipc.md) 已接入外部 CLI、profile 隔离与端点归属；[请求结果](docs/request-replies.md) 已核验原生/Git/journal 并查回已审计回答。已支持 [Bot 注销与旧 Session 退役](docs/bot-removal.md)，原生工作区删除不自动丢弃身份。已支持 [前台 Runtime 中断恢复](docs/runtime-recovery.md)，已支持 [核心只读旧回合迁移](docs/legacy-migration.md) 与 [Runtime 模块交接](docs/runtime-handoff.md)；[原生 Worker](docs/native-workers.md) 的 scoped botctl 执行、[v3 恢复与模块交接](docs/worker-recovery.md) 已交付并默认开启；其 Bash/文件/PTC、未知写者恢复、非只读旧契约/原生日志缺失的恢复与睡眠/checkpoint 尚未交付。
 
-- [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
-- [ ] 在 ownerMailbox/CLI IPC 基础上接真实适配器及对话域权限；附件与持久路由恢复复用 DSH Inbox，不另造消费状态。独立 wake 衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；继续验收跨 Host 原生 writer-held 与端点交接
-- [ ] 在已核验请求结果/固定回复信封的基础上实现按原 replyRoute 投递的 outbox 与外部 ack/不确定状态；验收断连/崩溃转交、编辑冲突修复、跨域路由与多个 Host，不复制原生消费队列，不把 confirmed/ended 或展示记录当事务证明
-- [ ] 在已接入 [原生 Worker](docs/native-workers.md) 的固定角色上下文、共享 lease、并发/取消和 scoped botctl 上，补 Bash/文件/PTC 的写者契约、原生生命周期/权限与静止验收；验收真实 PTC/run_code（其保留名称不能用自定义工具覆盖），保留前台工具准入，不用全局 process.env 保存多 Bot 身份
-- [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期，并与 compact/checkpoint 事务绑定
-- [ ] 在已验证的前台 Runtime/Agent 及 scoped botctl Worker 恢复基础上接齐 Worker Bash/文件/PTC/IPC 写者及 checkpoint 静止协议；在已验收核心只读旧回合迁移上补非只读/未知旧契约、原生日志/原所有者丢失的迁移和恢复，不能用前台契约或 data-subprocesses 的核实替代其他写者证明
-- [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
+按 [Session Runtime](docs/session-runtime.md#8-实施与验收) 的阶段顺序推进，先完成主 Session 上下文闭环，再扩展来源和写工具：
+
+- [ ] **阶段 1 · checkpoint/compact**：固定 SOUL/MEMORY + 近期摘要/尾部的取材与来源协议；持久 checkpoint 绑定 memoryCommit、知识内容 hash、contextEpoch、compaction ID、摘要 hash、原始日志 cut 与有序 surface 来源引用。接真实手动 `/compact` 闸门与自动 compaction，验收工具配对、来源/可见域保留、旧规则退役、flush/替换崩溃和重启恢复；不能把每次 Git HEAD 变化当记忆更新
+- [ ] **阶段 2 · sleep/wake**：Bot 维护屏障与 Writer 静止，Dreaming → 各 conversation compact/checkpoint 的阶段 journal；睡眠继续接收原生 Inbox 消息，固定执行 cutoff，Git 成功后失败只补未完成阶段，epoch 不提前发布。wake 保留主 Session ID，衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；验收多窗口发送/编辑/停止、睡眠公平性和中断单次结算
+- [ ] **阶段 3a · 对话域/入口**：在 ownerMailbox/CLI IPC 基础上实现持久 conversation 绑定、来源/可见域权限及真实适配器；所有者专用私聊可连主 Session，群/其他用户/peer 默认隔离，未实现记忆过滤前不开放。适配器通过 Cordis Runtime 门面，Web 保留原生提交闸门；附件/路由恢复复用 DSH Inbox，不另造消费状态，继续验收跨 Host 原生 writer-held 与端点交接
+- [ ] **阶段 3b · 回复/peer**：按已核验 replyRoute 实现 outbox、外部 ack/不确定状态；独立 Bot 异步信封带来源、correlation/causation、目标权限与 hops/TTL，不能复用所有者身份或树内 send_message。验收 A/B 互相请求不持锁等待、断连/崩溃转交、IM 重试、@alias、编辑冲突与回复不串域，不把 confirmed/ended 或展示记录当事务证明
+- [ ] **阶段 4 · Worker 写工具**：在 [原生 Worker](docs/native-workers.md) 上补结构化目录 grants、Bash/文件/PTC 原生权限与生命周期、并发写入/取消及扩展版本的 Writer 恢复契约；真实 PTC/run_code 的保留名称不能用自定义工具覆盖，不用全局 process.env 保存多 Bot 身份，不沿用仅 scoped botctl 的 v3 恢复证明
+- [ ] 在上述已接齐的 Writer 契约上扩展 IPC/其他写者及非只读/未知旧契约、原生日志/原所有者丢失的迁移和恢复；不能用前台契约或 data-subprocesses 的核实替代其他写者证明
 - [ ] 在已交付 [Runtime 模块交接](docs/runtime-handoff.md) 上补共享 registry 之前旧闸门的支持迁移，核实其他插件/后台写者的静止；保留原 Agent/主 Session，不通过清除 provider 或全 Host 重启掩盖未知所有权
 - [ ] 在列表/管理页主动检查缺失/归档实体，显示修复入口；已完成调用 Session 路由、持久绑定与 open/repair，继续验收多 Host writer-held、实体意外返回与故障重启
 

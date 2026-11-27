@@ -1,6 +1,6 @@
 # 原生工作区与主 Session（dev）
 
-2026-11-27。Web profile 已接入自动创建和修复；包版本仍为 0.1.1，本阶段未打发布标签。主 Session 使用已验收的 [Runtime](native-runtime.md)，Worker、统一来源信封、compact/sleep/checkpoint 与 Runtime journal 恢复仍在 [P1](../TODO.md)。
+2026-11-27。Web profile 已接入自动创建和修复；包版本仍为 0.1.1，本阶段未打发布标签。主 Session 使用已验收的 [Runtime](native-runtime.md)，后续已接入 scoped botctl Worker/恢复、所有者来源信封及 CLI IPC；compact/sleep/checkpoint、额外对话域与 Worker 写工具仍在 [P1](../TODO.md)。完整上下文和入口决策见 [Session Runtime](session-runtime.md)。
 
 ```text
 /mbot init /absolute/new/data-directory
@@ -39,7 +39,7 @@ Host 的管理调用串行；跨进程使用现有 Bot `.mbot/lock`，与数据 
 
 成功打开只监听当前浏览器的 `command/executed` 回执，并在 composer 提交结束后交给 uiWorkspace。Session 广播、重放和其他标签页不会自动导航。A 的主 Session 始终路由到 A，默认选择 B 不会将它改成 B。新消息仍由 DSH Inbox 串行，Bot 数据由 Runtime lease 保护。
 
-主会话目前支持原生直接对话、受管理上下文和前台工具。[原生取消与审计反馈](runtime-feedback.md) 已验收；[原生 Worker 最小执行](native-workers.md) 与 [所有者来源/收据](message-admission.md) 已接入；Worker 其他工具/完整恢复、可见域、自动/手动 compact 与睡眠恢复仍待实现；不宣称该阶段完成了整个 0.2 生命周期。
+主会话目前支持原生直接对话、受管理上下文和前台工具。[原生取消与审计反馈](runtime-feedback.md) 已验收；[原生 Worker 最小执行](native-workers.md)、[scoped botctl Worker 恢复](worker-recovery.md) 与 [所有者来源/收据](message-admission.md) 已接入；Worker 其他工具/未知写者恢复、可见域、自动/手动 compact 与睡眠恢复仍待实现；不宣称该阶段完成了整个 0.2 生命周期。
 
 ## 验证
 

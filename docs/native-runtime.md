@@ -1,6 +1,6 @@
 # 原生 Agent Runtime 接入（dev）
 
-2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。dev 已通过 [主会话绑定](main-session.md) 自动创建 DSH 工作区/主 Session；已接入 [前台 Runtime 恢复](runtime-recovery.md)，未交付 Worker、完整消息门面、compact/sleep/checkpoint 或其他写者的恢复；这些继续在 [TODO](../TODO.md) 推进。
+2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。dev 已通过 [主会话绑定](main-session.md) 自动创建 DSH 工作区/主 Session；后续已接入 [前台 Runtime 恢复](runtime-recovery.md)、scoped botctl Worker/恢复与所有者 CLI 消息门面。完整对话域、compact/sleep/checkpoint 和其他写者的恢复继续在 [TODO](../TODO.md) 推进；上下文与入口决策见 [Session Runtime](session-runtime.md)。
 
 ## Host 接口
 

@@ -6,9 +6,9 @@
 
 | 已实现（含 dev） | 尚未实现/待修复 |
 |---|---|
-| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 主 Session 的 Worker、统一消息与睡眠生命周期 |
+| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 自有设置面板、完整上下文与睡眠生命周期 |
 | 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 缺失实体主动诊断与跨版本迁移 |
-| 每次独立 headless Chief、fresh Worker、独立 Dreaming、profile 内 Bot 登记；Host 所有者准入/持久化收据 | CLI/IM/peer 统一入口、审计终态/回复投递、compact/sleep/checkpoint |
+| 独立 headless Chief/Worker/Dreaming、Bot 登记与主 Session；所有者准入、CLI IPC、已审计回复查询；原生 scoped botctl Worker/恢复 | IM/peer、隔离对话域、外部回复投递、compact/sleep/checkpoint；Worker Bash/文件/PTC |
 | volatile workspace 的 Host 校验与更新、最小浏览器入口 | 自有设置/管理面板 |
 | cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
@@ -126,6 +126,10 @@ Web profile 的插件 /mbot init 已接入以下流程，详见 [主会话](main
 dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。规范化 [turn outcome](turn-outcomes.md) 区分用户取消与故障，并在 Git 结算/恢复时使用相同规则。dev 的 [所有者准入](message-admission.md) 已接入 Host 门面、原生 Web/steer 请求关联、来源与持久化闸门、日志去重及投递收据；[本地 CLI IPC](host-ipc.md) 将外部 botctl 接到同一 Runtime，提供 profile 私有端点、所有者身份、断连与重载去重。[请求结果](request-replies.md) 已核验原生事件/Git/journal 并查回固定回复信封；dev 已接入 [前台 Runtime/Agent 中断恢复](runtime-recovery.md)，复用原生 resume closers、独占 Session writer、Bot 闸门和 Git/原生审计证明；核心只读旧回合已接入 [迁移证明](legacy-migration.md)；[scoped botctl Worker 恢复](worker-recovery.md) 已接入；Worker 其他工具、后台/IPC 写者、非只读/未知旧契约与缺失原生日志的恢复，以及 IM/peer、outbox、compaction/sleep/checkpoint 仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
+
+botctl 统一的是服务协议；Web 保留原生提交并经过 Runtime 闸门，适配器直接调用 Cordis service，CLI 通过 IPC，不要求所有入口执行 shell。MBot 只管理绑定的 Bot Session。近期摘要由 Runtime 决定取材/来源，由 DSH 原生 compaction 写入 surface；checkpoint 联合绑定 Git 知识版本、原生来源 cut 和维护阶段，不复制原生历史/消费队列。独立 Bot 默认使用 peer 对话域及异步回复，进入私人主 Session 需显式授权；树内 send_message 仅用于 Worker。
+
+接下来先交付 checkpoint/compact，再交付睡眠/唤醒，随后扩展对话域与 IM/peer/outbox，最后扩展 Worker Bash/文件/PTC 写工具。知识内容 hash 区分人格/记忆更新与普通任务 Git 提交；每轮 Snapshot 固定，checkpoint epoch 只在成功发布时推进。详细恢复和来源规则见 [Session Runtime](session-runtime.md)。
 
 dev 已支持 [显式注销与持久 Session 退役](bot-removal.md)：独立 Bot 身份不随原生工作区删除；注销持有数据锁及可回退的准入闸门，ConfigEditor 保存活动登记到不可变 retiredBots 后撤销入口。旧主/预留 Session 在重启时继续受闸门约束，数据、历史、Inbox 与 journal 保留。重新导入创建新身份；未完成的执行/审计先 stop 收尾，注销不等于恢复。登记文档 v2 兼容 v1 读取，禁止配置重置丢弃既有 Session 归属。
 
