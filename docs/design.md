@@ -53,7 +53,7 @@ dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 sch
 | plugin/client.js | DSH lazy-CJS 浏览器入口；命令活动贡献，复用原生卡片 |
 | plugin/turn.js、plugin/turn-state.js、bin/mbot-turn、bin/turn-state.mjs、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与持久数据恢复：持久私有状态目录与 boot_id 身份、快照/锁/许可/审计、写者核实和准确 commit 识别；前台/原生 Worker 恢复已接入，其他写者与睡眠维护待完成 |
 | plugin/binding.js | dev 的官方实体创建/修复、持久预留与只读主会话打开 |
-| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体已接入，scoped botctl Worker/恢复已接入，消息域与其他生命周期待完成 |
+| plugin/runtime.js、gate-driver.js、conversation-session.js、bot-coordinator.js、mailbox-facade.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门与维护屏障四层解耦；主 Session 实体与 scoped botctl Worker/恢复已接入，消息域与睡眠维护待完成 |
 | plugin/messages.js | dev 的所有者私聊信封与原生日志请求投影；模型消费仍归 DSH Inbox，不另建队列 |
 | plugin/ipc.js、ipc-protocol.js、bin/botctl-host.mjs | dev 的本地所有者 CLI/profile 私有 socket，端点归属/断连/关闭 drain；不复制模型队列 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |

@@ -34,7 +34,11 @@ async function replace(file, data, raw = false) {
   await atomicWriteSync(file, raw ? data : JSON.stringify(data), 0o600)
 }
 try {
-  if (!verify && !context) request = JSON.parse(await readFile('/dev/stdin', 'utf8'))
+  if (!verify && !context) {
+    process.stdin.setEncoding('utf8')
+    let raw = ''; for await (const chunk of process.stdin) raw += chunk
+    request = JSON.parse(raw)
+  }
   if (!scratch || await realpath(workspace) !== workspace) fail('Invalid actor transaction location')
   const directory = await lstat(scratch)
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid() || (directory.mode & 0o777) !== 0o700) fail('Unsafe actor transaction snapshot')

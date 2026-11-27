@@ -1,5 +1,12 @@
 # 发布说明
 
+## dev：R2 Runtime 四层解耦、性能基线与 CI（2026-11-28，未发布）
+
+- 将原单文件 `plugin/runtime.js` 拆分为 `gate-driver.js`、`conversation-session.js`、`bot-coordinator.js` 与 `mailbox-facade.js` 四层，`runtime.js` 收敛为 Cordis 服务协调门面；保留全部公开 API、共享 cell/ABI 2、单所有者私人对话准入边界与恢复证明等价性。
+- 在 `BotCoordinator` 中提供 Bot 级维护屏障（`acquireBarrier`/`isBlocked`/`drainAll`）和 `conversationKey -> sessionId` 映射，`ConversationSession` 固定版本化 `conversation` 身份描述符，维护屏障期间 `status()` 报告 `maintaining` 且原生 Inbox 保留输入，供 R3/R4 复用。
+- 新增可复现规模基准 `npm run bench:runtime`（[tests/bench-runtime.mjs](../tests/bench-runtime.mjs)），实测 100/300/1000 轮 checkpoint 恢复（3.88s / 11.97s / 45.48s）、Worker `actor-event` 记录（~37.9ms/event）及 Guard 1/10/50 MiB ignored 快照（8.97ms / 31.72ms / 132.48ms），详见 [Runtime 架构与基线](runtime-architecture-r2.md)。
+- 新增 CI 模板（[ops/ci.yml.example](../ops/ci.yml.example)），覆盖类型检查、Bash 套件、串行 Host/Runtime 套件、`npm pack` 产物审查与快速基准冒烟。全量类型、52 项 Host + 143 项 Runtime（含新建维护屏障与模块交接/ABI 升级验证）、64 组 Bash 与 source/tarball/Git/web-tarball 四类安装验收通过。包版本保持 0.1.1，未新增发布标签。
+
 ## dev：R1 持久恢复证据与跨重启进程身份（2026-11-28，未发布）
 
 - 将活动回合私有恢复快照迁出易失 `/tmp/mbot-turn.*`，落地到 Bot 数据工作树之外的持久私有状态目录（`MBOT_STATE_DIR` → `XDG_STATE_HOME/mbot` → 隔离 `DSH_HOME/mbot-state` → `~/.local/state/mbot` 下的 `turns/<workspaceHash>/<runId>`），严格校验路径归属、UID、非软链祖先、`0700` 权限与 `scratchFormatVersion: 1`。

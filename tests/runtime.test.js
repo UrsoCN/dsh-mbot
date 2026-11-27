@@ -3206,11 +3206,14 @@ async function replacementRuntime(rewrite = source => source) {
   const directory = await mkdtemp(join(root, 'replacement.'))
   await symlink(fileURLToPath(new URL('../node_modules', import.meta.url)), join(directory, 'node_modules'))
   await writeFile(join(directory, 'package.json'), '{"type":"module"}')
-  const source = (await readFile(new URL('../plugin/runtime.js', import.meta.url), 'utf8'))
-    .replace(/from '(\.\/[^']+)'/gu, (match, path) => path === './runtime-cells.js' ? match
-      : `from '${new URL(path, new URL('../plugin/runtime.js', import.meta.url)).href}'`)
-  await writeFile(join(directory, 'runtime.js'), rewrite(source))
-  await writeFile(join(directory, 'runtime-cells.js'), await readFile(new URL('../plugin/runtime-cells.js', import.meta.url)))
+  const localFiles = new Set(['runtime.js', 'gate-driver.js', 'conversation-session.js', 'bot-coordinator.js', 'mailbox-facade.js', 'runtime-cells.js'])
+  for (const name of localFiles) {
+    let source = (await readFile(new URL(`../plugin/${name}`, import.meta.url), 'utf8'))
+      .replace(/from '(\.\/[^']+)'/gu, (match, path) => localFiles.has(path.slice(2)) ? match
+        : `from '${new URL(path, new URL(`../plugin/${name}`, import.meta.url)).href}'`)
+    if (name === 'gate-driver.js') source = rewrite(source)
+    await writeFile(join(directory, name), source)
+  }
   const replacement = await import(pathToFileURL(join(directory, 'runtime.js')).href)
   assert.notEqual(replacement, runtime)
   assert.notEqual(replacement.MBotRuntime, runtime.MBotRuntime)
@@ -3821,4 +3824,28 @@ test('agent-runtime foreground and Worker recovery survive simulated reboot with
   await settle(ctx, agent)
   assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
   assert.ok(requests.length > count)
+})
+
+test('BotCoordinator maintenance barrier blocks new turns while preserving native Inbox until release', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, requests } = await app(t, () => response('after maintenance'))
+  const state = ctx.mbotRuntime.states.get(agent)
+  assert.deepEqual(state.conversation, { schemaVersion: 1, botId: bot.botId, conversationKey: 'main', visibility: 'owner-private', sessionId: agent.id })
+  assert.deepEqual(ctx.mbotRuntime.coordinator.conversationSessions(bot.botId), { main: agent.id })
+  const barrier = await ctx.mbotRuntime.coordinator.acquireBarrier(bot.botId, 'compact')
+  try {
+    assert.equal((await ctx.mbotRuntime.status(agent)).state, 'maintaining')
+    await assert.rejects(ctx.mbotRuntime.coordinator.acquireBarrier(bot.botId, 'sleep'), /blocked by an active lifecycle/u)
+    assert.throws(() => ctx.mbotRuntime.prepareRemoval(bot.botId), /busy/u)
+    agent.followup(message('arrived during maintenance barrier'))
+    await agent.whenIdle()
+    assert.equal(requests.length, 0, 'Model must not run while maintenance barrier is held')
+    assert.equal(agent.inbox.nextTurn.length, 1, 'Native Inbox must retain input parked during maintenance')
+  } finally {
+    barrier.release()
+  }
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+  agent.followup(message('wake after maintenance'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2, 'Both the parked maintenance message and the wake message must execute in order')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
 })

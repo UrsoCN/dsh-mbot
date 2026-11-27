@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Configure Git identity for test fixtures
+        run: |
+          git config --global user.name "mbot-ci"
+          git config --global user.email "mbot-ci@example.invalid"
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Type check
+        run: npm run check:types
+      - name: Bash transaction & ops suite
+        run: bash tests/run.sh
+      - name: Host & Runtime test suite
+        run: node --test --test-concurrency=1 tests/plugin.test.js tests/runtime.test.js
+      - name: Package contents sanity check
+        run: |
+          npm pack --json --ignore-scripts --pack-destination /tmp > /tmp/mbot-pack.json
+          jq -e '.[0].files | all(.path != ".env" and (.path | startswith("node_modules/") | not))' /tmp/mbot-pack.json >/dev/null
+      - name: Quick benchmark smoke check
+        run: node tests/bench-runtime.mjs --quick
