@@ -6,7 +6,7 @@ import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 export declare const name: 'mbot-runtime'
 export declare const inject: string[]
-export interface Config { /** Task-scoped native Workers; default true. False keeps foreground-only turns. */ workers?: boolean }
+export interface Config { /** Task-scoped native Workers; default true. False keeps foreground-only turns. */ workers?: boolean; compactMaxBytes?: number }
 export declare const Config: z<Config>
 export type WorkerAction = 'worker_spawn' | 'worker_wait' | 'worker_message' | 'worker_stop'
 export interface WorkerRequest { bot?: string; task_id?: string; text?: string; worker_id?: string }
@@ -32,14 +32,21 @@ export interface RuntimeStopResult extends RuntimeStatus {
 }
 export interface ContextCheckpoint {
   schemaVersion: 1; snapshotSeq: number; snapshotHash: string; commit: string; meta: string; turn: number
+  compactions?: CompactionProof[]
   snapshot: {
     schemaVersion: 1; kind: 'turn-input'; visibility: 'owner-private'; botId: string; sessionId: string; conversationId: string
     turn: number; runId: string; role: string; memoryCommit: string; contextEpoch: number
     knowledge: import('./turn.js').ContextKnowledge
+    compactionPolicyVersion?: 1
     sourceCut: { throughSeq: number; events: { seq: number; type: string; hash: string }[] }
     input: { messageId: string; hash: string }[]
     previous: null | { schemaVersion: 1; snapshotHash: string; knowledgeVersion: string; contextEpoch: number; commit: string }
   }
+}
+export interface CompactionProof {
+  schemaVersion: 1; compactionId: string; status: 'completed' | 'failed' | 'interrupted'; inputSeq: number
+  input: Record<string, unknown>; outputSeq?: number; output?: Record<string, unknown>
+  native: { startSeq: number; endSeq: number | null; summarySeq: number | null; replacementSeq: number | null; shadowedSeqs: number[] | null }
 }
 export interface OwnerMailboxBinding {
   visibility: 'owner-private'; adapterId: string; ownerId: string
@@ -107,7 +114,12 @@ declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap {
   'plugin:mbot/runtime-turn': RuntimeTurnReceipt
   'plugin:mbot/worker-assignment': WorkerAssignment
   'plugin:mbot/context-snapshot': ContextCheckpoint['snapshot']
+  'plugin:mbot/compact-input': CompactionProof['input']
+  'plugin:mbot/compact-output': NonNullable<CompactionProof['output']>
 } }
+declare module '@deepseek-ai/dsh-llm/types' {
+  interface LlmRequestPurposeMap { 'mbot-compaction': true }
+}
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'mbot-owner-rpc': { kind: 'user'; rpcId: string; mbot: OwnerMailboxBinding & {

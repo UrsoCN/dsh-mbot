@@ -5,7 +5,9 @@ import { processStart } from './recovery.js'
 import { fileURLToPath } from 'node:url'
 import { readonlyLegacy } from './readonly-migration.js'
 import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
-import { restoreContext } from './context-checkpoint.js'
+import { restoreContext, recoverCompactionCatalog } from './context-checkpoint.js'
+import { contextAuditEvent } from './context-state.js'
+import { sealCompactionAudit, verifyCompactionSources, compactInputType, compactOutputType } from './compaction-data.js'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 
 function awaited(signal, operation) {
@@ -33,7 +35,7 @@ export async function repairNativeReceipt(runtime, bot, options) {
       const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === record.turn)
       const end = log.events.find(event => event.type === 'turn/end' && event.data.turn === record.turn)
       if (!start || !end || log.session.id !== state.agent.id || log.session.cwd !== bot.workspacePath) throw new Error('Native receipt recovery identity changed')
-      const events = log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && (!event.ignorable || event.type === 'plugin:mbot/context-snapshot'))
+      const events = log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && contextAuditEvent(event))
       const workers = await runtime.workerLogs(events)
       const check = runtime.ctx.mbot.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/turn-runtime-recovery.mjs'), '--audit-input'],
         cwd: packageRoot, signal: options.signal, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ workspace: bot.workspacePath,
@@ -98,6 +100,18 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
     const log = await awaited(options.signal, runtime.ctx.sessionQuery.readSession(agent.id))
     const input = await recoveryInput(journal, log)
+    if (journal.compactionPolicyVersion === 1 || input.events.some(event => [compactInputType, compactOutputType].includes(event.type))) {
+      const context = input.events.find(event => event.type === 'plugin:mbot/context-snapshot')
+      const meta = { run_id: journal.runId, base_head: journal.baseHead, runtime: { bot_id: bot.botId, session_id: agent.id,
+        turn: journal.turn, context: context ? { snapshot: context.data } : undefined } }
+      const proofs = sealCompactionAudit(meta, input.events) ?? []
+      const trusted = proofs.length ? new Map(runtime.states.get(agent)?.compactionCatalog
+        ?? await recoverCompactionCatalog(runtime, bot, agent, log)) : new Map()
+      for (const proof of proofs) {
+        verifyCompactionSources(proof, log.events, trusted)
+        trusted.set(proof.compactionId, proof)
+      }
+    }
     const workers = []
     if (journal.schemaVersion === 3) {
       for (const actor of journal.actors) {

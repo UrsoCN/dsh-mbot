@@ -222,11 +222,13 @@ export async function openTurn(mbot, root, bot, options) {
   const header = { kind: 'begin', schemaVersion: 1, botId: bot.botId, sessionId: options.sessionId,
     turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs,
     ...(options.messages === undefined ? {} : { messages: structuredClone(options.messages) }),
+    ...(options.compactionPolicyVersion === undefined ? {} : { compactionPolicyVersion: options.compactionPolicyVersion }),
     ...(options.runtimeOwnership === undefined ? {} : { runtimeOwnership: structuredClone(options.runtimeOwnership) }) }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
     || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
     || header.requestIds.some(id => typeof id !== 'string' || !id || /[\0\r\n]/u.test(id))
     || !['data-subprocesses', 'agent-runtime'].includes(header.writerScope)
+    || header.compactionPolicyVersion !== undefined && (header.compactionPolicyVersion !== 1 || header.writerScope !== 'agent-runtime')
     || (options.onExpiry !== undefined && typeof options.onExpiry !== 'function')
     || (options.onCancel !== undefined && typeof options.onCancel !== 'function')
     || (header.writerScope === 'agent-runtime' && (!options.onExpiry || !options.onCancel))
@@ -259,10 +261,12 @@ export async function openTurn(mbot, root, bot, options) {
       throw new Error('Managed turn did not acquire its transaction')
     }
     const ready = JSON.parse(value)
+    if (header.compactionPolicyVersion === 1 && ready.compactionPolicyVersion !== 1) throw new Error('Installed turn bridge cannot seal managed compaction')
     if (header.runtimeOwnership?.schemaVersion === 2 && ready.journalSchemaVersion !== 3) throw new Error('Installed turn bridge cannot manage delegated actor permissions')
     if (ready.kind !== 'ready' || !/^[a-f0-9]{64}$/u.test(ready.token) || ready.snapshot?.workspace !== bot.workspacePath
       || !Number.isSafeInteger(ready.expiresAt) || ready.expiresAt <= Date.now()) throw new Error('Invalid managed turn admission')
     const lease = new TurnLease(mbot, child, frames, ready, { botId: bot.botId, sessionId: header.sessionId, turn: header.turn }, finalizationTimeoutMs, options.onExpiry, options.onCancel, root, header.runtimeOwnership)
+    Object.defineProperty(lease, 'compactionPolicyVersion', { value: header.compactionPolicyVersion })
     mbot.leases.add(lease)
     if (mbot.closed) {
       await lease.cancel('MBot plugin disposed during admission')

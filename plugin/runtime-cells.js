@@ -8,4 +8,4 @@ if (registry === undefined) {
 }
 if (registry.schemaVersion !== 1 || !(registry.cells instanceof WeakMap)) throw new Error('Unsupported MBot Agent gate registry; preserve existing owners and reload a compatible Runtime')
 export const runtimeCells = registry.cells
-export const gateSchemaVersion = 1
+export const gateSchemaVersion = 2

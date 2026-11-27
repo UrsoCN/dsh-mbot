@@ -6,7 +6,7 @@
 
 `runtime-cells.js` 通过同一 JS realm 的 `Symbol.for('dsh-mbot.runtime.cells')` 保存版本化 WeakMap。键是 Agent 对象，注册表不保存全局的 profile 默认配置、当前 Bot 或凭据；临时事务许可仍限定于各 Agent 的内部 lease，不修改 `process.env`。Agent 的 prompt provider、消息监听和工具闸门只注册一次，回调通过 cell 的 driver 调用当前模块的实现；Agent scope 释放后注册失效，WeakMap 不延长 Agent 生命周期。
 
-新模块检查 registry/gate ABI 和 prompt 段布局。更换布局或生命周期语义需要明确迁移及版本升级，不能复用不兼容 ABI。driver 先准备，状态从原生事件重建并完成 Bash 前台组合后才发布；所有既有主/预留 Agent 接入成功后 Runtime 才 ready。加载失败时尚未执行的消息放回原生 Inbox，旧错误和审计证明保留，兼容模块可重试。
+新模块检查 registry/gate ABI 和 prompt 段布局。[自动摘要](managed-compaction.md) 将 gate ABI 升为 2，允许已关闭且带共享 registry 的 ABI 1 在原 Agent 上补装一次 LLM 闸门；注册失败回滚新 effects 并保留旧 driver。更换布局或生命周期语义需要明确迁移及版本升级，不能复用不兼容 ABI。driver 先准备，状态从原生事件重建并完成 Bash 前台组合后才发布；所有既有主/预留 Agent 接入成功后 Runtime 才 ready。加载失败时尚未执行的消息放回原生 Inbox，旧错误和审计证明保留，兼容模块可重试。
 
 首次注册使用官方 effect disposer 回滚自己的部分注册。已有第三方或旧版 provider 不被删除；没有共享 cell 的旧版 Agent 闸门无法凭名称自动接管，报错并保留旧闸门。这里是可信 Host 插件间的协调契约，不是对恶意同进程代码的隔离。
 
@@ -35,4 +35,4 @@
 
 `npm run test:gui-handoff` 使用实际 `dsh plugin add` 安装的隔离 Web profile，保留安装所得 SDK 身份，另取可修改的临时包树并启用官方 HMR。Chromium 经原生聊天及命令触发真实模块替换，验证晚到写者、保留待办、SOUL/MEMORY 刷新、失败后修正/重组和无关 Session 的继续使用；不会修改生产 profile 或调用外部模型。所有产物在 `/tmp/mbot-gui-handoff.*`。
 
-[scoped botctl Worker 的实际模块交接与恢复](worker-recovery.md) 已验收；Worker 其他工具、PTC/后台写者、跨 Host 交接、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍需各自的生命周期证明。
+[scoped botctl Worker 的实际模块交接与恢复](worker-recovery.md) 已验收；Worker 其他工具、PTC/后台写者、跨 Host 交接、手动 compact/睡眠维护、IM/peer/outbox 和管理面板仍需各自的生命周期证明。

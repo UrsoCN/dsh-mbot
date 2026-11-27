@@ -19,6 +19,8 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Llm, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Query from '@deepseek-ai/dsh-session-query'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
+import BasicCompaction from '@deepseek-ai/dsh-compaction-basic'
 import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
 import Bash from '@deepseek-ai/dsh-bash-local'
 import Fs from '@deepseek-ai/dsh-fs-local'
@@ -42,6 +44,7 @@ import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plu
 import { readonlyLegacy } from '../plugin/readonly-migration.js'
 import { recoveryInput } from '../plugin/recovery-proof.js'
 import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
+import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/compaction-data.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -145,17 +148,32 @@ async function app(t, script, options = {}) {
   const bot = await ctx.mbot.importBot(ws, { defaultRole: options.role ?? 'chief' })
   await ctx.plugin(botTools)
   await ctx.plugin(AgentLoop, { agents: [] })
+  if (options.compaction) {
+    await ctx.plugin(TokenMeter)
+    if (options.compaction !== 'scoped') await ctx.plugin(BasicCompaction, { auto: options.compaction === 'automatic', headroomTokens: 0, retainTokens: 0, maxTokens: 1024 })
+    if (!['automatic', 'scoped'].includes(options.compaction)) ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+      if (messages.some(message => message.content.some(block => block.type === 'text' && block.text.startsWith('compact:')))) {
+        const surface = await ctx.sessionQuery.readSurface(agent.id)
+        const first = surface.events.find(event => event.type === 'user/message' && ['user', 'compact-checkpoint'].includes(event.data.source.kind))
+        const last = surface.events.findLast(event => event.type === 'assistant/message')
+        if (first && last) await ctx.compaction.compactRegion(first.seq, last.seq, agent, signal)
+      }
+      return next()
+    })
+  }
   await options.beforeRuntime?.(ctx)
   let workerProvider
   if (options.workers) { await ctx.plugin(Subagents); workerProvider = ctx.plugin(SpawnProvider); await workerProvider }
-  const owner = ctx.plugin(runtime, options.defaultWorkers ? {} : { workers: options.workers === true })
+  const owner = ctx.plugin(runtime, { ...(options.defaultWorkers ? {} : { workers: options.workers === true }),
+    ...(options.compactMaxBytes ? { compactMaxBytes: options.compactMaxBytes } : {}) })
   await owner
   const requests = []
   const errors = []
   ctx.on('agent/error', ({ error }) => { errors.push(error) })
   class Scripted extends LlmAdapter {
+    async resolveModel(provider, model) { return { provider, id: model, name: model, context: { contextWindow: 16384 } } }
     async *stream(options) {
-      requests.push({ sessionId: options.sessionId, messages: structuredClone(options.messages), tools: structuredClone(options.tools) })
+      requests.push({ sessionId: options.sessionId, purpose: options.purpose, messages: structuredClone(options.messages), tools: structuredClone(options.tools) })
       yield* await script(options, requests.length, ctx)
     }
   }
@@ -171,6 +189,382 @@ async function app(t, script, options = {}) {
 }
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
+
+test('missing native backends are isolated per Bot Agent and survive Runtime handoff', { timeout: 30000 }, async t => {
+  const { ctx, agent, bot, owner } = await app(t, () => response('scoped backend reply'), {
+    compaction: 'scoped', beforeRuntime: async ctx => { await ctx.plugin(Commands) } })
+  const first = runtimeCells.get(agent).compactionFiber
+  assert.ok(first.ctx.get('compaction'))
+  assert.equal(ctx.get('compaction'), undefined)
+  const otherWs = join(root, `Scoped Bot ${++sequence}`)
+  assert.equal((await ctx.mbot.execute('mbot', ['init'], { workspace: otherWs })).exitCode, 0)
+  const other = await ctx.mbot.importBot(otherWs)
+  const second = await ctx.agents.create({ sessionId: `scoped-compaction-${++sequence}`, meta: { cwd: otherWs },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' }, setup: (_scope, current) => ctx.mbotRuntime.attach(current, { botId: other.botId }) })
+  const secondFiber = runtimeCells.get(second.agent).compactionFiber
+  assert.notEqual(first.ctx.get('compaction'), secondFiber.ctx.get('compaction'))
+  assert.equal(ctx.get('compaction'), undefined)
+  assert.ok(ctx.commands.find(agent, 'compact'))
+  assert.ok(ctx.commands.find(second.agent, 'compact'))
+  assert.equal(ctx.commands.find({}, 'compact'), undefined)
+  agent.followup(message('Bot A context')); await settle(ctx, agent)
+  second.agent.followup(message('Bot B context')); await settle(ctx, second.agent)
+  await owner.dispose(); await ctx.plugin(runtime)
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  await ctx.mbotRuntime.attach(second.agent, { botId: other.botId })
+  assert.equal(runtimeCells.get(agent).compactionFiber, first)
+  assert.equal(runtimeCells.get(second.agent).compactionFiber, secondFiber)
+})
+
+test('managed native compaction binds attributed sources, replacement and Git checkpoint without copying persona', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      assert.equal(options.tools, undefined)
+      assert.equal(options.messages.length, 2)
+      assert.ok(!JSON.stringify(options.messages).includes('unique-persona-compact-992211'))
+      return response(JSON.stringify({ items: [{ text: 'The user requested a task; completion remains a model report.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+    }
+    return response('model report: ' + 'completed reference work '.repeat(1000))
+  }, { main: true, persistence: true, compaction: true })
+  const soul = join(ws, 'bots/chief/SOUL.md')
+  await writeFile(soul, (await readFile(soul, 'utf8')) + '\nunique-persona-compact-992211\n')
+  git(ws, 'add', 'bots/chief/SOUL.md'); git(ws, 'commit', '-m', 'fixture: compaction persona')
+  agent.followup(message('original request ' + 'reference data '.repeat(1000)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: summarize completed history'))
+  await settle(ctx, agent)
+  const checkpoint = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(checkpoint.compactions.length, 1)
+  const proof = checkpoint.compactions[0]
+  assert.equal(proof.status, 'completed')
+  assert.equal(proof.input.policyHash.length, 64)
+  assert.ok(proof.input.sourceRefs.length)
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  const summary = log.events.find(event => event.type === 'compaction/summary')
+  const replacement = log.events.find(event => event.seq === proof.native.replacementSeq)
+  assert.equal(summary.data.compactionId, proof.compactionId)
+  assert.deepEqual(summary.data.shadowedSeqs, proof.native.shadowedSeqs)
+  assert.equal(replacement.data.source.compactionId, proof.compactionId)
+  const meta = JSON.parse(git(ws, 'show', `${checkpoint.commit}:${checkpoint.meta}`))
+  assert.deepEqual(meta.runtime.compactions, checkpoint.compactions)
+  assert.equal(meta.runtime.compaction_policy_version, 1)
+  assert.equal(meta.usage.total_tokens, 30)
+  const after = requests.at(-1)
+  assert.ok(JSON.stringify(after.messages).includes('MBot conversation summary'))
+  assert.ok(JSON.stringify(after.messages).includes('unique-persona-compact-992211'))
+  assert.equal(requests.filter(request => request.purpose === summaryPurpose).length, 1)
+  assert.equal(requests.filter(request => request.purpose === 'compaction').length, 0)
+})
+
+test('repeated managed compaction reuses audited sources and expands them after knowledge changes', { timeout: 30000 }, async t => {
+  let summaryCount = 0
+  const { ctx, ws, agent, handle, bot } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      summaryCount++
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      assert.equal(sources.some(source => source.derivedFrom), summaryCount === 2)
+      if (summaryCount === 3) assert.ok(sources.some(source => source.text.startsWith('original raw request')))
+      return response(JSON.stringify({ items: [{ text: 'User requested reference work.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+    }
+    return response('model report '.repeat(1500))
+  }, { main: true, persistence: true, compaction: true })
+  agent.followup(message('original raw request ' + 'data '.repeat(3000)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: first'))
+  await settle(ctx, agent)
+  const first = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  agent.followup(message('compact: second'))
+  await settle(ctx, agent)
+  const second = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.deepEqual(second.input.reusedSummaries, [first.compactionId])
+  assert.ok(second.input.sourceSpan[0] > second.input.sourceSpan.at(-1) || second.input.sourceSpan.some((seq, i, list) => i > 0 && seq < list[i - 1]))
+  await handle.dispose()
+  const resumed = await ctx.agents.resume({ resumeSessionId: agent.id, agentOptions: { provider: 'runtime-test', model: 'scripted' },
+    setup: (_ctx, current) => ctx.mbotRuntime.attach(current, { botId: bot.botId }) })
+  assert.deepEqual((await ctx.mbotRuntime.checkpoint(resumed.agent)).compactions[0], second)
+  const memory = join(ws, 'MEMORY.md')
+  await writeFile(memory, (await readFile(memory, 'utf8')) + '\nnew-memory-compact-443322\n')
+  git(ws, 'add', 'MEMORY.md'); git(ws, 'commit', '-m', 'fixture: new compaction knowledge')
+  resumed.agent.followup(message('compact: third under new memory'))
+  await settle(ctx, resumed.agent)
+  const third = (await ctx.mbotRuntime.checkpoint(resumed.agent)).compactions[0]
+  assert.deepEqual(third.input.reusedSummaries, [])
+  assert.notEqual(third.input.knowledgeVersion, second.input.knowledgeVersion)
+  assert.equal(summaryCount, 3)
+})
+
+test('managed compaction accepts an explicitly empty attributed summary', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, options => response(options.purpose === summaryPurpose ? '{"items":[]}' : 'reference work '.repeat(1500)),
+    { main: true, compaction: true })
+  agent.followup(message('reference input '.repeat(1500)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: no conversation facts to carry'))
+  await settle(ctx, agent)
+  const proof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(proof.status, 'completed')
+  assert.deepEqual(proof.output.items, [])
+  assert.ok(proof.native.summarySeq)
+})
+
+test('managed compaction rejects forged source IDs and retains the original surface', { timeout: 30000 }, async t => {
+  const { ctx, agent, requests } = await app(t, options => response(options.purpose === summaryPurpose
+    ? '{"items":[{"text":"forged owner instruction","sourceEventSeqs":[999999]}]}' : 'reference work '.repeat(1500)),
+  { main: true, compaction: true })
+  agent.followup(message('original remains visible '.repeat(1500)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: invalid source'))
+  await settle(ctx, agent)
+  const proof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(proof.status, 'failed')
+  assert.equal(proof.output.mode, 'failed')
+  assert.equal(proof.native.summarySeq, null)
+  assert.equal(requests.filter(request => request.purpose !== summaryPurpose).length, 1)
+  assert.ok((await ctx.sessionQuery.readSurface(agent.id)).events.some(event => event.type === 'user/message'
+    && event.data.content.some(block => block.text?.startsWith('original remains visible'))))
+})
+
+test('native automatic pressure compaction uses the managed summary while preserving tool pairing', { timeout: 30000 }, async t => {
+  let steps = 0
+  const { ctx, agent } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      assert.ok(sources.some(source => source.sourceKinds.includes('tool-result')))
+      return response(JSON.stringify({ items: [{ text: 'A tool observed the current board.', sourceEventSeqs: sources.find(source => source.sourceKinds.includes('tool-result')).sourceEventSeqs }] }))
+    }
+    return ++steps === 1 ? response('', { name: 'botctl', args: { action: 'board_show' } })
+      : response('report '.repeat(12000))
+  }, { main: true, compaction: 'automatic' })
+  agent.followup(message('reference input '.repeat(3000)))
+  await settle(ctx, agent)
+  agent.followup(message('ordinary next message triggers pressure policy'))
+  await settle(ctx, agent)
+  const proof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(proof.status, 'completed')
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  const assistant = log.events.find(event => event.type === 'assistant/message' && event.data.message.content.some(block => block.type === 'tool-call'))
+  const result = log.events.find(event => event.type === 'tool/result')
+  assert.ok(proof.native.shadowedSeqs.includes(assistant.seq))
+  assert.ok(proof.native.shadowedSeqs.includes(result.seq))
+})
+
+test('managed compaction cancellation waits for its writer and preserves messages from another window', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), released = Promise.withResolvers()
+  const { ctx, ws, agent } = await app(t, async options => {
+    if (options.purpose === summaryPurpose) {
+      entered.resolve()
+      await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+      await delay(50)
+      released.resolve()
+      throw options.signal.reason
+    }
+    return response('reference report '.repeat(1500))
+  }, { main: true, compaction: true })
+  agent.followup(message('reference input '.repeat(1500)))
+  await settle(ctx, agent)
+  const before = await ctx.mbotRuntime.checkpoint(agent)
+  agent.followup(message('compact: cancel summary'))
+  await entered.promise
+  agent.followup(message('another window queued this input'))
+  const record = ctx.mbotRuntime.states.get(agent).current
+  const stopping = ctx.mbotRuntime.stop(agent)
+  await released.promise
+  await stopping
+  assert.equal(record.calls.size, 0)
+  assert.equal(record.result.outcome, 'cancelled')
+  assert.equal(record.result.failureCountEffect, 'preserve')
+  assert.ok(agent.inbox.nextTurn.some(input => input.content[0].text === 'another window queued this input'))
+  assert.equal(git(ws, 'rev-list', '--count', `${before.commit}..HEAD`), '1')
+  const meta = JSON.parse(git(ws, 'show', `HEAD:${record.result.meta}`))
+  assert.equal(meta.runtime.compactions[0].status, 'failed')
+  assert.equal(meta.runtime.compactions[0].native.replacementSeq, null)
+})
+
+test('managed compaction source budget rejects before calling the summary model', { timeout: 30000 }, async t => {
+  const { ctx, agent, requests } = await app(t, () => response('reference report '.repeat(1500)),
+    { main: true, compaction: true, compactMaxBytes: 4096 })
+  agent.followup(message('oversize source '.repeat(1500)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: source byte budget'))
+  await settle(ctx, agent)
+  const proof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(proof.input.mode, 'rejected')
+  assert.equal(proof.status, 'failed')
+  assert.equal(requests.filter(request => request.purpose === summaryPurpose).length, 0)
+})
+
+test('standalone native compact is held behind the unimplemented MBot maintenance gate', { timeout: 30000 }, async t => {
+  const { ctx, agent, requests } = await app(t, () => response('reference report '.repeat(1500)), { main: true, compaction: true })
+  agent.followup(message('reference input '.repeat(1500)))
+  await settle(ctx, agent)
+  const count = requests.length
+  await assert.rejects(ctx.compaction.compactNow(agent, new AbortController().signal), /summary/u)
+  assert.equal(requests.length, count)
+  assert.equal((await ctx.sessionQuery.readSession(agent.id)).events.filter(event => event.type === 'compaction/summary').length, 0)
+  agent.followup(message('normal conversation still works'))
+  await settle(ctx, agent)
+})
+
+for (const crash of [undefined, 'commit', 'settlement']) {
+  test(`managed compaction recovery retains native replacement and settles once after ${crash ?? 'failed commit'}`, { timeout: 30000 }, async t => {
+    const { ctx, ws, bot, agent, journal, requests, mailbox } = await failedRuntime(t, { crash,
+      fixture: { compaction: true, persistence: true }, script: options => {
+        if (options.purpose === summaryPurpose) {
+          const sources = JSON.parse(options.messages.at(-1).content[0].text)
+          return response(JSON.stringify({ items: [{ text: 'Audited work report.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+        }
+        return response('recoverable reference report '.repeat(1500))
+      }, prepare: async fixture => {
+        fixture.agent.followup(message('reference input '.repeat(1500)))
+        await settle(fixture.ctx, fixture.agent)
+        // Exercise the public native compactor inside the helper's failed turn.
+        fixture.ctx.on('agent/pre-step', async (input, next) => {
+          if (input.messages.some(message => message.content.some(block => block.text === 'audit interrupted'))) {
+            const surface = await fixture.ctx.sessionQuery.readSurface(input.agent.id)
+            const first = surface.events.find(event => event.type === 'user/message' && ['user', 'compact-checkpoint'].includes(event.data.source.kind))
+            const last = surface.events.findLast(event => event.type === 'assistant/message')
+            await fixture.ctx.compaction.compactRegion(first.seq, last.seq, input.agent, input.signal)
+          }
+          return next()
+        })
+      } })
+    const native = await ctx.sessionQuery.readSession(agent.id)
+    const summary = native.events.find(event => event.type === 'compaction/summary')
+    assert.ok(summary)
+    const count = requests.length, head = git(ws, 'rev-parse', 'HEAD')
+    assert.equal(journal.compactionPolicyVersion, 1)
+    await recoverNativeTurn(ctx, { botId: bot.botId })
+    const checkpoint = await ctx.mbotRuntime.checkpoint(agent)
+    assert.equal(checkpoint.compactions[0].compactionId, summary.data.compactionId)
+    assert.equal(requests.length, count)
+    assert.equal((await ctx.sessionQuery.readSession(agent.id)).events.filter(event => event.type === 'compaction/summary').length, 1)
+    assert.equal(crash ? git(ws, 'rev-parse', 'HEAD') : git(ws, 'rev-list', '--count', `${head}..HEAD`), crash ? head : '1')
+    assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, true)
+    assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
+  })
+}
+
+test('managed summary flush recovery publishes its existing proof without another model call', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      return response(JSON.stringify({ items: [{ text: 'The user requested reference work.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+    }
+    return response('reference report '.repeat(1500))
+  }, { main: true, persistence: true, compaction: true })
+  await removalController(ctx, agent)
+  agent.followup(message('reference input '.repeat(1500)))
+  await settle(ctx, agent)
+  const previous = await ctx.mbotRuntime.checkpoint(agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let fail = true
+  ctx.sessions.flush = async session => {
+    if (fail && ctx.mbotRuntime.states.get(agent).current?.result?.head) { fail = false; throw new Error('summary receipt flush failure') }
+    return flush(session)
+  }
+  agent.followup(message('compact: summary committed before flush failure'))
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent), /flush/u)
+  assert.equal(ctx.mbotRuntime.states.get(agent).checkpoint.commit, previous.commit)
+  const head = git(ws, 'rev-parse', 'HEAD'), count = requests.length
+  ctx.sessions.flush = flush
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).receiptRepaired, true)
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).compactions[0].status, 'completed')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(requests.length, count)
+})
+
+test('retired Bot compaction recovery rebuilds reused summary ancestry from Git without reopening business', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await failedRuntime(t, { fixture: { compaction: true, persistence: true },
+    script: options => {
+      if (options.purpose === summaryPurpose) {
+        const sources = JSON.parse(options.messages.at(-1).content[0].text)
+        return response(JSON.stringify({ items: [{ text: 'User requested work.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+      }
+      return response('reference report '.repeat(1500))
+    }, prepare: async fixture => {
+      fixture.agent.followup(message('raw input '.repeat(1500))); await settle(fixture.ctx, fixture.agent)
+      fixture.agent.followup(message('compact: audited first summary')); await settle(fixture.ctx, fixture.agent)
+      fixture.ctx.on('agent/pre-step', async (input, next) => {
+        if (input.messages.some(message => message.content.some(block => block.text === 'audit interrupted'))) {
+          const surface = await fixture.ctx.sessionQuery.readSurface(input.agent.id)
+          const first = surface.events.find(event => event.type === 'user/message' && event.data.source.kind === 'compact-checkpoint')
+          const last = surface.events.findLast(event => event.type === 'assistant/message')
+          await fixture.ctx.compaction.compactRegion(first.seq, last.seq, input.agent, input.signal)
+        }
+        return next()
+      })
+    } })
+  const count = requests.length
+  await ctx.mbot.removeBot(bot.botId)
+  assert.equal(ctx.mbotRuntime.states.has(agent), false)
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.success, true)
+  assert.equal(requests.length, count)
+  const meta = JSON.parse(git(ws, 'show', `HEAD:${recovered.meta}`))
+  assert.equal(meta.runtime.compactions[0].status, 'completed')
+  assert.equal(meta.runtime.compactions[0].input.reusedSummaries.length, 1)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
+})
+
+test('managed compaction restoration refuses missing owned output even when its native replacement exists', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, options => response(options.purpose === summaryPurpose
+    ? '{"items":[]}' : 'reference report '.repeat(1500)), { main: true, compaction: true })
+  agent.followup(message('reference input '.repeat(1500)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: preserve evidence'))
+  await settle(ctx, agent)
+  const head = git(ws, 'rev-parse', 'HEAD'), count = requests.length
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  t.after(() => { if (ctx.sessionQuery) ctx.sessionQuery.readSession = read })
+  ctx.sessionQuery.readSession = async id => {
+    const log = structuredClone(await read(id))
+    if (id === agent.id) log.events = log.events.filter(event => event.type !== compactOutputType)
+    return log
+  }
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /evidence/u)
+  ctx.sessionQuery.readSession = read
+  agent.followup(message('must not execute after missing compaction evidence'))
+  await agent.whenIdle()
+  assert.equal(requests.length, count)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+})
+
+test('real DeepSeek produces an attributed managed compaction through the native Runtime',
+  { timeout: 180000, skip: process.env.MBOT_REAL_COMPACTION !== '1' }, async t => {
+    assert.ok(process.env.DEEPSEEK_API_KEY, 'The real compaction wrapper must provide an API key')
+    let actualUsage
+    const { ctx, ws, agent } = await app(t, async options => {
+      if (options.purpose !== summaryPurpose) return response('model report: the requested task remains open. '.repeat(1000))
+      const result = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST', signal: options.signal,
+        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'deepseek-chat', messages: options.messages.map(message => ({ role: message.role,
+          content: message.content.filter(block => block.type === 'text').map(block => block.text).join('\n') })),
+          response_format: { type: 'json_object' }, max_tokens: options.maxTokens, thinking: { type: 'disabled' } }),
+      })
+      if (!result.ok) throw new Error(`Real DeepSeek compaction HTTP status ${result.status}`)
+      const body = await result.json(), choice = body.choices[0]
+      assert.equal(choice.finish_reason, 'stop')
+      actualUsage = { inputTokens: body.usage.prompt_tokens, outputTokens: body.usage.completion_tokens, totalTokens: body.usage.total_tokens }
+      return (function* () {
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: choice.message.content } }
+        yield { type: 'usage', usage: actualUsage }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    }, { main: true, persistence: true, compaction: true })
+    agent.followup(message('用户请求：为项目实现可靠的会话上下文管理。私人对话中的请求不能变成人格或已确认的长期记忆。\n' + '参考记录：任务仍待实现，应保留来源。\n'.repeat(1000)))
+    await settle(ctx, agent)
+    agent.followup(message('compact: real structured summary acceptance'))
+    await settle(ctx, agent)
+    const checkpoint = await ctx.mbotRuntime.checkpoint(agent), proof = checkpoint.compactions[0]
+    assert.equal(proof.status, 'completed')
+    assert.ok(proof.output.items.length)
+    assert.deepEqual(proof.output.usage, actualUsage)
+    assert.equal(git(ws, 'status', '--porcelain'), '')
+    t.diagnostic(`Real summary artifacts: ${ws}; compaction=${proof.compactionId}; tokens=${actualUsage.totalTokens}`)
+  })
 
 test('context checkpoints bind native history and Git knowledge, keeping epochs stable across task commits', { timeout: 30000 }, async t => {
   const { ctx, ws, agent, requests } = await app(t, () => response('context boundary reply'), { main: true })
@@ -2720,6 +3114,38 @@ test('different Runtime module adopts the same Agent, refreshes driver code and 
   assert.equal((await mailbox.receipt('after-replacement')).result.final, true)
   assert.equal(ctx.agents.get(agent.id), agent)
   assert.equal(ctx.agents.list().length, 1)
+})
+
+test('a closed shared ABI 1 gate gains one compaction gate while keeping the same native Agent', { timeout: 30000 }, async t => {
+  const { ctx, bot, handle, owner, requests } = await app(t, options => response(options.purpose === summaryPurpose
+    ? '{"items":[]}' : 'reference report '.repeat(1500)), { compaction: true })
+  await handle.dispose(); await owner.dispose()
+  // Emulate the prior shared gate contract without LLM middleware. The
+  // data bridge stays current; this tests the supported Agent gate migration.
+  const legacy = await replacementRuntime(source => {
+    const start = source.indexOf("  on('llm/stream'"), end = source.indexOf('  const layout =', start)
+    assert.ok(start >= 0 && end > start)
+    return (source.slice(0, start) + source.slice(end)).replace(
+      "import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'",
+      "import { runtimeCells as cells } from './runtime-cells.js'\nconst gateSchemaVersion = 1")
+  })
+  const oldOwner = ctx.plugin(legacy); await oldOwner
+  const managed = await ctx.agents.create({ sessionId: `legacy-gate-${++sequence}`, meta: { cwd: ctx.mbot.workspace() },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' }, setup: (_scope, agent) => ctx.mbotRuntime.attach(agent, { botId: bot.botId }) })
+  const agent = managed.agent
+  agent.followup(message('legacy raw sources '.repeat(1500)))
+  await settle(ctx, agent)
+  assert.equal(runtimeCells.get(agent).schemaVersion, 1)
+  await oldOwner.dispose()
+  await ctx.plugin(runtime)
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  assert.equal(runtimeCells.get(agent).schemaVersion, 2)
+  assert.equal(runtimeCells.get(agent).hasLlmGate, true)
+  agent.followup(message('compact: after ABI upgrade'))
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).compactions[0].status, 'completed')
+  assert.equal(requests.filter(request => request.purpose === summaryPurpose).length, 1)
+  assert.equal(ctx.agents.get(agent.id), agent)
 })
 
 test('input claimed while a new module initializes stays queued and does not replace the old audit state', { timeout: 30000 }, async t => {

@@ -47,11 +47,12 @@ export declare class ActorLease {
   /** Data calls drain here; the caller must also join its native Agent/tools. */
   close(): Promise<void>
 }
-export interface BeginTurnOptions { runtimeOwnership?: RuntimeOwnership; botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Native claimed input, required to seal agent-runtime replies. */ messages?: readonly import('@deepseek-ai/dsh-llm').UserMessage[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
+export interface BeginTurnOptions { compactionPolicyVersion?: 1; runtimeOwnership?: RuntimeOwnership; botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Native claimed input, required to seal agent-runtime replies. */ messages?: readonly import('@deepseek-ai/dsh-llm').UserMessage[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
 export declare class TurnLease {
   readonly identity: TurnIdentity
   readonly snapshot: ContextSnapshot
   readonly runtimeOwnership?: Readonly<RuntimeOwnership>
+  readonly compactionPolicyVersion?: 1
   readonly transportEnded: boolean
   readonly expiresAt: number
   /** Host-only environment; private token must be redacted from tool results. */

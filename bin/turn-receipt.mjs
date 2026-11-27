@@ -10,6 +10,7 @@ import { applyRedactions } from '../plugin/reply-proof.js'
 import { isDeepStrictEqual } from 'node:util'
 import { verifyWorkerAudit } from '../plugin/worker-recovery-proof.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
+import { sealCompactionAudit, compactInputType, compactOutputType } from '../plugin/compaction-data.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex')
@@ -59,6 +60,8 @@ async function prove(input) {
     if (!meta.runtime.reply) { legacy = true; continue }
     try {
       if (meta.runtime.context && !isDeepStrictEqual(meta.runtime.context, sealContextAudit(meta, events, workspace))) throw new Error('Request context proof contradicts native evidence')
+      if ((meta.runtime.compaction_policy_version === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type)))
+        && !isDeepStrictEqual(meta.runtime.compactions, sealCompactionAudit(meta, events))) throw new Error('Request compaction proof contradicts native evidence')
       const reply = meta.runtime.reply
       const assistant = events.findLast(event => event.type === 'assistant/message' && event.data.turn === record.turn && event.seq < turn.endSeq)
       const text = assistant?.data.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''

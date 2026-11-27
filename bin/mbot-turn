@@ -54,6 +54,7 @@ jq -e 'def line: type=="string" and length>0 and (test("[\u0000\r\n]")|not);
   and (.turn|type)=="number" and .turn>0 and (.turn|floor)==.turn and (.request|type)=="string" and (.request|contains("\u0000")|not)
   and (.requestIds|type)=="array" and all(.requestIds[]; line)' "$MBOT_SCRATCH/header.json" >/dev/null
 jq -e '(.writerScope // "data-subprocesses") as $scope | $scope=="data-subprocesses" or $scope=="agent-runtime"' "$MBOT_SCRATCH/header.json" >/dev/null
+jq -e '.compactionPolicyVersion==null or (.compactionPolicyVersion==1 and .writerScope=="agent-runtime")' "$MBOT_SCRATCH/header.json" >/dev/null
 jq -e '(.finalizationTimeoutMs // 30000) as $ms | ($ms|type)=="number" and $ms>0 and ($ms|floor)==$ms and $ms<=2147483647' "$MBOT_SCRATCH/header.json" >/dev/null
 transport_timeout=$((MBOT_TIMEOUT+($(jq -r '.finalizationTimeoutMs // 30000' "$MBOT_SCRATCH/header.json")+999)/1000))
 mkdir -p -- "$(mbot_path .mbot/runs)"
@@ -73,6 +74,7 @@ jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg r
     botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:($header[0].writerScope // "data-subprocesses"),
     baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}
       + (if $header[0].runtimeOwnership==null then {} else {runtimeOwnership:$header[0].runtimeOwnership} end)
+      + (if $header[0].compactionPolicyVersion==null then {} else {compactionPolicyVersion:$header[0].compactionPolicyVersion} end)
       + (if $header[0].runtimeOwnership.schemaVersion==2 then {actors:[]} else {} end)' > "$MBOT_SCRATCH/ledger.json"
 mbot_turn_write_ledger active
 open=1
@@ -97,7 +99,8 @@ node "$MBOT_ROOT/bin/context-checkpoint.mjs" --knowledge "$MBOT_WS" "$MBOT_BASE"
 jq --slurpfile knowledge "$MBOT_SCRATCH/knowledge.json" '. + {knowledge:$knowledge[0]}' "$MBOT_SCRATCH/context.json" > "$MBOT_SCRATCH/versioned-context.json"
 mv -- "$MBOT_SCRATCH/versioned-context.json" "$MBOT_SCRATCH/context.json"
 jq -cn --slurpfile ledger "$MBOT_SCRATCH/ledger.json" --slurpfile context "$MBOT_SCRATCH/context.json" \
-  '{kind:"ready",journalSchemaVersion:$ledger[0].schemaVersion,runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}'
+  '{kind:"ready",journalSchemaVersion:$ledger[0].schemaVersion,runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}
+    + (if $ledger[0].compactionPolicyVersion==null then {} else {compactionPolicyVersion:$ledger[0].compactionPolicyVersion} end)'
 flock -u 9
 while IFS= read -r -t "$transport_timeout" frame; do
   printf '%s' "$frame" > "$MBOT_SCRATCH/frame.json"

@@ -1,5 +1,23 @@
 # 发布说明
 
+## dev：主 Session 的原生自动摘要与审计恢复（未发布）
+
+- 接入 DSH 原生自动 compaction，保留压力/overflow、范围选择、工具配对、缩小检查与 history replacement。MBot 使用独立 `mbot-compaction` 辅助请求生成有来源引用和 owner-private 可见域的摘要，普通 Agent 模型请求保持原生日志重放。
+- Web 主 Session 缺少继承后端时，在该 Agent 的 scope 隔离并补装官方 BasicCompaction 与原生 compact 命令，沿用原生 tokenMeter；已有后端与 Runtime 交接复用，不重复注册。
+- 摘要不直接取材 SOUL/协议/MEMORY/runtime-context 或 `botctl boot` 输出；本轮许可脱敏并限制 UTF-8 输入预算。空摘要允许，格式/来源伪造、截断、超限与取消不产生有效 replacement。
+- 策略/请求/响应 hash、知识版本、原始来源和原生 compaction ID/括号/替换位置封存到同一次 Git `runtime.compactions` 审计，摘要用量纳入顶层统计。相同知识版本复用已审计摘要；再次压缩遇到旧知识版本时展开原始来源重新取材。
+- checkpoint 只在 Git/journal/Session flush 一致后发布摘要证明；恢复先核验来源，Git 提交失败或提交/结算中断、回执 flush 失败时不重复模型、replacement 或已完成提交。缺失输出/冲突证明继续拒绝业务。
+- 已注销 Bot 的摘要索引从原生日志/可达 Git 证明重建，恢复重复摘要不依赖活动 Runtime 状态，旧 Session 保持退役。
+- gate ABI 2 支持已关闭且带共享 registry 的 ABI 1 补装一次 LLM 闸门，保留原 Agent/Session。普通回合没有 compaction 事件时不增加 Session 全量读取，保持并发 checkpoint 观察/重试边界。
+
+真实 DeepSeek 的结构化摘要验收通过，调用仅用于摘要，普通对话使用本地 adapter；使用已授权环境 key，证据 `/tmp/mbot-compaction-real.log`，数据 `/tmp/mbot-runtime-tests.VrlkMK`。API 用量 23376 tokens，验证来源、原生 replacement、Git checkpoint 与干净工作树。
+
+最终类型、188 项本地 Host/Runtime 检查和 64 组 Bash 检查通过；另 1 项真实摘要在默认套件跳过，已单独验收。证据 `/tmp/mbot-compaction-suite-current.log`。Chromium 通过实际 `dsh plugin add` 安装 tarball，验证主 Session 原生摘要/Git checkpoint、刷新后相同证明及 standalone compact 拒绝且不调用模型；证据 `/tmp/mbot-compaction-gui-current.log`，产物 `/tmp/mbot-gui-compaction.qLosw2`。
+
+源码链接、tarball、Git 和 Web 四类安装验证通过，含新后端 peers、包内摘要模块、原生工具/命令、checkpoint/恢复与卸载；证据 `/tmp/mbot-compaction-install-current.log`，产物 `/tmp/mbot-plugin-install.jgkJ1f`。早期一轮安装遇到瞬时不可读进程而拒绝恢复，确认该 PID 退出后用新隔离 profile 重跑；生产写者检查保持原规则。
+
+手动 `/compact`/botctl 维护入口、普通 turn 边界的旧摘要退役、原生 replacement 中途冷恢复、Worker compaction 与 sleep/wake 仍在 TODO。当前受管理 Session 的 standalone compact 明确拒绝，不将本阶段写作完整 compact 生命周期。包仍为 0.1.1，不新增发布 tag；实现与约束见 [自动摘要](managed-compaction.md)。
+
 ## dev：主 Session 的 turn 上下文 checkpoint 基础（未发布）
 
 - 在模型提示组装前固定人格/协议/共享与角色记忆的 Git blob、内容 hash 和知识版本，捕获有序原生 surface 来源及已接受的 Inbox 输入 hash；任务或审计 Git 提交不推进知识 epoch，嵌套知识身份不可改写。

@@ -50,7 +50,8 @@ try {
         ...(meta.runtime.reply ? { messages: events.filter(event => event.type === 'user/message').map(event => event.data) } : {}) }, events, result, meta.runtime.actors)
       const sealed = sealContextAudit(meta, events, workspace)
       if (!isDeepStrictEqual(sealed, meta.runtime.context)) throw new Error('Git context seal contradicts its native snapshot')
-      proofs.push({ ...sealed, commit: head, meta: value, actors: meta.runtime.actors, turn: meta.runtime.turn })
+      proofs.push({ ...sealed, commit: head, meta: value, actors: meta.runtime.actors, turn: meta.runtime.turn,
+        ...(meta.runtime.compactions?.length ? { compactions: meta.runtime.compactions } : {}) })
     }
     proofs.sort((left, right) => left.turn - right.turn)
     const seen = new Set()
@@ -62,7 +63,8 @@ try {
       if (!isDeepStrictEqual(proof.snapshot.previous, previous)) throw new Error('Context checkpoint chain changed or is incomplete')
       checkpoint = proof
     }
-    process.stdout.write(JSON.stringify({ checkpoint, snapshots: proofs.map(proof => ({ seq: proof.snapshotSeq, hash: proof.snapshotHash })) }) + '\n')
+    process.stdout.write(JSON.stringify({ checkpoint, snapshots: proofs.map(proof => ({ seq: proof.snapshotSeq, hash: proof.snapshotHash })),
+      compactions: proofs.flatMap(proof => proof.compactions ?? []) }) + '\n')
   } else throw new Error('Invalid context checkpoint operation')
 } catch (error) {
   if (error.code === 'MBOT_CONTEXT_OBSERVATION_CHANGED') {

@@ -12,10 +12,14 @@ import { messageReceipt } from './receipts.js'
 import { recoverRuntime, repairNativeReceipt } from './runtime-recovery.js'
 import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
 import { captureContext, restoreContext } from './context-checkpoint.js'
+import { managedCompaction, verifyManagedCompactions } from './compaction.js'
+import BasicCompaction from '@deepseek-ai/dsh-compaction-basic'
+import * as CompactCommand from '@deepseek-ai/dsh-command-compact'
 
 export const name = 'mbot-runtime'
-export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess']
-export const Config = z.object({ workers: z.boolean().default(true).description('Allow Chief Sessions to delegate task data operations to fresh Workers.') })
+export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess', 'llm']
+export const Config = z.object({ workers: z.boolean().default(true).description('Allow Chief Sessions to delegate task data operations to fresh Workers.'),
+  compactMaxBytes: z.number().step(1).min(4096).max(4194304).default(262144).description('Maximum UTF-8 source bytes in a managed compaction request.') })
 export const runtimeRecordType = 'plugin:mbot/runtime-turn'
 const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
 
@@ -56,13 +60,16 @@ async function flushInput(ctx, session, signal) {
 
 function installGates(agent, cell) {
   const ctx = agent.ctx
-  if (cell.schemaVersion !== gateSchemaVersion || cell.disposed) throw new Error('Managed Agent gate ABI is incompatible or disposed')
+  const upgrade = cell.schemaVersion === 1 && cell.installed === true && cell.driver?.schemaVersion === 1
+    && (!cell.state || cell.state.runtime.closed)
+  if ((cell.schemaVersion !== gateSchemaVersion && !upgrade) || cell.disposed
+    || cell.schemaVersion === 2 && cell.installed && !cell.hasLlmGate) throw new Error('Managed Agent gate ABI is incompatible or disposed')
   const installed = cell.installed === true
   const driver = { schemaVersion: gateSchemaVersion }
   const registrations = []
   const on = (name, callback, options) => {
     driver[name] = callback
-    if (!installed) registrations.push(() => ctx.on(name, (...args) => cell.driver[name](...args), options))
+    if (!installed || upgrade && name === 'llm/stream') registrations.push(() => ctx.on(name, (...args) => cell.driver[name](...args), options))
   }
   const guard = callback => {
     driver.guard = callback
@@ -78,6 +85,12 @@ function installGates(agent, cell) {
     if (state?.current?.turn === turn) state.current.messages.push(message)
     else (cell.parked ??= []).push(message)
   })
+  on('llm/stream', (options, next) => {
+    if (options.sessionId !== agent.id) return next()
+    const state = cell.state
+    if (options.purpose === 'compaction' || options.purpose === 'mbot-compaction') return managedCompaction(requireState(cell), cell, options, next)
+    return state ? managedCompaction(state, cell, options, next) : next()
+  }, { prepend: true })
   const layout = botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' })
   const signature = JSON.stringify(layout.map(({ name, required, interpolate }) => ({ name, required, interpolate })))
   if (installed && cell.sectionSignature !== signature) throw new Error('Managed Agent prompt layout changed without a gate ABI migration')
@@ -160,18 +173,21 @@ function installGates(agent, cell) {
     const lease = cell.state?.current?.lease
     return lease ? lease.redactResult(decision) : decision
   })
-  if (!installed) {
+  if (!installed || upgrade) {
     const disposers = []
+    const oldDriver = cell.driver
     cell.driver = driver
     try {
       for (const register of registrations) disposers.push(register())
-      ctx.effect(() => () => { cell.state = undefined; cell.disposed = true })
+      if (!installed) ctx.effect(() => () => { cell.state = undefined; cell.disposed = true })
       cell.sectionSignature = signature
       cell.installed = true
+      cell.hasLlmGate = true
+      cell.schemaVersion = gateSchemaVersion
     } catch (cause) {
       for (const dispose of disposers.reverse()) dispose()
-      cell.driver = undefined
-      cells.delete(agent)
+      cell.driver = upgrade ? oldDriver : undefined
+      if (!upgrade) cells.delete(agent)
       throw new Error('Cannot register MBot Agent gates; legacy or conflicting providers require a supported reload before adoption', { cause })
     }
   }
@@ -190,6 +206,7 @@ class ManagedSession {
     this.messageIndex = new MessageIndex()
     this.messageOperations = Promise.resolve()
     this.contextOperations = Promise.resolve()
+    this.compactionCatalog = new Map()
     this.earlyEvents = []
   }
 
@@ -214,6 +231,7 @@ class ManagedSession {
     }
     const record = this.current
     if (!record || record.ended) return
+    if (event.type.startsWith('compaction/') || ['plugin:mbot/compact-input', 'plugin:mbot/compact-output'].includes(event.type)) record.compactionSeen = true
     if (event.type === 'user/message') record.dispatched.add(event.data.id)
     if (event.type === 'assistant/message') record.text = event.data.message.content
       .filter(block => block.type === 'text').map(block => block.text).join('\n')
@@ -253,7 +271,7 @@ class ManagedSession {
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
           messages: record.messages,
           requestIds: record.messages.map(requestIdentity).filter(value => typeof value === 'string'),
-          signal, writerScope: 'agent-runtime', runtimeOwnership: this.runtime.workersEnabled && this.runtime.workerManager && bot.defaultRole === 'chief' ? { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1, maxWorkers: 2, tools: [...this.runtime.foreground].sort(), workerTools }
+          signal, writerScope: 'agent-runtime', compactionPolicyVersion: 1, runtimeOwnership: this.runtime.workersEnabled && this.runtime.workerManager && bot.defaultRole === 'chief' ? { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1, maxWorkers: 2, tools: [...this.runtime.foreground].sort(), workerTools }
             : { schemaVersion: 1, mode: 'foreground-only', workerDepth: 0, tools: [...this.runtime.foreground].sort() },
           onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
         for (const event of record.events) this.record(record, event)
@@ -335,11 +353,14 @@ class ManagedSession {
       const workers = await Promise.allSettled([...record.workers ?? []].map(member => member.completion))
       const failed = workers.find(item => item.status === 'rejected')
       if (failed) throw failed.reason
+      if (record.lease.snapshot.knowledge) await verifyManagedCompactions(this, record)
       await this.publish(record, 'auditing').catch(error => { record.feedbackError = error })
       record.result = await record.lease.finish({ reason: record.reason, text: record.text ?? '' })
       await this.publish(record, record.result.success ? 'committed' : 'rejected')
       await this.runtime.ctx.sessions.flush(this.agent.session)
       if (record.context) this.checkpoint = { ...record.context, commit: record.result.head, meta: record.result.meta, turn: record.turn }
+      for (const proof of record.compactions ?? []) this.compactionCatalog.set(proof.compactionId, proof)
+      if (record.compactions?.length && this.checkpoint) this.checkpoint.compactions = record.compactions
       return record.result
     } catch (error) {
       const message = record.lease ? await record.lease.redactResult(error.message ?? String(error))
@@ -386,6 +407,7 @@ export class MBotRuntime extends Service {
   constructor(ctx, config = {}) {
     super(ctx, 'mbotRuntime')
     this.workersEnabled = config.workers !== false
+    this.compactMaxBytes = config.compactMaxBytes ?? 262144
     this.states = new Map()
     this.foreground = new Set(foregroundTools)
     this.foregroundOwners = new Map()
@@ -540,6 +562,13 @@ export class MBotRuntime extends Service {
         }
         cell.bashFiber = await agent.ctx.plugin(nativeBash, { enableRunInBackground: false, promoteOnTimeout: false })
         cell.bashInstalled = true
+      }
+      if (!cell.compactionFiber && !agent.ctx.get('compaction') && agent.ctx.get('tokenMeter')) {
+        // Web may disable the root backend. The official engine is scoped to
+        // this managed Agent, whose LLM gate owns and audits its summaries.
+        const composition = agent.ctx.isolate('compaction')
+        cell.compactionFiber = await composition.plugin(BasicCompaction)
+        if (agent.ctx.get('commands')) cell.compactionCommandFiber = await composition.plugin(CompactCommand)
       }
       if (this.closed) throw new Error('MBot Runtime disposed during attachment')
       const workerControls = this.workersEnabled && this.workerManager && this.ctx.mbot.bot({ botId: state.botId }).defaultRole === 'chief'

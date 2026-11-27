@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { nativeReply } from '../plugin/native-reply.js'
 import { redactionSpans } from '../plugin/reply-proof.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
+import { sealCompactionAudit, compactInputType, compactOutputType } from '../plugin/compaction-data.js'
 
 const [headerFile, eventsFile, finishFile] = process.argv.slice(2)
 if (headerFile === '--seal-meta') {
@@ -15,8 +16,13 @@ if (headerFile === '--seal-meta') {
   }
   if (process.argv[5] && process.argv[6]) {
     const events = (await readFile(process.argv[5], 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+    const header = process.argv[7] ? JSON.parse(await readFile(process.argv[7], 'utf8')) : {}
+    if (header.compactionPolicyVersion !== undefined) meta.runtime.compaction_policy_version = header.compactionPolicyVersion
     const context = sealContextAudit(meta, events, process.argv[6])
     if (context) meta.runtime.context = context
+    const compactions = header.compactionPolicyVersion === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type))
+      ? sealCompactionAudit(meta, events) : undefined
+    if (compactions) meta.runtime.compactions = compactions
   }
   process.stdout.write(JSON.stringify(meta) + '\n')
 } else {

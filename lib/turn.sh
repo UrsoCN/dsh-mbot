@@ -27,6 +27,7 @@ mbot_turn_finalize() {
     .[] | if .type=="tool/call" then {type:"tool_call",tool:.data.name,input:(.data.arguments|try fromjson catch .)}
       elif .type=="tool/result" then {type:"tool_result",result:(.data.message|text)}
       elif .type=="assistant/message" and .data.usage then {type:"status",phase:"step_end",usage:.data.usage}
+      elif .type=="plugin:mbot/compact-output" and .data.usage then {type:"status",phase:"step_end",usage:.data.usage}
       else empty end' "$events_file" > "$MBOT_SCRATCH/raw.jsonl"
   jq -c --slurpfile header "$MBOT_SCRATCH/header.json" '{type:"final",text:.text,reason:.reason,sessionId:$header[0].sessionId}' "$finish_file" >> "$MBOT_SCRATCH/raw.jsonl"
   rc=1
@@ -51,7 +52,7 @@ mbot_turn_finalize() {
           + (if $reply[0]==null then {} else {writer_scope:"agent-runtime",journal_schema_version:$journal[0].schemaVersion,reply:$reply[0]} end)
           + (if $journal[0].schemaVersion==3 then {actors:[$journal[0].actors[] | del(.token)]} else {} end))}' \
     "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
-  node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" "$events_file" "$MBOT_WS" > "$MBOT_SCRATCH/sealed-meta.json"
+  node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" "$events_file" "$MBOT_WS" "$MBOT_SCRATCH/header.json" > "$MBOT_SCRATCH/sealed-meta.json"
   mv -- "$MBOT_SCRATCH/sealed-meta.json" "$MBOT_SCRATCH/meta.json"
   mbot_turn_outcome "$MBOT_SCRATCH/meta.json" || return 1
   if [[ ${MBOT_RECOVERING:-0} == 1 ]]; then

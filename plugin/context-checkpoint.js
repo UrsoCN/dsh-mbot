@@ -3,9 +3,48 @@ import { appendPluginRecord, foldSurface } from '@deepseek-ai/dsh-session'
 import { packageRoot } from './index.js'
 import { contextSnapshotType, contextHash, contextReferences, verifyContextCut, validateKnowledge } from './context-state.js'
 import { verifyWorkerAudit } from './worker-recovery-proof.js'
+import { verifyCompactionSources } from './compaction-data.js'
 class ContextObservationChanged extends Error {
   name = 'ContextObservationChanged'
   code = 'MBOT_CONTEXT_OBSERVATION_CHANGED'
+}
+
+function contextEvidence(restored, log) {
+  for (const reference of restored.snapshots) {
+    const event = log.events.find(event => event.seq === reference.seq && event.type === contextSnapshotType)
+    if (!event || contextHash(event.data) !== reference.hash) throw new Error('Restored context snapshot identity changed')
+    const prefix = log.events.filter(item => item.seq <= event.data.sourceCut.throughSeq)
+    verifyContextCut(event.data, log.events, foldSurface(prefix).nodes)
+  }
+  const compactions = new Map()
+  for (const proof of restored.compactions ?? []) {
+    verifyCompactionSources(proof, log.events, compactions)
+    compactions.set(proof.compactionId, proof)
+  }
+  return compactions
+}
+
+/** Recovery may inspect a retired Bot without making it an active Runtime state. */
+export async function recoverCompactionCatalog(runtime, bot, agent, log) {
+  if (!runtime.recoveries.has(bot.botId) || runtime.closed || log.session.id !== agent.id || log.session.cwd !== bot.workspacePath) throw new Error('Detached compaction evidence requires its held recovery owner')
+  const child = runtime.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/context-checkpoint.mjs'), '--restore', bot.workspacePath],
+    cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ botId: bot.botId, log }) },
+      stdout: { maxBytes: 16 * 1024 * 1024 }, stderr: { maxBytes: 8000 } } })
+  runtime.ctx.mbot.active.add(child)
+  try {
+    const result = await child.done, output = child.collected.stdout.readFrom(0)
+    if (result.exitCode !== 0 || output.lossy) throw new Error('Detached compaction catalog does not match native/Git evidence')
+    const restored = JSON.parse(output.text), catalog = contextEvidence(restored, log)
+    if (restored.checkpoint?.actors) {
+      const checkpoint = restored.checkpoint
+      const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === checkpoint.turn)
+      const end = log.events.find(event => event.type === 'turn/end' && event.data.turn === checkpoint.turn)
+      const workers = await runtime.workerLogs(log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq))
+      verifyWorkerAudit(checkpoint.actors, workers, { workspace: bot.workspacePath, sessionId: agent.id,
+        runId: checkpoint.snapshot.runId, memoryCommit: checkpoint.snapshot.memoryCommit })
+    }
+    return catalog
+  } finally { child.terminate(); await child.waitForExit(); runtime.ctx.mbot.active.delete(child) }
 }
 
 export async function captureContext(state, record) {
@@ -23,6 +62,7 @@ export async function captureContext(state, record) {
     if (surface.session.id !== agent.id || surface.session.cwd !== snapshot.workspace) throw new Error('Context capture Session identity changed')
     const data = { schemaVersion: 1, kind: 'turn-input', visibility: 'owner-private', botId, sessionId: agent.id, conversationId: agent.id,
       turn: record.turn, runId: record.lease.identity.runId, role: snapshot.role, memoryCommit: snapshot.head, knowledge: snapshot.knowledge,
+      ...(record.lease.compactionPolicyVersion ? { compactionPolicyVersion: record.lease.compactionPolicyVersion } : {}),
       contextEpoch: previous === null ? 1 : previous.contextEpoch + (previous.knowledgeVersion === snapshot.knowledge.version ? 0 : 1),
       previous, sourceCut: { throughSeq, events: contextReferences(surface.events) },
       input: record.messages.map(message => ({ messageId: message.id, hash: contextHash(message) })) }
@@ -60,12 +100,7 @@ async function restoreContextNow(state, { update = true } = {}, attempt = 0) {
     }
     if (result.exitCode !== 0 || output.lossy) throw new Error('Context checkpoint does not match native/Git evidence; preserve it for recovery')
     const restored = JSON.parse(output.text), checkpoint = restored.checkpoint
-    for (const reference of restored.snapshots) {
-      const event = log.events.find(event => event.seq === reference.seq && event.type === contextSnapshotType)
-      if (!event || contextHash(event.data) !== reference.hash) throw new Error('Restored context snapshot identity changed')
-      const prefix = log.events.filter(item => item.seq <= event.data.sourceCut.throughSeq)
-      verifyContextCut(event.data, log.events, foldSurface(prefix).nodes)
-    }
+    const compactions = contextEvidence(restored, log)
     if (checkpoint) {
       if (checkpoint.actors) {
         const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === checkpoint.turn)
@@ -80,7 +115,7 @@ async function restoreContextNow(state, { update = true } = {}, attempt = 0) {
     await runtime.ctx.sessions.flush(agent.session)
     if (state.closing || runtime.closed) throw new Error('MBot context owner is unavailable')
     const verified = checkpoint ? (({ actors, ...value }) => value)(checkpoint) : null
-    if (update) state.checkpoint = verified
+    if (update) { state.checkpoint = verified; state.compactionCatalog = compactions }
     return verified
   } catch (error) {
     if (error instanceof ContextObservationChanged) {

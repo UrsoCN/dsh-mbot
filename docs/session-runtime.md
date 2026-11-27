@@ -4,7 +4,7 @@
 
 本轮决策：一个 Bot 默认有一个私人主 Session，多窗口是它的客户端；不同可见域使用独立 conversation。MBot Runtime 统一管理业务上下文和生命周期，botctl 是它的工具/CLI 门面。独立 Bot 通过异步信封交流，树内 send_message 只用于本轮 Worker。下一阶段优先补主 Session 的 checkpoint、compact 和 sleep/wake，再扩展对话域、IM/peer 与 Worker 写工具；以下新增协议仍属设计。
 
-dev 已交付 [turn 上下文 checkpoint 基础](context-checkpoints.md)：知识版本/epoch、原生历史及输入来源、Git 封存和 flush/恢复已接入。近期摘要、原生 compaction 证明与 compact/sleep/wake 尚未交付，以下对应部分仍是目标设计。
+dev 已交付 [turn 上下文 checkpoint 基础](context-checkpoints.md) 与 [受管理自动摘要](managed-compaction.md)：知识版本/epoch、原生历史及输入来源、带引用的摘要、原生 compaction 证明、Git 封存和 flush/恢复已接入。手动 compact、普通 turn 的旧摘要退役及 sleep/wake 尚未交付，以下对应部分仍是目标设计。
 
 ## 1. 所有入口共用 Runtime，botctl 是门面
 
@@ -153,6 +153,8 @@ dev 已有受管理主 Session 直接对话、固定上下文、准入/租约和
 4. Worker Bash/文件/PTC：明确目录 grants、原生工具权限、并发写入/取消与扩展版本的 Writer 恢复契约。
 
 每阶段以真实 Agent/Session 路径验收；未知 Writer 或缺失证明继续拒绝。不同对话域与新写工具在自己的上下文/权限/恢复契约接齐后开放。
+
+阶段 1 的 turn checkpoint 与自动摘要已交付；下一子阶段为手动 compact 的维护事务、旧摘要在普通 turn 边界退役和原生 replacement 中断恢复。当前直接 `compactNow` 不在 MBot 支持的生命周期内，会被闸门拒绝，不等同于排队或已完成手动 `/compact`。
 
 重点验收：两个窗口同时发送/编辑/取消；网页与 TG 同时发；睡眠/compact 时新消息；崩溃发生在收据、Git、checkpoint、回复投递之间；两个 Host 抢同一 Bot；A/B 异步请求；过期 Worker 回写；不同用户/群线程不串上下文；其他插件 inject 不覆盖业务上下文；新版 MEMORY 生效而旧摘要不复活规则；重复 wake 不创建第二个主 Session。
 

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { nativeReply } from './native-reply.js'
 import { applyRedactions } from './reply-proof.js'
 import { sealContextAudit } from './context-audit.js'
+import { sealCompactionAudit, compactInputType, compactOutputType } from './compaction-data.js'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = text => createHash('sha256').update(text).digest('hex')
 
@@ -35,6 +36,8 @@ export function verifyRecoveryAudit(workspace, header, events, result, actors) {
   }
   const version = meta.runtime.journal_schema_version ?? 2
   if (meta.runtime.context && !isDeepStrictEqual(meta.runtime.context, sealContextAudit(meta, events, workspace))) throw new Error('Recovered context does not match its native/Git evidence')
+  if ((meta.runtime.compaction_policy_version === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type)))
+    && !isDeepStrictEqual(meta.runtime.compactions, sealCompactionAudit(meta, events))) throw new Error('Recovered compaction does not match native evidence')
   if (version !== 3 && meta.runtime.actors !== undefined) throw new Error('Foreground audit unexpectedly contains Worker ownership')
   if (version === 3 && !isDeepStrictEqual(meta.runtime.actors, actors)) throw new Error('Recovered Worker audit lacks matching child proof')
   const outcome = execFileSync('jq', ['-L', join(root, 'lib'), '-er', 'include "turn-outcome"; . as $x | $x.meta | mbot_outcome($x.version) as $outcome | if .runtime.execution_fault != (mbot_execution_fault($x.events) or any($x.meta.runtime.actors[]?; .native.executionFault==true)) then error("native execution fault mismatch") else $outcome end'],

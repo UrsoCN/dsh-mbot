@@ -110,15 +110,15 @@ mbot -C /tmp/mbot-demo resume
 
 每次 run 是新的 headless 会话，使用 workspace-write/never、超时、全局锁和干净基准。Host 恢复越权/非追加写入、检查看板，保存脱敏 transcript/meta 并提交；失败保留审计，三次熔断，HEAD/控制路径异常立即暂停。原始日志在忽略的 .mbot/runs 中，保留私有权限。详情见 [设计](docs/design.md#61-受控运行)、[M2](docs/m2-run.md)。
 
-0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。dev 已接入各实例的受管理主会话、创建/导入/修复与导航，以及 scoped botctl Worker/恢复；对话域、IM/peer 与 compact/睡眠生命周期继续列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
+0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。dev 已接入各实例的受管理主会话、创建/导入/修复与导航，以及 scoped botctl Worker/恢复；对话域、IM/peer 与手动 compact/睡眠生命周期继续列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
 
 dev 的 managed turn 若中断，journal 和私有快照会保留。用 `/mbot recover`（或 Host 已停止时的 `mbot -C <目录> recover`）核实写者并恢复审计，检查 status 后显式 resume；未确定写者/快照或提交身份时拒绝恢复。Host 命令已覆盖受管理 Agent/前台工具的遗留回合和原生回执；独立 CLI 仍只处理 data-subprocesses。[scoped botctl Worker 恢复与模块交接](docs/worker-recovery.md) 已接入；旧 headless run、Worker 的其他工具、后台/IPC 写者、睡眠 checkpoint 及缺失原生日志的恢复仍待接齐。
 
-dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，支持直接对话和受控前台工具；聊天区显示 [Host 审计卡片](docs/runtime-feedback.md)，`/mbot runtime` 查执行/验收/队列状态，`/mbot stop` 保留待办并等待本轮收尾；干净的用户停止保留故障计数，越权/已记录故障仍计失败，详见 [停止语义](docs/turn-outcomes.md)。dev 已提供 [所有者消息准入](docs/message-admission.md)：可信 Host 可取得 ownerMailbox，共用原生 Inbox，并按请求 ID 去重/查询持久化收据。[本地 botctl 宿主入口](docs/host-ipc.md) 已接入 talk/receipt/runtime/stop/bots/recover，需明确 --profile 和 Bot 身份；remove/removed 支持注销与查询退役身份；[receipt --wait](docs/request-replies.md) 可按请求查回已审计回答；真实 IM/peer、回复投递、隔离域与 compact/睡眠仍待实现；botctl 的完整门面按阶段接入，DSH 负责日志/执行。设计见 [Session Runtime](docs/session-runtime.md)。基础 headless profile 没有工作区/Session Controller，仍只登记数据身份；CLI init 始终只初始化 Git 数据。
+dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，支持直接对话和受控前台工具；聊天区显示 [Host 审计卡片](docs/runtime-feedback.md)，`/mbot runtime` 查执行/验收/队列状态，`/mbot stop` 保留待办并等待本轮收尾；干净的用户停止保留故障计数，越权/已记录故障仍计失败，详见 [停止语义](docs/turn-outcomes.md)。dev 已提供 [所有者消息准入](docs/message-admission.md)：可信 Host 可取得 ownerMailbox，共用原生 Inbox，并按请求 ID 去重/查询持久化收据。[本地 botctl 宿主入口](docs/host-ipc.md) 已接入 talk/receipt/runtime/stop/bots/recover，需明确 --profile 和 Bot 身份；remove/removed 支持注销与查询退役身份；[receipt --wait](docs/request-replies.md) 可按请求查回已审计回答；真实 IM/peer、回复投递、隔离域、手动 compact 与睡眠仍待实现；botctl 的完整门面按阶段接入，DSH 负责日志/执行。设计见 [Session Runtime](docs/session-runtime.md)。基础 headless profile 没有工作区/Session Controller，仍只登记数据身份；CLI init 始终只初始化 Git 数据。
 
-主 Session 是 Bot 的默认私人对话，多窗口共用；规划中的所有者 TG 私聊可接同一 Session，群聊/其他用户/独立 Bot 使用隔离 conversation。上下文与生命周期统一归 MBot Runtime，botctl 提供工具/CLI 门面，适配器通过服务接口调用。近期摘要、受管理的 compact 与 sleep/wake 尚未交付。
+主 Session 是 Bot 的默认私人对话，多窗口共用；规划中的所有者 TG 私聊可接同一 Session，群聊/其他用户/独立 Bot 使用隔离 conversation。上下文与生命周期统一归 MBot Runtime，botctl 提供工具/CLI 门面，适配器通过服务接口调用。dev 已接入带来源的原生自动摘要；手动 compact、普通 turn 的旧摘要退役与 sleep/wake 尚未交付。
 
-dev 已接入 [turn 上下文 checkpoint 基础](docs/context-checkpoints.md)：按知识内容维护版本/epoch，原生历史和 Inbox 输入来源由同一次 Git 审计封存，原生 flush 与恢复后才发布。可信 Host 可调用 `ctx.mbotRuntime.checkpoint(agent)` 查询；它尚未提供受管理的 compact 摘要或 sleep/wake。
+dev 已接入 [turn 上下文 checkpoint 基础](docs/context-checkpoints.md)：按知识内容维护版本/epoch，原生历史和 Inbox 输入来源由同一次 Git 审计封存，原生 flush 与恢复后才发布。可信 Host 可调用 `ctx.mbotRuntime.checkpoint(agent)` 查询；后续 [受管理自动摘要](docs/managed-compaction.md) 已封存原生 compaction ID、来源、知识版本、摘要 hash 与单次恢复证明；手动 `/compact` 暂由维护闸门拒绝，sleep/wake 仍待完成。
 
 dev 支持显式注销 Bot：`/mbot remove <Bot ID 或完整名称>`，终端使用 `botctl remove --profile web --bot <稳定 Bot ID>`；`/mbot removed` 或 `botctl removed --profile web` 查询退役记录。删除 DSH 工作区只改变原生实体，独立 Bot 仍可修复或注销。注销保留 Git 数据、历史和待办，持久保存旧 Session 的执行闸门；执行或审计中需先 stop 并等待收尾。重新 import 同一目录获得新 Bot 身份和新主 Session，详见 [注销与退役](docs/bot-removal.md)。
 
@@ -153,7 +153,7 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-dev 当前有公开类型、50 项 Cordis/Host、122 项真实 Agent Runtime 和 64 组 Bash 检查；Host/Runtime 测试文件串行运行，避免恢复的进程核验与其他夹具争用。安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`；旧版无共享闸门的升级与生命周期仍有待办。Worker 的[角色/任务许可基础](docs/worker-leases.md) 和 [原生最小执行](docs/native-workers.md) 已实现；scoped botctl 子 Agent 已默认开启并支持 [v3 恢复](docs/worker-recovery.md)，可设置 workers=false 保持前台模式；Bash/文件/PTC 与未知写者恢复仍待接齐。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+dev 当前有公开类型、50 项 Cordis/Host、138 项本地真实 Agent Runtime 和 64 组 Bash 检查，另有 1 项按需运行的真实 DeepSeek 摘要验收；Host/Runtime 测试文件串行运行，避免恢复的进程核验与其他夹具争用。安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`，原生摘要/刷新/维护闸门运行 `npm run test:gui-compaction`；旧版无共享闸门的升级与生命周期仍有待办。Worker 的[角色/任务许可基础](docs/worker-leases.md) 和 [原生最小执行](docs/native-workers.md) 已实现；scoped botctl 子 Agent 已默认开启并支持 [v3 恢复](docs/worker-recovery.md)，可设置 workers=false 保持前台模式；Bash/文件/PTC 与未知写者恢复仍待接齐。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。`npm run test:real-compaction` 另用真实 DeepSeek 验收摘要，普通对话保持本地 adapter。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 `npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。`npm run test:gui-runtime` 使用本地 adapter 另验主 Session 的审计卡片、原生停止、晚到写者、队列及失败重放。dev 的主 Session/导航已另行验收，设置页仍需实现。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 

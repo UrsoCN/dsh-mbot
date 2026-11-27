@@ -50,6 +50,7 @@ export function validateContextSnapshot(data, seq) {
   if (data?.schemaVersion !== 1 || data.kind !== 'turn-input' || data.visibility !== 'owner-private'
     || typeof data.botId !== 'string' || !data.botId || typeof data.sessionId !== 'string' || !data.sessionId
     || data.conversationId !== data.sessionId || !Number.isSafeInteger(data.turn) || data.turn < 1
+    || data.compactionPolicyVersion !== undefined && data.compactionPolicyVersion !== 1
     || !/^\d{8}T\d{6}Z-turn-[a-f0-9]{16}$/u.test(data.runId ?? '') || !gitHash.test(data.memoryCommit ?? '')
     || !Number.isSafeInteger(data.contextEpoch) || data.contextEpoch < 1
     || !Number.isSafeInteger(data.sourceCut?.throughSeq) || data.sourceCut.throughSeq < -1 || data.sourceCut.throughSeq >= seq
@@ -91,5 +92,5 @@ export function verifyContextCut(snapshot, events, nodes) {
 }
 
 export function contextAuditEvent(event) {
-  return !event.ignorable || event.type === contextSnapshotType
+  return !event.ignorable || [contextSnapshotType, 'plugin:mbot/compact-input', 'plugin:mbot/compact-output'].includes(event.type)
 }

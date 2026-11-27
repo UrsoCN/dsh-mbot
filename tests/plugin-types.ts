@@ -3,6 +3,9 @@ import * as plugin from 'dsh-mbot'
 import * as tools from 'dsh-mbot/tools'
 import * as commands from 'dsh-mbot/commands'
 import * as runtime from 'dsh-mbot/runtime'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+const managedSummaryPurpose: GenerateOptions['purpose'] = 'mbot-compaction'
+void managedSummaryPurpose
 import * as ipc from 'dsh-mbot/ipc'
 
 const ctx = new Context()

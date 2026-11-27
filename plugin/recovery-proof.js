@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { readFile, lstat } from 'node:fs/promises'
+import { contextAuditEvent } from './context-state.js'
 import { dirname, join } from 'node:path'
 import { processStart } from './recovery.js'
 import { readonlyLegacy, readonlyDataCut } from './readonly-migration.js'
@@ -49,7 +50,8 @@ export async function recoveryInput(journal, log) {
   if (!isDeepStrictEqual(current, original)) throw new Error('Runtime journal does not match its private snapshot')
   const header = JSON.parse(await privateFile(join(journal.scratch, 'header.json')))
   if (header.botId !== journal.botId || header.sessionId !== journal.sessionId || header.turn !== journal.turn
-    || header.writerScope !== 'agent-runtime' || !isDeepStrictEqual(header.runtimeOwnership, journal.runtimeOwnership)) throw new Error('Runtime header does not match its journal')
+    || header.writerScope !== 'agent-runtime' || !isDeepStrictEqual(header.runtimeOwnership, journal.runtimeOwnership)
+    || header.compactionPolicyVersion !== journal.compactionPolicyVersion) throw new Error('Runtime header does not match its journal')
   if (journal.runtimeOwnership) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
   if (journal.schemaVersion === 3) workerRecoveryContract(journal)
   const starts = log.events.filter(event => event.type === 'turn/start' && event.data.turn === journal.turn)
@@ -58,7 +60,7 @@ export async function recoveryInput(journal, log) {
   const ends = log.events.filter(event => event.type === 'turn/end' && event.data.turn === journal.turn && event.seq > start)
   if (ends.length !== 1) throw new Error('Native recovery turn has not ended; resolve and settle its original Agent first')
   const end = ends[0]
-  const events = log.events.filter(event => event.seq >= start && event.seq <= end.seq && (!event.ignorable || event.type === 'plugin:mbot/context-snapshot'))
+  const events = log.events.filter(event => event.seq >= start && event.seq <= end.seq && contextAuditEvent(event))
   const native = new Map(log.events.map(event => [event.seq, event]))
   const captured = (await privateFile(join(journal.scratch, 'session-events.jsonl'))).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
   let previous = start - 1

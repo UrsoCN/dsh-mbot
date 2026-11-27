@@ -1,6 +1,6 @@
 # 主 Session 上下文 checkpoint 基础（dev）
 
-本阶段持久化并核验每轮的上下文取材基准，尚未接入受管理的 compact 摘要或 sleep/wake。包仍为 0.1.1；完整目标见 [Session Runtime](session-runtime.md)，剩余阶段见 [TODO](../TODO.md)。
+本阶段持久化并核验每轮的上下文取材基准。后续 dev 已接入 [受管理自动摘要](managed-compaction.md)，手动 compact 与 sleep/wake 仍待完成。包仍为 0.1.1；完整目标见 [Session Runtime](session-runtime.md)，剩余阶段见 [TODO](../TODO.md)。
 
 ## 知识版本与每轮快照
 
@@ -42,9 +42,9 @@ Runtime 在模型提示组装前发布 `plugin:mbot/context-snapshot` 原生记�
 
 ## 后续边界
 
-这里保存的是 turn 输入基准；它不等于已经生成摘要。未来的 compact checkpoint 还须绑定原生 compaction ID、摘要输出/hash、摘要范围及来源/可见域证明，并与睡眠阶段 journal 联合恢复。已有原生历史 replacement 可以作为当前 surface 被引用，本阶段不把它宣称为遵守 MBot 摘要规则的证明。
+这里保存的是 turn 输入基准；它不等于已经生成摘要。[自动摘要](managed-compaction.md) 已补充原生 compaction ID、摘要输出/hash、摘要范围及来源/可见域证明。没有 MBot 证明的旧原生 replacement 可以被引用为 surface，但不因此成为遵守 MBot 摘要规则的证明；睡眠仍须自己的阶段 journal。
 
-后续继续接真实手动/自动 compact、旧人格/记忆断言退役、空摘要、压缩中断与维护屏障；然后实现 Dreaming → compact/checkpoint → wake。主 Session ID 和原生日志保持稳定。
+后续继续接手动 compact、普通 turn 的旧摘要退役、替换过程中的冷恢复与维护屏障；然后实现 Dreaming → compact/checkpoint → wake。主 Session ID 和原生日志保持稳定。
 
 ## 验证
 

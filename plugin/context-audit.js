@@ -28,6 +28,7 @@ export function sealContextAudit(meta, events, workspace) {
   if (!start || !end || event.seq <= start.seq || event.seq >= end.seq
     || snapshot.botId !== meta.runtime.bot_id || snapshot.sessionId !== meta.runtime.session_id || snapshot.turn !== meta.runtime.turn
     || snapshot.runId !== meta.run_id || snapshot.memoryCommit !== meta.base_head || snapshot.role !== meta.bot
+    || snapshot.compactionPolicyVersion !== meta.runtime.compaction_policy_version
     || !isDeepStrictEqual(snapshot.knowledge, readKnowledge(workspace, meta.base_head, meta.bot))) throw new Error('Context snapshot contradicts its Git audit')
   return { schemaVersion: 1, snapshotSeq: event.seq, snapshotHash: contextHash(snapshot), snapshot }
 }
