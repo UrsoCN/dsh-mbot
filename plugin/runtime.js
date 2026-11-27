@@ -15,6 +15,7 @@ import { captureContext, restoreContext } from './context-checkpoint.js'
 import { managedCompaction, verifyManagedCompactions } from './compaction.js'
 import BasicCompaction from '@deepseek-ai/dsh-compaction-basic'
 import * as CompactCommand from '@deepseek-ai/dsh-command-compact'
+import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess', 'llm']
@@ -429,6 +430,7 @@ export class MBotRuntime extends Service {
     this.foregroundOwners = new Map()
     this.attachments = new Map()
     this.recoveries = new Map()
+    this.removals = new Set()
     this.closed = false
     this.ready = false
     ctx.inject(['subagents'], child => {
@@ -545,6 +547,7 @@ export class MBotRuntime extends Service {
 
   async attachNew(agent, botId) {
     if (this.closed) throw new Error('MBot Runtime is disposed')
+    if (this.removals.has(botId)) throw new Error('Bot removal is in progress; its Session cannot activate')
     if (this.ctx.mbot.registry().retiredBots.some(entry => entry.sessionIds.includes(agent.id)) || cells.get(agent)?.retired) throw new Error('Removed Bot Session cannot be redirected to another Bot')
     if (this.states.has(agent)) {
       if (this.states.get(agent).botId !== botId) throw new Error('Managed Session cannot be redirected to another Bot')
@@ -696,18 +699,57 @@ export class MBotRuntime extends Service {
 
   /** Reversible pre-save gate. No active turn/tool/audit is cancelled by removal. */
   prepareRemoval(botId) {
-    if (this.closed || !this.ready || this.recoveries.has(botId) || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment/recovery is busy')
+    if (this.closed || !this.ready || this.removals.has(botId) || this.recoveries.has(botId) || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment/recovery is busy')
+    const bot = this.ctx.mbot.bot({ botId })
     const states = [...this.states.values()].filter(state => state.botId === botId)
     if (states.some(state => state.closing || state.retiring || state.agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; stop and settle its current turn before removal')
     for (const state of states) state.retiring = true
-    let committed = false
+    this.removals.add(botId)
+    const sessionIds = [...new Set([bot.mainSessionId, bot.binding?.pendingSessionId, ...states.map(state => state.agent.id)].filter(Boolean))]
+    const handles = []
+    let committed = false, verified = false
     return {
-      sessionIds: states.map(state => state.agent.id),
+      sessionIds,
+      verifySessions: async signal => {
+        if (verified) return
+        for (const id of sessionIds) {
+          signal?.throwIfAborted()
+          if (this.closed) throw new Error('MBot Runtime closed during removal')
+          let header
+          const live = this.ctx.agents.get(id)
+          if (live) {
+            const controller = this.ctx.get('sessionController')
+            if (!controller) throw new Error('Bound Bot removal requires the native Session Controller')
+            const result = await controller.resolveAgent(id)
+            if ('error' in result) throw result.error
+            if (result.agent !== live || !states.some(state => state.agent === live)) throw new Error('Live main Session has no verified Runtime ownership for removal')
+            header = result.agent.session.header
+          } else {
+            const persistence = this.ctx.get('sessionPersistence')
+            if (!persistence) throw new Error('Cold Bot removal requires native Session persistence')
+            let handle
+            try { handle = await persistence.open(id, 'write', { signal }) }
+            catch (error) {
+              if (error instanceof SessionPersistenceNotFoundError && error.sessionId === id) continue
+              throw error
+            }
+            handles.push(handle)
+            header = handle.header
+          }
+          if (header.id !== id || header.cwd !== bot.workspacePath || header.origin === 'subagent') throw new Error('Main Session ownership does not match the Bot; inspect its binding before removal')
+        }
+        verified = true
+      },
       commit: async retired => {
+        if (sessionIds.length && !verified) throw new Error('Bot removal Session ownership was not verified')
         committed = true
         await Promise.all(states.map(state => this.attachRetired(state.agent, retired)))
       },
-      release: () => { if (!committed) for (const state of states) state.retiring = false },
+      release: async () => {
+        await Promise.all(handles.map(handle => handle.close()))
+        this.removals.delete(botId)
+        if (!committed) for (const state of states) state.retiring = false
+      },
     }
   }
 

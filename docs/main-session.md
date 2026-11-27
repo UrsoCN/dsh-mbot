@@ -12,7 +12,7 @@
 
 init 创建 Git 数据与身份、选择新 Bot，然后登记官方 DSH 工作区、创建 Chief 主 Session、接入 Runtime 并默认打开。原命令及结果留在发起会话，初始化不调用模型。import 校验并登记已有数据，再补建原生绑定；保留 Git/记忆/看板/用户文件，不改变默认选择或当前窗口。open 验证并打开已有主 Session，健康绑定不取数据写锁，允许观察正在执行的回合；repair 验证或继续部分失败，不跳转。无参数时优先使用调用 Session 的 Bot，其次默认选择。
 
-结果卡片给出工作区、Session ID 和 `#mbot-session=<Session ID>` 链接片段；在 DSH Web 地址后添加该片段可打开同一会话。插件消费片段后清除它，后续导航和选择由原生 UI 持有。控制结果仍使用原生命令卡片，默认不进入模型 role content。
+结果卡片给出工作区、Session ID 和 `#mbot-session=<Session ID>` 链接片段；在 DSH Web 地址后添加该片段可打开同一会话。插件消费片段后清除它，后续导航和选择由原生 UI 持有。控制结果来自原生命令事件，在 Session 层独立显示，默认不进入模型 role content。
 
 Host 的 `importBot` 继续作为只登记身份的 API；`ensureBinding(identity, {revision?, signal?})` 才创建/验证实体，返回登记快照；`resolveMainSession` 验证健康主会话，不因其持有数据锁而阻止打开。安装在只有 dsh-base 的 headless profile 时，Controller 不存在，init/import 只保存数据身份并提示；open/repair 明确要求完整原生服务，不创建另一套会话。独立 Bash CLI init 始终只初始化 Git 数据。
 

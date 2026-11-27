@@ -19,6 +19,8 @@
 
 DSH CommandResult 支持将结果保存在 command/run、command/done，客户端可在模型历史之外展示。0.1.1 的浏览器入口贡献 MBot 命令活动，让只执行命令的新会话展开原生聊天视图。schema 能导出也不代表面板已注册。
 
+dev 的 MBot 控制结果使用同一原生命令事件和公开 DisclosureRow，在 Session 层独立渲染，避免 Chief 已完成回合的过程折叠隐藏结果；原生命令的 MBot 专用 slot 不重复渲染，其他命令保留原行为。冷 Bot 注销通过官方 persistence 独占句柄核验身份，不以恢复业务上下文作为退役前置条件；数据/原生日志与恢复证据保留，未知活写者仍拒绝。见 [控制反馈](runtime-feedback.md) 与 [注销](bot-removal.md)。
+
 ## 2. 不变的原则
 
 1. Markdown/Git 是任务与长期记忆真相源；Session 是交互历史与上下文缓存。

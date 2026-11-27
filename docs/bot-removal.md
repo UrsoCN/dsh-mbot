@@ -30,12 +30,14 @@ Config.registry 文档升级为 v2：活动 bots 与 retiredBots 分开，后者
 
 1. ConfigEditor 读最新登记并核对可选 revision。
 2. 数据锁存在时取得同一 flock；目录缺失或损坏也可注销，不运行会要求完整数据的 lint，不重建目录。
-3. 对每个主/预留 Session 调用官方 resolveAgent，核对 ID、目录和 Runtime 归属。只有 session/not-found 可按实体已缺失处理；writer-held 或无法确认时拒绝，不 create 替代 Agent。
-4. Runtime 持有可回退准入闸门；活动 turn、未结算审计、附着操作或数据 lease 拒绝注销。
+3. Runtime 持有可回退准入闸门；活动 turn、未结算审计、附着操作或数据 lease 拒绝注销，新主/预留 Session 在保存期间不得激活。
+4. 核验全部主/预留/已附着 Session 的 ID、目录和 Runtime 归属。已有受管理 Agent 使用官方 resolveAgent 查询；冷 Session 通过官方 persistence.open 的独占 write handle 核验 header，并持有归属到保存完成。只有明确 SessionPersistenceNotFoundError 可按实体已缺失处理；writer-held、外来目录或未知活 Agent 拒绝。不恢复业务上下文，不调用 create/resume，不重建缺失数据。
 5. ConfigEditor 原子移入退役快照，并只清理该 Bot 的默认目录/选择，保留其他 Bot 的选择。
 6. 持久保存成功后移除业务 Runtime 状态，保留 Agent-owned 被动闸门。保存失败释放临时闸门；保存成功后调用者断连不撤销退役。
 
 临时闸门持有期间的新原生输入不会开启数据事务。即使输入已 claim，也返回唯一原生 Inbox；不另建消息队列。Runtime 重载和 Host 重启都会按持久退役 ID 附着被动闸门，旧 Session 不成为普通、不受管理的业务会话。
+
+冷 Session 的注销不要求 Git checkpoint 仍能恢复，因此旧数据目录缺失或上下文证明失效不会阻止退出活动列表。独占原生句柄只用于核验归属，不追加/修复原生事件，也不改写 journal 或宣称旧回合已恢复；保存失败先关闭句柄，再释放临时闸门。已经存在但没有本 Runtime 归属的活 Agent 继续拒绝注销。
 
 这是受信任 Host 的生命周期约束，同权限插件/用户手改 profile 文件不属于安全沙箱。退役不等于 agent-runtime journal 恢复；遗留证据和 PAUSED 继续保留，可由 [前台 Runtime 恢复](runtime-recovery.md) 协调已支持契约；未知旧契约/写者仍保留待核实。活动列表对原生实体缺失/归档的主动诊断与管理面板仍在 TODO。
 

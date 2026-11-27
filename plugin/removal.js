@@ -51,20 +51,12 @@ export async function removeBot(host, identity, options) {
     if ([...host.leases].some(lease => lease.identity.botId === bot.botId && !lease.transportEnded)) throw new Error('Bot turn is busy; stop and settle it before removal')
     const ids = [bot.mainSessionId, bot.binding?.pendingSessionId].filter(Boolean)
     const runtime = host.ctx.get('mbotRuntime')
-    if (ids.length) {
-      const controller = host.ctx.get('sessionController')
-      if (!controller || !runtime) throw new Error('Bound Bot removal requires the native Session Controller and MBot Runtime')
-      for (const id of ids) {
-        const result = await controller.resolveAgent(id)
-        if ('error' in result) { if (result.error.code === 'session/not-found') continue; throw result.error }
-        if (result.agent.id !== id || result.agent.session.header.cwd !== bot.workspacePath) throw new Error('Main Session ownership does not match the Bot; inspect its binding before removal')
-        await runtime.attach(result.agent, { botId: bot.botId })
-      }
-    }
+    if (ids.length && !runtime) throw new Error('Bound Bot removal requires MBot Runtime')
     check()
     const hold = runtime?.prepareRemoval(bot.botId)
     const retired = { bot: structuredClone(bot), sessionIds: [...new Set([...ids, ...(hold?.sessionIds ?? [])])], retiredAt: new Date().toISOString() }
     try {
+      await hold?.verifySessions(options.signal)
       await editor.edit(entry, current => {
         check()
         const registry = BotRegistry(current.registry ?? emptyRegistry)
@@ -78,6 +70,6 @@ export async function removeBot(host, identity, options) {
       // Durable retirement wins over a caller disconnect after ConfigEditor saved.
       await hold?.commit(retired)
       return { ...structuredClone(retired), alreadyRemoved: false }
-    } finally { hold?.release() }
+    } finally { await hold?.release() }
   })
 }

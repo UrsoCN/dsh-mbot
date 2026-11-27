@@ -96,7 +96,7 @@ export declare class MBotRuntime extends Service {
   /** Trusted Host coordinator; retains the Runtime's Cordis dependency scope. */
   coordinateRecovery(bot: import('./instances.js').BotRegistration, journal: Record<string, unknown> | undefined, options?: import('./index.js').ManagementOptions & { retiredSessionIds?: string[] }): Promise<import('./index.js').RecoverTurnResult | undefined>
   /** Trusted removal coordinator: hold before ConfigEditor save, commit only its saved retirement. */
-  prepareRemoval(botId: string): { sessionIds: string[]; commit(retired: import('./instances.js').RetiredBot): Promise<void>; release(): void }
+  prepareRemoval(botId: string): { sessionIds: string[]; verifySessions(signal?: AbortSignal): Promise<void>; commit(retired: import('./instances.js').RetiredBot): Promise<void>; release(): Promise<void> }
   /** Trusted Host capability: caller verifies the owner and binds a private main route. */
   ownerMailbox(agent: Agent, binding: OwnerMailboxBinding): OwnerMailbox
   /** Trusted Host contract: the tool joins all writers before returning. */

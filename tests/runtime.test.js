@@ -1476,6 +1476,90 @@ test('bound removal refuses foreign writers or mismatched Session ownership and 
   assert.deepEqual(retired.sessionIds, [agent.id])
 })
 
+test('cold removal verifies native ownership without restoring missing Bot data and releases failed-save claims', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, handle, owner, requests } = await app(t, () => response('retain the original audit'), { main: true, persistence: true })
+  agent.followup(message('one audited conversation'))
+  await settle(ctx, agent)
+  await handle.dispose()
+  await owner.dispose()
+  await ctx.plugin(runtime)
+  const before = ctx.mbot.registry(), head = git(ws, 'rev-parse', 'HEAD')
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  const writer = await ctx.sessionPersistence.open(agent.id, 'write')
+  try {
+    await assert.rejects(ctx.mbot.removeBot(bot.botId), /already owned|writer-held/u)
+    assert.deepEqual(ctx.mbot.registry(), before)
+  } finally { await writer.close() }
+  const offline = `${ws}.offline`
+  await rename(ws, offline)
+  try {
+    const edit = ctx.configEditor.edit.bind(ctx.configEditor)
+    let calls = 0
+    ctx.configEditor.edit = async (...args) => {
+      if (++calls === 2) throw new Error('cold retirement save failed')
+      return edit(...args)
+    }
+    await assert.rejects(ctx.mbot.removeBot(bot.botId), /save failed/u)
+    ctx.configEditor.edit = edit
+    assert.deepEqual(ctx.mbot.registry(), before)
+    const released = await ctx.sessionPersistence.open(agent.id, 'write')
+    await released.close()
+    const retired = await ctx.mbot.removeBot(bot.name)
+    assert.deepEqual(retired.sessionIds, [agent.id])
+    assert.equal(ctx.agents.get(agent.id), undefined, 'Retirement must not create or resume an executable Agent')
+    assert.deepEqual((await ctx.sessionQuery.readSession(agent.id)).events, log.events, 'Native history and checkpoint evidence must remain unchanged')
+    assert.equal(git(offline, 'rev-parse', 'HEAD'), head)
+    assert.equal(requests.length, 1)
+    const passive = await ctx.agents.resume({ resumeSessionId: agent.id, agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+    assert.equal((await ctx.mbotRuntime.status(passive.agent)).state, 'retired')
+    passive.agent.followup(message('must stay retired even with missing data'))
+    await passive.agent.whenIdle()
+    assert.equal(requests.length, 1)
+  } finally { await rename(offline, ws) }
+})
+
+test('cold retirement refuses a foreign Session header and blocks activation of a missing reservation during save', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('must not execute'), { persistence: true })
+  const otherPath = join(root, `cold removal identity ${++sequence}`)
+  assert.equal((await ctx.mbot.execute('mbot', ['init'], { workspace: otherPath })).exitCode, 0)
+  const other = await ctx.mbot.importBot(otherPath)
+  const foreignId = `foreign-retirement-${++sequence}`
+  const foreign = await ctx.sessionPersistence.create({ ...agent.session.header, id: foreignId, cwd: ws })
+  await foreign.flush()
+  await foreign.close()
+  const entry = ctx.configEditor.entries()[0]
+  await ctx.configEditor.edit(entry, current => ({ ...current, registry: { ...current.registry,
+    revision: current.registry.revision + 1,
+    bots: current.registry.bots.map(bot => bot.botId !== other.botId ? bot : { ...bot,
+      binding: { state: 'failed', pendingSessionId: foreignId, error: 'foreign reserved Session' } }),
+  } }))
+  const before = ctx.mbot.registry()
+  await assert.rejects(ctx.mbot.removeBot(other.botId), /ownership/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+  const claim = await ctx.sessionPersistence.open(foreignId, 'write')
+  await claim.close()
+
+  const absentPath = join(root, `absent removal identity ${++sequence}`)
+  assert.equal((await ctx.mbot.execute('mbot', ['init'], { workspace: absentPath })).exitCode, 0)
+  const absent = await ctx.mbot.importBot(absentPath), absentId = `absent-retirement-${++sequence}`
+  await ctx.configEditor.edit(entry, current => ({ ...current, registry: { ...current.registry,
+    revision: current.registry.revision + 1,
+    bots: current.registry.bots.map(bot => bot.botId !== absent.botId ? bot : { ...bot,
+      binding: { state: 'failed', pendingSessionId: absentId, error: 'missing reserved Session' } }),
+  } }))
+  const edit = ctx.configEditor.edit.bind(ctx.configEditor)
+  let calls = 0
+  ctx.configEditor.edit = async (...args) => {
+    if (++calls === 2) await assert.rejects(ctx.agents.create({ sessionId: absentId, meta: { cwd: absentPath },
+      agentOptions: { provider: 'runtime-test', model: 'scripted' } }), /removal is in progress/u)
+    return edit(...args)
+  }
+  try { assert.deepEqual((await ctx.mbot.removeBot(absent.botId)).sessionIds, [absentId]) }
+  finally { ctx.configEditor.edit = edit }
+  assert.equal(ctx.agents.get(absentId), undefined)
+  assert.equal(requests.length, 0)
+})
+
 const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'chat:owner' }
 const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
 

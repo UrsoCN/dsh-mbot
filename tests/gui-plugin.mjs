@@ -243,9 +243,29 @@ try {
   } finally { await rename(offline, workspace) }
   await submit(`/mbot open ${firstBotId}`)
   assert.ok((await submit('/mbot status')).includes(`Main Session: ${mainId}`), 'Restored data must resume the original main Session')
+  await page.goto(`${server.url}#mbot-session=${originalId}`)
+  await page.locator('[contenteditable=true]').waitFor()
+  server.child.kill('SIGINT')
+  await server.child.finished
+  const retirementHead = await run('git', ['-C', workspace, 'rev-parse', 'HEAD'])
+  await rename(workspace, offline)
+  try {
+    server = await host()
+    await page.goto(`${server.url}#mbot-session=${originalId}`)
+    await page.locator('[contenteditable=true]').waitFor()
+    const removed = await submit(`/mbot remove ${firstBotId}`)
+    assert.ok(removed.includes('Bot removed from active registry:'), removed)
+    assert.ok((await submit('/mbot removed')).includes(mainId))
+    assert.ok(!(await submit('/mbot list')).includes(firstBotId))
+    await page.goto(`${server.url}#mbot-session=${mainId}`)
+    await page.locator('[contenteditable=true]').waitFor()
+    assert.ok((await submit('/mbot runtime')).includes('MBot Runtime: retired'))
+    assert.equal(await run('git', ['-C', offline, 'rev-parse', 'HEAD']), retirementHead)
+    await page.screenshot({ path: join(root, 'cold-removal-missing-data.png'), fullPage: true })
+  } finally { await rename(offline, workspace) }
   assert.ok((await observed()).every(row => !['user/message', 'assistant/message', 'turn/start', 'llm/request'].includes(row.event.type)))
   assert.deepEqual(errors, [])
-  console.log('GUI PASS: tarball/init-auto-main/import/list/select/open/repair/bound-routing/original-session/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/deep-link/missing-old-bot/failed-command-composer/new-bot-after-failure/same-session-retry/no-model')
+  console.log('GUI PASS: tarball/init-auto-main/import/list/select/open/repair/bound-routing/original-session/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/deep-link/missing-old-bot/failed-command-composer/new-bot-after-failure/same-session-retry/cold-removal-missing-data/retired-old-session/no-model')
 } finally {
   await browser?.close()
   for (const child of processes) child.kill('SIGINT')

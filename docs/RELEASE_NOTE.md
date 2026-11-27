@@ -1,5 +1,12 @@
 # 发布说明
 
+## dev：失效 Bot 注销与 Chief 控制命令显示（2026-11-28，未发布）
+
+- 修复数据目录缺失或 checkpoint 无法恢复时仍无法注销 Bot：保存前持有 Runtime 准入闸门，冷 Session 使用官方 persistence write handle 核验身份与独占归属，持有到保存完成。注销不调用 Agent create/resume、不恢复上下文、不改写 Git/journal/原生历史。
+- 保留活动 Agent/工具/审计、外来 writer、错误 Session 目录与未知 Runtime 归属的拒绝边界。保存期间阻止缺失 Session 预留被激活，保存失败关闭原生句柄并释放临时闸门；退役后旧 Session 可作为被动历史会话打开。
+- 修复 Chief 中 `/mbot list/status` 已成功执行却不可见：原生命令节点被归入上一轮的折叠过程，现由 MBot 在 Session 层用公开 DisclosureRow 显示同一 command/run/done，原生命令的 MBot slot 不重复渲染。保留运行/错误/展开、空会话、多窗口、刷新与导航。
+- 明确人类控制命令可在 Chief 会话使用，模型数据访问仍走受控 botctl。控制查询不调用模型、不产生对话审计提交；“审计提交”的短 hash 对应 Bot 数据仓库的真实 Git commit，当前每轮审计与 checkpoint/回答核验契约保留，普通审计不等于长期记忆更新。
+
 ## dev：Bot 创建/恢复失败时的 Runtime 死锁修复（未发布）
 
 - 修复失效旧 Bot 阻塞后续管理命令的循环等待：数据目录丢失或 checkpoint 验证失败时，附件初始化的异常清理不能在原生 setup/`agent/created` 回调中等待 `agent.whenIdle()`，否则原生 publication maintenance 与回调互相等待。

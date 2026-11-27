@@ -2,7 +2,10 @@
 // No build step or platform dependencies are needed for this small contribution.
 window.__ModuleLoader__.load({ id: 'dsh-mbot', factory: require => {
   const { jsx, jsxs } = require('react/jsx-runtime')
+  const { useState } = require('react')
+  const { DisclosureRow, TextShimmer, IconApiOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives')
   const target = 'mbot-command-activity'
+  const commandKind = 'mbot-command-result'
   const auditKind = 'mbot-runtime-audit'
   const auditRecord = 'plugin:mbot/runtime-turn'
   const phases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
@@ -31,7 +34,42 @@ window.__ModuleLoader__.load({ id: 'dsh-mbot', factory: require => {
         stopped ? jsx('div', { children: t('queueRetained') }) : null,
         data.error ? jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: '6px 0 0' }, children: data.error }) : null] })
   }
+  function CommandCard({ node, t }) {
+    const command = node.data
+    const [expanded, setExpanded] = useState(false)
+    const running = command.outcome === null
+    const failed = command.outcome?.kind === 'error'
+    const text = command.outcome?.text ?? t(running ? 'commandRunning' : failed ? 'commandFailed' : 'commandDone')
+    const expandable = text.includes('\n')
+    return jsx('div', { 'data-mbot-command': command.commandId, 'data-variant': 'others',
+      'data-state': running ? 'running' : failed ? 'error' : 'ok', role: 'status',
+      style: { margin: '8px 0', color: failed ? '#dc2626' : 'inherit' },
+      children: jsx(DisclosureRow, { title: 'mbot', icon: jsx(IconApiOutlineRegular, { size: 14 }),
+        running, open: expanded && expandable, expandable, expandOnRowClick: true, keepContentWhenOpen: true,
+        onToggle: () => setExpanded(value => !value),
+        collapsedContent: jsx('span', { style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+          children: jsxs('span', { children: [' · ', jsx(TextShimmer, { children: text })] }) }),
+        children: expanded && expandable ? jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: '6px 0' }, children: text }) : null,
+      }) })
+  }
   function apply(ctx) {
+    ctx.uiConversation.events.register({
+      kind: commandKind, target: 'chat',
+      match: {
+        'command/run': event => event.data.name === 'mbot' ? { id: String(event.data.commandId), role: 'start' } : null,
+        'command/done': event => ({ id: String(event.data.commandId), role: 'update' }),
+      },
+      start: () => null, update: () => null,
+      buildViewNode: context => {
+        const run = context.matches.find(match => match.event.type === 'command/run' && match.event.data.name === 'mbot')?.event
+        if (!run) return null
+        const done = context.matches.findLast(match => match.event.type === 'command/done')?.event
+        return { key: context.key, id: context.id, kind: commandKind, target: 'chat', anchorSeq: run.seq,
+          location: { kind: 'session' }, visibility: 'visible', groupTree: 'turn',
+          data: { kind: 'command', seq: run.seq, time: run.time, commandId: run.data.commandId, name: 'mbot', args: null,
+            outcome: done ? { kind: done.data.kind, text: done.data.text } : null } }
+      },
+    })
     ctx.uiConversation.events.register({
       kind: auditKind, target: 'chat',
       match: event => receipt(event) ? { id: String(event.data.turn), role: event.data.phase === 'active' ? 'start' : 'update' } : null,
@@ -50,15 +88,21 @@ window.__ModuleLoader__.load({ id: 'dsh-mbot', factory: require => {
       scope.effect(() => scope.locale.register(NS, {
         zh: { active: 'MBot 正在处理', auditing: 'MBot 正在验收', committed: 'MBot 验收完成', rejected: 'MBot 本轮未通过验收',
           failed: 'MBot 尚未完成验收', stopped: 'MBot 已停止', receiptFailed: 'MBot 审计已提交，回执保存失败',
-          turn: '回合 {turn}', commit: '审计提交', queueRetained: '已接收的待办保留。' },
+          turn: '回合 {turn}', commit: '审计提交', queueRetained: '已接收的待办保留。',
+          commandRunning: '执行中…', commandFailed: '执行失败', commandDone: '已完成' },
         en: { active: 'MBot is working', auditing: 'MBot is validating', committed: 'MBot validation completed', rejected: 'MBot turn did not pass validation',
           failed: 'MBot validation is incomplete', stopped: 'MBot stopped', receiptFailed: 'MBot audit committed; receipt save failed',
-          turn: 'Turn {turn}', commit: 'Audit commit', queueRetained: 'Accepted queued inputs are retained.' },
+          turn: 'Turn {turn}', commit: 'Audit commit', queueRetained: 'Accepted queued inputs are retained.',
+          commandRunning: 'Running…', commandFailed: 'Failed', commandDone: 'Completed' },
       }))
       scope.slots.inject('conversation.chat.node', () => scope.slots.register({ name: 'conversation.chat.node', key: auditKind, locale: NS }, AuditCard))
+      scope.slots.inject('conversation.chat.node', () => scope.slots.register({ name: 'conversation.chat.node', key: commandKind, locale: NS }, CommandCard))
+      // The native command node can belong to a closed Turn's folded process.
+      // Render its same native lifecycle once at Session level instead.
+      scope.slots.inject('conversation.chat.commandview', () => scope.slots.register({ name: 'conversation.chat.commandview', key: 'mbot' }, () => null))
     })
     // DSH deliberately excludes generic commands from Chat's activity predicate.
-    // Contribute activity on our own target; native Chat owns the only result card.
+    // Keep the command-only activity target for existing empty-session flows.
     ctx.uiConversation.views.register({
       target,
       create: () => {

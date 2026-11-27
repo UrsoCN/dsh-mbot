@@ -890,7 +890,27 @@ test('recovery refuses a surviving permit process and succeeds after it settles'
   assert.ok(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
   writer.kill('SIGTERM')
   await exited
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, false)
+  const baseline = { head: git(ws, 'rev-parse', 'HEAD'), status: git(ws, 'status', '--porcelain'),
+    journal: await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8') }
+  for (let attempt = 0; ; attempt++) {
+    try { assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, false); break }
+    catch (error) {
+      const pid = /Cannot inspect possible writer pid (\d+)/u.exec(error.message)?.[1]
+      if (!pid || attempt >= 3) throw error
+      let gone = false
+      for (let observation = 0; observation < 25; observation++) {
+        try {
+          const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+          if (stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/u)[0] === 'Z') { gone = true; break }
+        } catch (inspection) { if (inspection.code === 'ENOENT') { gone = true; break }; throw error }
+        await delay(20)
+      }
+      if (!gone) throw error
+      assert.equal(git(ws, 'rev-parse', 'HEAD'), baseline.head)
+      assert.equal(git(ws, 'status', '--porcelain'), baseline.status)
+      assert.ok(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8') === baseline.journal, 'Writer inspection refusal must preserve the journal')
+    }
+  }
 })
 
 test('recovery preserves evidence when private snapshot, journal or lock identity is invalid', async t => {

@@ -97,6 +97,20 @@ try {
   await until(async () => await audit(1).getAttribute('data-phase') === 'committed' && await audit(1).isVisible())
   assert.ok((await audit(1).innerText()).includes(git('rev-parse', 'HEAD').slice(0, 12)))
 
+  const controlRows = page.locator('[data-variant="others"][data-state]:not([data-tool])')
+  const modelCalls = (await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length
+  const auditHead = git('rev-parse', 'HEAD')
+  await command('/mbot list')
+  await until(async () => await controlRows.filter({ hasText: 'Bot registry revision:' }).last().isVisible())
+  await command('/mbot status')
+  const statusRow = controlRows.filter({ hasText: `Workspace: ${ws}` }).last()
+  await until(async () => await statusRow.isVisible())
+  await statusRow.click()
+  assert.ok((await statusRow.locator('pre').innerText()).includes(`Main Session: ${sessionId}`))
+  assert.equal(git('rev-parse', 'HEAD'), auditHead, 'Human controls must not create a conversation audit commit')
+  assert.equal((await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length, modelCalls)
+  await page.screenshot({ path: join(root, 'chief-controls-after-turn.png'), fullPage: true })
+
   await send('slow writer')
   await until(() => exists('writer-started'))
   await send('queued after writer')

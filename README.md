@@ -43,7 +43,7 @@ web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patche
 /mbot status
 ```
 
-结果使用原生命令卡片显示，点击可展开完整输出；不触发模型调用或进入模型 role content。init 保存对应 profile 的 MBot workspace；数据或身份保存失败保留此前选择，原生绑定失败保留已登记的新 Bot 并提示修复。dev 的 Web profile 会登记 DSH 工作区、创建并默认打开主 Session；结果卡片保留在原会话。失败用 `/mbot list` 查看身份，再 `/mbot repair <Bot>` 重试，已有数据用 import。
+结果使用命令卡片显示，点击可展开完整输出；不触发模型调用或进入模型 role content。init 保存对应 profile 的 MBot workspace；数据或身份保存失败保留此前选择，原生绑定失败保留已登记的新 Bot 并提示修复。dev 的 Web profile 会登记 DSH 工作区、创建并默认打开主 Session；结果卡片保留在原会话。失败用 `/mbot list` 查看身份，再 `/mbot repair <Bot>` 重试，已有数据用 import。
 
 在源码目录也可以使用终端入口：
 
@@ -153,7 +153,7 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-dev 当前有公开类型、50 项 Cordis/Host、139 项本地真实 Agent Runtime 和 64 组 Bash 检查，另有 1 项按需运行的真实 DeepSeek 摘要验收；Host/Runtime 测试文件串行运行，避免恢复的进程核验与其他夹具争用。安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`，原生摘要/刷新/维护闸门运行 `npm run test:gui-compaction`；旧版无共享闸门的升级与生命周期仍有待办。Worker 的[角色/任务许可基础](docs/worker-leases.md) 和 [原生最小执行](docs/native-workers.md) 已实现；scoped botctl 子 Agent 已默认开启并支持 [v3 恢复](docs/worker-recovery.md)，可设置 workers=false 保持前台模式；Bash/文件/PTC 与未知写者恢复仍待接齐。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。`npm run test:real-compaction` 另用真实 DeepSeek 验收摘要，普通对话保持本地 adapter。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+dev 当前有公开类型、50 项 Cordis/Host、141 项本地真实 Agent Runtime 和 64 组 Bash 检查，另有 1 项按需运行的真实 DeepSeek 摘要验收；Host/Runtime 测试文件串行运行，避免恢复的进程核验与其他夹具争用。安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`，原生摘要/刷新/维护闸门运行 `npm run test:gui-compaction`；旧版无共享闸门的升级与生命周期仍有待办。Worker 的[角色/任务许可基础](docs/worker-leases.md) 和 [原生最小执行](docs/native-workers.md) 已实现；scoped botctl 子 Agent 已默认开启并支持 [v3 恢复](docs/worker-recovery.md)，可设置 workers=false 保持前台模式；Bash/文件/PTC 与未知写者恢复仍待接齐。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。`npm run test:real-compaction` 另用真实 DeepSeek 验收摘要，普通对话保持本地 adapter。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 `npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。`npm run test:gui-runtime` 使用本地 adapter 另验主 Session 的审计卡片、原生停止、晚到写者、队列及失败重放。dev 的主 Session/导航已另行验收，设置页仍需实现。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 
