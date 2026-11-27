@@ -10,10 +10,11 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
 
-Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，[停止/故障计数](docs/turn-outcomes.md) 已区分；Worker、统一消息与睡眠/checkpoint 尚未交付。
+Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，[停止/故障计数](docs/turn-outcomes.md) 已区分。[所有者消息准入](docs/message-admission.md) 已提供可信 Host 门面、来源/flush 闸门及原生日志去重收据；完整统一入口、Worker 与睡眠/checkpoint 尚未交付。
 
 - [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
-- [ ] 统一 botctl 门面与 Runtime 准入：带来源/身份/requestId/对话域/回复路由，复用 DSH Inbox/FIFO，校验去重、收据、取消及崩溃转交，不另造独立消费状态
+- [ ] 在 ownerMailbox 基础上接 CLI botctl 的宿主 IPC、真实适配器及对话域权限；附件与持久路由恢复复用 DSH Inbox，不另造消费状态。独立 wake 衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API
+- [ ] 扩展统一收据为经 journal/Git 核实的审计终态及按原 replyRoute 投递的回复 outbox；验收断连/崩溃转交、编辑冲突修复、跨域路由与多个 Host，不能把 confirmed/ended 或 ignorable 展示记录视为事务提交证明
 - [ ] 接齐 Worker 的固定角色快照、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，验收真实 PTC/run_code（其保留名称不能用自定义工具覆盖），保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
 - [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期，并与 compact/checkpoint 事务绑定
 - [ ] 将已验证的数据 turn 恢复扩展到 Runtime/Agent/Worker：明确所有写者的所有权及静止证明，协调会话事件与 checkpoint；不将现有 data-subprocesses 的进程核实视为全部工具/IPC 写者已覆盖

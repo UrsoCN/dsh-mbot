@@ -37,3 +37,10 @@ const runtimeStatus: Promise<runtime.RuntimeStatus> = ctx.mbotRuntime.status(man
 const stopped: Promise<runtime.RuntimeStopResult> = ctx.mbotRuntime.stop(managedAgent, { signal: new AbortController().signal })
 void runtimeStatus
 void stopped
+const mailbox: runtime.OwnerMailbox = ctx.mbotRuntime.ownerMailbox(managedAgent, {
+  visibility: 'owner-private', adapterId: 'tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'private-chat',
+})
+const delivery: Promise<runtime.MessageDeliveryReceipt> = mailbox.send({ requestId: 'platform-event-id', text: 'hello' })
+mailbox.receipt('platform-event-id')
+mailbox.dispose()
+void delivery

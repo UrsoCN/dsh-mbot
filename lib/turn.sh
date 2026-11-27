@@ -37,7 +37,10 @@ mbot_turn_finalize() {
      else "failed" end) as $outcome |
     . + {outcome:$outcome, failure_count_effect:(if $outcome=="completed" then "reset" elif $outcome=="cancelled" then "preserve" else "increment" end),
       runtime:{kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,
-        bot_id:$header[0].botId,session_id:$header[0].sessionId,turn:$header[0].turn,request_ids:$header[0].requestIds}}' \
+        bot_id:$header[0].botId,session_id:$header[0].sessionId,turn:$header[0].turn,
+        request_ids:(reduce ($header[0].requestIds[], ($session[] | select(.type=="user/message") | .data.source |
+          select(.kind=="user" or .kind=="retry") | (.rpcId // .requestId) | select(type=="string" and length>0))) as $id
+          ([]; if index($id)==null then . + [$id] else . end))}}' \
     "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
   mv -- "$MBOT_SCRATCH/managed-meta.json" "$MBOT_SCRATCH/meta.json"
   mbot_turn_outcome "$MBOT_SCRATCH/meta.json" || return 1

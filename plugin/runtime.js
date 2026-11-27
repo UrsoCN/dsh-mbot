@@ -3,6 +3,7 @@ import * as nativeBash from '@deepseek-ai/dsh-tool-bash'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { botSections, reconcileContext, turnContext } from './context.js'
 import { redact } from './redact.js'
+import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSource, deliveryReceipt, operationalSource } from './messages.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
@@ -29,6 +30,15 @@ const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit'
 function requireState(cell) {
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
   return cell.state
+}
+
+async function flushInput(ctx, session, signal) {
+  signal.throwIfAborted()
+  const aborted = Promise.withResolvers()
+  const cancel = () => aborted.reject(signal.reason)
+  signal.addEventListener('abort', cancel, { once: true })
+  try { await Promise.race([ctx.sessions.flush(session), aborted.promise]) }
+  finally { signal.removeEventListener('abort', cancel) }
 }
 
 function installGates(agent, cell) {
@@ -79,6 +89,17 @@ function installGates(agent, cell) {
     const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: input.signal, modelSelection: input.modelSelection })
     const changed = await reconcileContext(state.runtime.ctx, agent, assembly, record, input.signal)
     const decision = await next()
+    if (decision.kind === 'enter') {
+      const claimed = new Map(record.messages.map(message => [message.id, message]))
+      for (const message of decision.messages) {
+        const original = claimed.get(message.id)
+        if (operationalSource(message)) continue
+        if (!original || JSON.stringify(original.source) !== JSON.stringify(message.source)) {
+          state.parkInput(record, input.signal)
+          throw new Error('Pre-step producer bypassed MBot message admission')
+        }
+      }
+    }
     return changed && decision.kind === 'enter' ? { ...decision, startsRequestSeries: true } : decision
   }, { prepend: true })
   ctx.tools.guard(exec => {
@@ -122,16 +143,32 @@ class ManagedSession {
     this.pending = Promise.resolve()
     this.closing = false
     this.error = undefined
+    this.messageIndex = new MessageIndex()
+    this.messageOperations = Promise.resolve()
+    this.earlyEvents = []
+  }
+
+  async initialize() {
+    const log = await this.runtime.ctx.sessionQuery.readSession(this.agent.id)
+    this.inheritedEventCount = log.inheritedEventCount
+    for (const event of [...log.events, ...this.earlyEvents]) this.messageIndex.apply(event, this.inheritedEventCount)
+    this.earlyEvents = undefined
   }
 
   observe(event) {
+    if (this.earlyEvents) this.earlyEvents.push(event)
+    else {
+      try { this.messageIndex.apply(event, this.inheritedEventCount) }
+      catch (error) { this.error = error }
+    }
     if (event.type === runtimeRecordType) return
     if (event.type === 'turn/start') {
       this.current = { turn: event.data.turn, step: 1, messages: [], events: [], calls: new Set(), ended: false,
-        end: Promise.withResolvers() }
+        end: Promise.withResolvers(), admitted: new Set(), dispatched: new Set() }
     }
     const record = this.current
     if (!record || record.ended) return
+    if (event.type === 'user/message') record.dispatched.add(event.data.id)
     if (event.type === 'assistant/message') record.text = event.data.message.content
       .filter(block => block.type === 'text').map(block => block.text).join('\n')
     if (record.lease) this.record(record, event)
@@ -165,9 +202,10 @@ class ManagedSession {
         if (this.error) throw this.error
         const bot = this.runtime.ctx.mbot.bot({ botId: this.botId })
         if (bot.binding && bot.binding.state !== 'ready') throw new Error('MBot main Session binding needs /mbot repair before business turns')
+        await this.confirmInput(record, signal)
         const request = record.messages.map(message => JSON.stringify({ id: message.id, source: message.source, content: message.content })).join('\n')
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
-          requestIds: record.messages.map(message => message.source.requestId).filter(value => typeof value === 'string'),
+          requestIds: record.messages.map(requestIdentity).filter(value => typeof value === 'string'),
           signal, writerScope: 'agent-runtime', onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
         await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         for (const event of record.events) this.record(record, event)
@@ -178,10 +216,39 @@ class ManagedSession {
         // A failed admission must not silently consume already-claimed input.
         // Cancellation ends the attempted request; other failures park it in
         // the one authoritative DSH Inbox for inspection and a later wake.
-        if (!signal.aborted) this.agent.inbox.splice('next-turn', 0, 0, record.messages)
+        this.parkInput(record, signal)
       })
     }
-    return record.admission
+    await record.admission
+    // Explicit steer/inject can be claimed after the first step. They pass
+    // the same source and persistence gate before any later model dispatch.
+    try { await this.confirmInput(record, signal) }
+    catch (error) { this.parkInput(record, signal); throw error }
+    return record
+  }
+
+  async confirmInput(record, signal) {
+    const fresh = record.messages.filter(message => !record.admitted.has(message.id))
+    if (!fresh.length) return
+    for (const message of fresh) {
+      validateSource(message, this.botId)
+      this.messageIndex.match(message)
+    }
+    // Native append/followup does not itself guarantee a storage flush. This
+    // awaited gate covers native Web and adapters before lease/model dispatch.
+    await flushInput(this.runtime.ctx, this.agent.session, signal)
+    signal.throwIfAborted()
+    if (this.closing || this.runtime.closed || this.error) throw this.error ?? new Error('MBot Runtime is unavailable')
+    for (const message of fresh) record.admitted.add(message.id)
+  }
+
+  parkInput(record, signal) {
+    // Teardown preserves unexecuted claims. A user stop cancels its captured
+    // input, while model-visible input is never requeued.
+    if (signal.aborted && !this.closing && !this.runtime.closed) return
+    const pending = new Set([...this.agent.inbox.nextTurn, ...this.agent.inbox.nextStep].map(message => message.id))
+    const fresh = record.messages.filter(message => !record.dispatched.has(message.id) && !pending.has(message.id))
+    if (fresh.length) this.agent.inbox.splice('next-turn', 0, 0, fresh)
   }
 
   async expire(record) {
@@ -329,6 +396,7 @@ export class MBotRuntime extends Service {
     cell.state = state
     this.states.set(agent, state)
     try {
+      await state.initialize()
       if (!cell.bashInstalled && this.ctx.tools.get('bash', agent)) {
         // The official foreground-only composition kills and joins commands
         // at timeout; a returned job receipt is not writer-quiescence proof.
@@ -347,6 +415,65 @@ export class MBotRuntime extends Service {
   }
 
   managed(agent) { return this.states.has(agent) }
+
+  /** Host capability: the caller verifies owner identity and binds the route. */
+  ownerMailbox(agent, options) {
+    const state = this.states.get(agent)
+    if (!state || this.closed || state.closing) throw new Error('Session is not managed by the active MBot Runtime')
+    if (state.earlyEvents) throw new Error('Managed Session attachment is still initializing')
+    const bot = this.ctx.mbot.bot({ botId: state.botId })
+    if (bot.mainSessionId !== agent.id || bot.binding?.state !== 'ready') throw new Error('Owner mailbox requires a ready Bot main Session')
+    const binding = ownerBinding(options, state.botId)
+    let revoked = false
+    const check = () => {
+      if (revoked || this.closed || state.closing || this.states.get(agent) !== state || this.ctx.mbot.closed) throw new Error('MBot owner mailbox is unavailable')
+      const current = this.ctx.mbot.bot({ botId: state.botId })
+      if (current.mainSessionId !== agent.id || current.binding?.state !== 'ready') throw new Error('Bot main Session binding changed; reopen the mailbox')
+    }
+    const operation = run => {
+      const pending = state.messageOperations.then(() => { check(); return run() })
+      state.messageOperations = pending.catch(() => {})
+      return pending
+    }
+    return Object.freeze({
+      binding,
+      send: input => {
+        // Own caller bytes before the first await, including duplicate retries.
+        let message
+        try { check(); message = ownerMessage(binding, input) }
+        catch (error) { return Promise.reject(error) }
+        return operation(async () => {
+          let record = state.messageIndex.requests.get(requestIdentity(message))
+          if (record) {
+            if (record.conflict || record.message.source.mbot?.fingerprint !== message.source.mbot.fingerprint) throw new Error('Request identity was reused with changed content or reply route')
+          } else {
+            agent.followup(message)
+            record = state.messageIndex.requests.get(requestIdentity(message))
+          }
+          try {
+            await this.ctx.sessions.flush(agent.session)
+            check()
+            return deliveryReceipt(record, 'confirmed')
+          } catch {
+            // Append may already be durable, claimed, or executing. Same-ID
+            // retry inspects native history; it never inserts a replacement.
+            return deliveryReceipt(record, 'unconfirmed')
+          }
+        })
+      },
+      receipt: requestId => operation(async () => {
+        const probe = ownerMessage(binding, { requestId, text: 'receipt lookup' })
+        const record = state.messageIndex.requests.get(requestIdentity(probe))
+        if (!record) return undefined
+        if (record.conflict) throw new Error('Request identity was reused with changed content or duplicate native input')
+        const source = record.message.source.mbot
+        if (!source || Object.keys(binding).some(key => source[key] !== binding[key])) throw new Error('Request belongs to a different owner route')
+        try { await this.ctx.sessions.flush(agent.session); check(); return deliveryReceipt(record, 'confirmed') }
+        catch { return deliveryReceipt(record, 'unconfirmed') }
+      }),
+      dispose: () => { revoked = true },
+    })
+  }
 
   /** Trusted Host declaration: the tool must join every writer before returning. */
   foregroundTool(name) {

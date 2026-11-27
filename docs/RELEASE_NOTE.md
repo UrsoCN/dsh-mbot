@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：所有者消息准入与原生投递收据（未发布）
+
+- 新增可信 Host 的 ownerMailbox，固定已验证的所有者、主 Session、对话键和回复路线；文本信封使用命名空间请求 ID 与不可变指纹，并发/重载后的同 ID 重试复用原消息，改变正文/关联 ID/回复路线报冲突。
+- 原生 Web/适配器/后续 steer 共用来源和执行前 flush 闸门；网页 rpcId、旧 requestId 及实际 steer 输入纳入 Git 审计。来源未准入时不调用模型，保留原生 Inbox；卸载保留未执行 claim，原生上下文/待办编辑与准备后的引用文本继续兼容。
+- 投递收据区分 confirmed/unconfirmed 和 queued/claimed/ended/cancelled，从原生事件重建，不能当成 guard/Git 提交证明。39 项 Host 与 30 项 Runtime、类型、64 组 Bash、四类安装及 Chromium 主 Session 审计/原生停止回归通过，见 [消息准入](message-admission.md)。没有调用真实 DeepSeek API。
+
+本阶段只完成 Host 私聊准入基础。CLI IPC、真实 IM/peer、隔离 conversation、审计终态/回复 outbox、wake、Worker、compact/睡眠及 Runtime 恢复继续在 TODO；包仍为 0.1.1，未打新 tag。
+
 ## dev：正常停止与故障计数（未发布）
 
 - 规范化 managed turn outcome：成功 completed 归零，干净的原生 user 停止 cancelled 保留原计数，其他失败 failed 递增；三次正常停止不会增加故障，之前的故障也不会被取消清零。

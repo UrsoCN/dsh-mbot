@@ -25,6 +25,7 @@ import * as botTools from '../plugin/tools.js'
 import * as runtime from '../plugin/runtime.js'
 import Commands from '@deepseek-ai/dsh-commands'
 import * as botCommands from '../plugin/commands.js'
+import { MessageIndex } from '../plugin/messages.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -108,10 +109,318 @@ async function app(t, script, options = {}) {
   ctx.llm.registerAdapter(['runtime-test'], new Scripted())
   const handle = await ctx.agents.create({ sessionId: `runtime-session-${++sequence}`, meta: { cwd: ws },
     agentOptions: { provider: 'runtime-test', model: 'scripted' }, setup: (_ctx, agent) => ctx.mbotRuntime.attach(agent, { botId: bot.botId }) })
+  if (options.main) await ctx.configEditor.edit(entry, current => ({ ...current, registry: { ...current.registry,
+    revision: current.registry.revision + 1, bots: current.registry.bots.map(item => item.botId !== bot.botId ? item : {
+      ...item, workspaceId: `workspace-${sequence}`, mainSessionId: handle.agent.id,
+      binding: { state: 'ready', pendingSessionId: null, error: null },
+    }) } }))
   return { ctx, ws, bot, agent: handle.agent, handle, requests, owner, errors }
 }
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
+
+const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'chat:owner' }
+const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
+const auditAtHead = ws => {
+  const path = git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').findLast(path => path.endsWith('.meta.json'))
+  return JSON.parse(git(ws, 'show', `HEAD:${path}`))
+}
+
+test('owner mailbox captures bytes, namespaces request identity and deduplicates concurrent clients', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await app(t, () => response('owner reply'), { main: true })
+  const first = mainMailbox(ctx, agent)
+  const second = mainMailbox(ctx, agent)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const input = { requestId: 'event:1', text: 'owner original bytes', correlationId: 'thread:1' }
+  const sent = first.send(input)
+  input.text = 'mutated after submit'
+  const [receipt, retry] = await Promise.all([sent, second.send({ requestId: 'event:1', text: 'owner original bytes', correlationId: 'thread:1' })])
+  assert.equal(receipt.confirmation, 'confirmed')
+  assert.equal(receipt.messageId, retry.messageId)
+  assert.match(receipt.rpcId, /^mbot:[a-f0-9]{64}$/u)
+  assert.equal(receipt.botId, bot.botId)
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+  assert.ok(JSON.stringify(requests).includes('owner original bytes'))
+  assert.ok(!JSON.stringify(requests).includes('mutated after submit'))
+  assert.ok(JSON.stringify(requests).includes('test-tg'))
+  assert.deepEqual(auditAtHead(ws).runtime.request_ids, [receipt.rpcId])
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.deepEqual(await first.receipt('missing'), undefined)
+  assert.equal((await second.receipt('event:1')).delivery, 'ended')
+})
+
+test('same request cannot change content, correlation, route or inject source/session fields', { timeout: 30000 }, async t => {
+  const { ctx, agent, requests } = await app(t, () => response('done'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'event:1', text: 'original' })
+  await settle(ctx, agent)
+  await assert.rejects(mailbox.send({ requestId: 'event:1', text: 'changed' }), /reused/u)
+  await assert.rejects(mailbox.send({ requestId: 'event:1', text: 'original', correlationId: 'changed' }), /reused/u)
+  const otherRoute = mainMailbox(ctx, agent, { replyRoute: 'chat:group' })
+  await assert.rejects(otherRoute.send({ requestId: 'event:1', text: 'original' }), /reused/u)
+  await assert.rejects(otherRoute.receipt('event:1'), /different owner route/u)
+  await assert.rejects(mailbox.send({ requestId: 'event:2', text: 'attack', sessionId: 'other-bot' }), /fields/u)
+  assert.throws(() => mainMailbox(ctx, agent, { visibility: 'group' }), /owner-private/u)
+  mailbox.dispose()
+  await assert.rejects(mailbox.send({ requestId: 'event:2', text: 'revoked' }), /unavailable/u)
+  assert.equal(requests.length, 1)
+})
+
+test('Web RPC and owner mailbox share FIFO, and native steer IDs join the same audit', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const { ctx, ws, agent, requests } = await app(t, async (_options, count) => {
+    if (count === 1) { entered.resolve(); await release.promise }
+    return response(`reply ${count}`)
+  }, { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  agent.followup(createUserMessage({ content: [{ type: 'text', text: 'native Web request' }], source: { kind: 'user', rpcId: 'web-request-1' } }))
+  await entered.promise
+  const receipt = await mailbox.send({ requestId: 'tg-event-1', text: 'queued private message' })
+  assert.equal(receipt.delivery, 'queued')
+  agent.steer(createUserMessage({ content: [{ type: 'text', text: 'explicit native steer' }], source: { kind: 'user', rpcId: 'web-steer-1' } }))
+  assert.equal(requests.length, 1)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+  const paths = git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').filter(path => path.endsWith('.meta.json'))
+  const audits = paths.map(path => JSON.parse(git(ws, 'show', `HEAD:${path}`)))
+  assert.deepEqual(audits.find(audit => audit.runtime.turn === 1).runtime.request_ids, ['web-request-1', 'web-steer-1'])
+  assert.deepEqual(audits.find(audit => audit.runtime.turn === 2).runtime.request_ids, [receipt.rpcId])
+})
+
+test('all native input waits for a persistence flush before acquiring a lease or calling the model', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('durable reply'))
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  t.after(() => { release.resolve(); if (ctx.sessions) ctx.sessions.flush = flush })
+  let first = true
+  ctx.sessions.flush = async session => {
+    if (first) { first = false; entered.resolve(); await release.promise }
+    return flush(session)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('native message requiring flush'))
+  await entered.promise
+  assert.equal(requests.length, 0)
+  assert.throws(() => ctx.mbotRuntime.dataLease(agent), /No active/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+})
+
+test('uncertain admission is kept in native Inbox; same-ID retry confirms it without duplication', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('done'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  t.after(() => { if (ctx.sessions) ctx.sessions.flush = flush })
+  let failures = 2
+  ctx.sessions.flush = async session => {
+    if (failures-- > 0) throw new Error('admission store unavailable')
+    return flush(session)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  const receipt = await mailbox.send({ requestId: 'uncertain-1', text: 'retain this request' })
+  assert.equal(receipt.confirmation, 'unconfirmed')
+  await settle(ctx, agent)
+  assert.equal(requests.length, 0)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal(agent.inbox.nextTurn[0].id, receipt.messageId)
+  const retried = await mailbox.send({ requestId: 'uncertain-1', text: 'retain this request' })
+  assert.equal(retried.confirmation, 'confirmed')
+  assert.equal(retried.messageId, receipt.messageId)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  // DSH has no public wake-only operation; a new waking input resumes pending
+  // work. A confirmation retry does not create a synthetic model message.
+  await mailbox.send({ requestId: 'next-2', text: 'continue pending work' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  assert.equal(log.events.filter(event => event.type === 'user/message' && event.data.id === receipt.messageId).length, 1)
+})
+
+test('Runtime reload revokes old capabilities and rebuilds request receipts from native history', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, requests, owner } = await app(t, () => response('done'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  const original = await mailbox.send({ requestId: 'before-reload', text: 'once' })
+  await settle(ctx, agent)
+  await owner.dispose()
+  await assert.rejects(mailbox.receipt('before-reload'), /unavailable/u)
+  await ctx.plugin(runtime)
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  const replacement = mainMailbox(ctx, agent)
+  const receipt = await replacement.receipt('before-reload')
+  assert.equal(receipt.messageId, original.messageId)
+  assert.equal(receipt.delivery, 'ended')
+  assert.equal((await replacement.send({ requestId: 'before-reload', text: 'once' })).messageId, original.messageId)
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+})
+
+test('unknown or non-owner producers cannot dispatch, including input injected during an active turn', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('done'))
+  const base = git(ws, 'rev-parse', 'HEAD')
+  for (const source of [{ kind: 'peer-bot', senderBotId: 'other-bot' }, { kind: 'user', rpcId: 'non-owner', principal: { id: 'other-user' } }]) {
+    const rejected = createUserMessage({ content: [{ type: 'text', text: 'unapproved business input' }], source })
+    agent.followup(rejected)
+    await settle(ctx, agent)
+    assert.equal(requests.length, 0)
+    assert.ok(agent.inbox.nextTurn.some(message => message.id === rejected.id))
+    agent.inbox.clear()
+  }
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const active = await app(t, async (_options, count) => { if (count === 1) { entered.resolve(); await release.promise } return response('done') })
+  active.agent.followup(message('owner'))
+  await entered.promise
+  const injected = createUserMessage({ content: [{ type: 'text', text: 'unapproved peer relay' }], source: { kind: 'peer-bot' } })
+  active.agent.inject(injected)
+  release.resolve()
+  await settle(active.ctx, active.agent)
+  assert.equal(active.requests.length, 1)
+  assert.equal(active.agent.inbox.nextTurn[0].id, injected.id)
+  assert.equal((await active.ctx.mbotRuntime.status(active.agent)).lastReceipt.outcome, 'failed')
+})
+
+test('native queued cancellation and stopped claimed input have distinct delivery receipts', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const { ctx, agent } = await app(t, async () => { entered.resolve(); await release.promise; return response('stopped') }, { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'active', text: 'active' })
+  await entered.promise
+  const queued = await mailbox.send({ requestId: 'queued', text: 'cancel before run' })
+  assert.equal(agent.inbox.remove(queued.messageId), true)
+  assert.equal((await mailbox.receipt('queued')).delivery, 'cancelled')
+  const stopping = ctx.mbotRuntime.stop(agent)
+  release.resolve()
+  await stopping
+  const stopped = await mailbox.receipt('active')
+  assert.equal(stopped.delivery, 'ended')
+  assert.equal(stopped.reason, 'aborted')
+})
+
+test('teardown during admission preserves an unexecuted claim across Runtime reload', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, requests, owner } = await app(t, () => response('done'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  t.after(() => { release.resolve(); if (ctx.sessions) ctx.sessions.flush = flush })
+  let calls = 0
+  ctx.sessions.flush = async session => {
+    if (++calls === 2) { entered.resolve(); await release.promise }
+    return flush(session)
+  }
+  const receipt = await mailbox.send({ requestId: 'unexecuted', text: 'preserve on unload' })
+  await entered.promise
+  await owner.dispose()
+  assert.equal(requests.length, 0)
+  assert.equal(agent.inbox.nextTurn[0].id, receipt.messageId)
+  release.resolve()
+  ctx.sessions.flush = flush
+  await ctx.plugin(runtime)
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  const replacement = mainMailbox(ctx, agent)
+  assert.equal((await replacement.receipt('unexecuted')).delivery, 'queued')
+  await replacement.send({ requestId: 'wake-next', text: 'continue' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+})
+
+test('message projection excludes inherited request identity while preserving native splice offsets', () => {
+  const index = new MessageIndex()
+  const inherited = createUserMessage({ content: [{ type: 'text', text: 'inherited' }], source: { kind: 'user', rpcId: 'old-parent' } })
+  const owned = createUserMessage({ content: [{ type: 'text', text: 'owned' }], source: { kind: 'user', rpcId: 'new-child' } })
+  const events = [
+    { type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 0, inserted: [inherited] } },
+    { type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 1, inserted: [owned] } },
+    { type: 'turn/start', data: { turn: 1 } },
+    { type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  for (const [seq, event] of events.entries()) index.apply({ ...event, seq }, 1)
+  assert.equal(index.requests.has('old-parent'), false)
+  assert.equal(index.requests.get('new-child').delivery, 'queued')
+  assert.equal(index.pending['next-turn'][0].id, owned.id)
+})
+
+test('native pending edits preserve request identity, while duplicate Web input is rejected', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const { ctx, agent, requests } = await app(t, async (_options, count) => { if (count === 1) { entered.resolve(); await release.promise } return response('done') })
+  agent.followup(message('hold turn'))
+  await entered.promise
+  const pending = createUserMessage({ content: [{ type: 'text', text: 'pending original' }], source: { kind: 'user', rpcId: 'editable-web-id' } })
+  agent.followup(pending)
+  assert.equal(agent.inbox.replace(pending.id, { ...pending, content: [{ type: 'text', text: 'pending correction' }] }), true)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+  assert.ok(JSON.stringify(requests[1].messages).includes('pending correction'))
+  assert.ok(!JSON.stringify(requests[1].messages).includes('pending original'))
+  const duplicate = createUserMessage({ content: [{ type: 'text', text: 'pending correction' }], source: { kind: 'user', rpcId: 'editable-web-id' } })
+  agent.followup(duplicate)
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+  assert.equal(agent.inbox.nextTurn[0].id, duplicate.id)
+})
+
+test('native context producers and prepared text survive, while pre-step business injection is blocked', { timeout: 30000 }, async t => {
+  const prepared = await app(t, () => response('done'), { main: true, beforeRuntime(ctx) {
+    ctx.on('agent/pre-step', async (_input, next) => {
+      const decision = await next()
+      return { ...decision, messages: decision.messages.map(message => message.source.mbot ? {
+        ...message, content: [{ type: 'text', text: 'prepared native reference text' }],
+      } : message).concat(createUserMessage({ content: [{ type: 'text', text: 'native instructions context' }],
+        source: { kind: 'agent-instructions', form: 'instructions' } })) }
+    })
+  } })
+  const mailbox = mainMailbox(prepared.ctx, prepared.agent)
+  const original = await mailbox.send({ requestId: 'reference:1', text: 'original reference input' })
+  await settle(prepared.ctx, prepared.agent)
+  assert.ok(JSON.stringify(prepared.requests).includes('prepared native reference text'))
+  assert.ok(JSON.stringify(prepared.requests).includes('native instructions context'))
+  assert.equal((await mailbox.send({ requestId: 'reference:1', text: 'original reference input' })).messageId, original.messageId)
+  assert.equal(prepared.requests.length, 1)
+  const rejected = await app(t, () => response('should not run'), { beforeRuntime(ctx) {
+    ctx.on('agent/pre-step', async (_input, next) => {
+      const decision = await next()
+      return { ...decision, messages: decision.messages.concat(message('unclaimed business prompt')) }
+    })
+  } })
+  const input = message('legitimate owner request')
+  rejected.agent.followup(input)
+  await settle(rejected.ctx, rejected.agent)
+  assert.equal(rejected.requests.length, 0)
+  assert.equal(rejected.agent.inbox.nextTurn[0].id, input.id)
+})
+
+test('tampered owner envelope versions and fingerprints cannot dispatch business input', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const { ctx, agent, requests } = await app(t, async (_options, count) => { if (count === 1) { entered.resolve(); await release.promise } return response('done') }, { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  agent.followup(message('hold owner turn'))
+  await entered.promise
+  await mailbox.send({ requestId: 'tampered', text: 'original immutable bytes' })
+  const pending = agent.inbox.nextTurn[0]
+  agent.inbox.replace(pending.id, { ...pending, source: { ...pending.source, mbot: { ...pending.source.mbot, schemaVersion: 2 } } })
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+  assert.equal(agent.inbox.nextTurn[0].id, pending.id)
+  await assert.rejects(mailbox.receipt('tampered'), /reused/u)
+  agent.inbox.replace(pending.id, { ...pending, content: [{ type: 'text', text: 'changed bytes with old fingerprint' }] })
+  agent.followup(message('try pending modified bytes'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+  assert.equal(agent.inbox.nextTurn[0].id, pending.id)
+})
 
 test('real Agent uses managed context and native botctl, then creates one turn audit', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent, requests, errors } = await app(t, (_options, count) => count === 1
@@ -398,7 +707,7 @@ test('receipt persistence failure retains the verified Git commit and redacts pr
   const flush = ctx.sessions.flush.bind(ctx.sessions)
   let failed = false
   ctx.sessions.flush = async session => {
-    if (!failed) { failed = true; throw new Error(`receipt persistence failed ${token}`) }
+    if (!failed && token) { failed = true; throw new Error(`receipt persistence failed ${token}`) }
     return flush(session)
   }
   const base = git(ws, 'rev-parse', 'HEAD')

@@ -88,12 +88,21 @@ async function probe(ctx) {
     if ('error' in managed) throw managed.error
     if (!ctx.mbotRuntime.managed(managed.agent)) throw new Error('main Session was not automatically managed')
     if (native) managed.agent.model.select({ provider: 'mbot-installation', model: 'scripted' })
-    managed.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'installed managed Runtime' }], source: { kind: 'user' } }))
+    const mailbox = native ? ctx.mbotRuntime.ownerMailbox(managed.agent, { visibility: 'owner-private', adapterId: 'installation',
+      ownerId: 'verified-fixture-owner', conversationKey: 'private-fixture', replyRoute: 'fixture-owner' }) : null
+    const submitted = mailbox ? await mailbox.send({ requestId: 'installed-event-1', text: 'installed managed Runtime' }) : null
+    if (!mailbox) managed.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'installed managed Runtime' }], source: { kind: 'user', rpcId: 'installed-native-1' } }))
     await managed.agent.whenIdle()
     await ctx.mbotRuntime.settled(managed.agent)
     if (runtimeCalls !== 2) throw new Error(`installed Runtime made ${runtimeCalls} calls; expected tool and final response`)
     const runtimeStatus = await ctx.mbotRuntime.status(managed.agent)
     if (runtimeStatus.state !== 'idle' || runtimeStatus.lastReceipt?.phase !== 'committed' || !runtimeStatus.lastReceipt.head) throw new Error('installed Runtime audit receipt missing')
+    if (mailbox) {
+      const retried = await mailbox.send({ requestId: 'installed-event-1', text: 'installed managed Runtime' })
+      const receipt = await mailbox.receipt('installed-event-1')
+      if (submitted.confirmation !== 'confirmed' || retried.messageId !== submitted.messageId || receipt.delivery !== 'ended'
+        || runtimeCalls !== 2) throw new Error('installed owner mailbox failed native-history deduplication')
+    }
     const { readdir, readFile } = await import('node:fs/promises')
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')

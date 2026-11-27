@@ -1,6 +1,6 @@
 # 受管理的 Bot Session 与统一入口（设计）
 
-2026-11-27。本文是下一版设计，不代表 0.1 已有这些 API/能力。目标是直接与 Bot 的主 Session 对话，由 MBot 管理人格、记忆、近期上下文、消息准入和睡眠；保留 DSH 的 Session 事件存储、Agent、Inbox、模型执行和 compaction。总览见 [design](design.md)，实施见 [TODO](../TODO.md)。
+2026-11-27。本文是完整目标设计，不代表发布版 0.1 已有全部 API/能力；dev 的已实现阶段在文末逐项区分。目标是直接与 Bot 的主 Session 对话，由 MBot 管理人格、记忆、近期上下文、消息准入和睡眠；保留 DSH 的 Session 事件存储、Agent、Inbox、模型执行和 compaction。总览见 [design](design.md)，实施见 [TODO](../TODO.md)。
 
 ## 1. 所有入口共用 Runtime，botctl 是门面
 
@@ -117,6 +117,6 @@ DSH send_message 继续用于 Chief 与当前 fresh Worker 树内的纠偏/恢�
 
 重点验收：两个窗口同时发送/编辑/取消；网页与 TG 同时发；睡眠/compact 时新消息；崩溃发生在收据、Git、checkpoint、回复投递之间；两个 Host 抢同一 Bot；A/B 异步请求；过期 Worker 回写；不同用户/群线程不串上下文；其他插件 inject 不覆盖业务上下文；新版 MEMORY 生效而旧摘要不复活规则；重复 wake 不创建第二个主 Session。
 
-API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有能力包括 Agent scoped 注册、queue/steer/inject、requestId、compactNow 与命令事件；MBot 的统一 gate、来源策略、睡眠事务、运行内权限和 IM/Bot 路由仍需实现。
+API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有原生能力包括 Agent scoped 注册、queue/steer/inject、rpcId、compactNow 与命令事件。Controller 的 prompt 自建 source，accepted 不保证 flush；dev 门面用 Agent.followup 保留信封，并在 Runtime 的执行前闸门 await flush。原生 canceled splice 与 claim 可区分，不能仅以 turn/end 推断投递状态。
 
-dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。Worker、后台/跨系统写者、统一来源/收据与 compaction/sleep/checkpoint 仍需接齐；实际主 Session 实体与导航已在 dev 接入，见 [主会话](main-session.md)。
+dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。实际主 Session 实体与导航已在 dev 接入，见 [主会话](main-session.md)。[所有者准入](message-admission.md) 已实现私聊 Host 能力、不可变信封、网页与适配器来源/持久化闸门、原生去重和投递收据；Worker、后台/跨系统写者、CLI/IM/peer、隔离域、审计终态/回复投递与 compaction/sleep/checkpoint 仍需接齐。
