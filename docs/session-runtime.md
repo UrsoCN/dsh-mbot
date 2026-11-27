@@ -105,7 +105,7 @@ Git 提交与 Session checkpoint 没有单一原子事务，必须保留阶段�
 
 ## 7. Bot 间消息与 send_message
 
-DSH send_message 继续用于 Chief 与当前 fresh Worker 树内的纠偏/恢复；它不作为独立 Bot 主 Session 的长期消息总线。
+DSH 的树内通信能力用于 Chief 与本轮 fresh Worker 的纠偏；原生 MBot Runtime 通过 botctl worker_message 调用底层 sendMessage，校验当前 turn/目标，不直通原生 send_message 工具。结束的 Worker 不恢复旧 assignment；独立 Bot 的主 Session 使用下面的异步消息协议。
 
 独立 Bot 通过门面发送带来源消息，B 的 Runtime 校验后放进指定对话域。A 拿到 accepted 收据就能结束当前 turn；B 的回复异步关联回 A 的后续输入或任务结果，默认不强行 steer A。限制可通信目标、causation、hops/TTL，避免 A 等 B、B 等 A 的会话锁死和无限转发。
 
@@ -119,4 +119,4 @@ DSH send_message 继续用于 Chief 与当前 fresh Worker 树内的纠偏/恢�
 
 API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有原生能力包括 Agent scoped 注册、queue/steer/inject、rpcId、compactNow 与命令事件。Controller 的 prompt 自建 source，accepted 不保证 flush；dev 门面用 Agent.followup 保留信封，并在 Runtime 的执行前闸门 await flush。原生 canceled splice 与 claim 可区分，不能仅以 turn/end 推断投递状态。
 
-dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。实际主 Session 实体与导航已在 dev 接入，见 [主会话](main-session.md)。[所有者准入](message-admission.md) 已实现私聊 Host 能力、不可变信封、网页与适配器来源/持久化闸门、原生去重和投递收据；[本地 CLI IPC](host-ipc.md) 已接入同一 Runtime；Worker、后台/跨系统写者、IM/peer、隔离域、审计终态/回复投递与 compaction/sleep/checkpoint 仍需接齐。
+dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。实际主 Session 实体与导航已在 dev 接入，见 [主会话](main-session.md)。[所有者准入](message-admission.md) 已实现私聊 Host 能力、不可变信封、网页与适配器来源/持久化闸门、原生去重和投递收据；[本地 CLI IPC](host-ipc.md) 已接入同一 Runtime；[原生 Worker 最小执行](native-workers.md) 已接入固定角色/任务快照、scoped botctl、并发/取消和父审计，默认关闭；其其他工具/完整恢复、后台/跨系统写者、IM/peer、隔离域、外部回复投递与 compaction/sleep/checkpoint 仍需接齐。

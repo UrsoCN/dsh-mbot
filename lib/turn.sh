@@ -32,7 +32,8 @@ mbot_turn_finalize() {
   node "$MBOT_ROOT/bin/turn-reply.mjs" "$MBOT_SCRATCH/header.json" "$events_file" "$finish_file" > "$MBOT_SCRATCH/reply.json"
   jq -L "$MBOT_ROOT/lib" --slurpfile header "$MBOT_SCRATCH/header.json" --slurpfile journal "$MBOT_SCRATCH/ledger.json" --slurpfile session "$events_file" --slurpfile reply "$MBOT_SCRATCH/reply.json" '
     include "turn-outcome";
-    mbot_execution_fault($session) as $execution_fault |
+    (mbot_execution_fault($session) or any($journal[0].actors[]?; .native.executionFault==true)) as $execution_fault |
+    .success=(.success and ($execution_fault|not)) |
     (if .success then "completed"
      elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
      else "failed" end) as $outcome |

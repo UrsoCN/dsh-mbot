@@ -19,6 +19,11 @@ export type RuntimeOwnership = { schemaVersion: 1; mode: 'foreground-only'; work
   | { schemaVersion: 2; mode: 'foreground-workers'; workerDepth: 1; maxWorkers: 2; tools: readonly string[]; workerTools: readonly string[] }
 export interface ActorIdentity { readonly botId: string; readonly runId: string; readonly parentSessionId: string; readonly parentTurn: number; readonly sessionId: string; readonly role: string; readonly taskId: string; readonly actorId: string }
 export interface ActorSnapshot extends ContextSnapshot { readonly taskId: string; readonly task: string }
+export interface NativeWorkerProof {
+  schemaVersion: 1; kind: 'native-worker'; started: boolean; eventCount: number; eventsHash: string; turns?: number[]
+  stopReason: import('@deepseek-ai/dsh-subagent').SubagentResult['stopReason']; executionFault: boolean; outputHash: string
+  usage: { scope: 'worker'; input_tokens?: number; output_tokens?: number; total_tokens: number; cache_read_tokens?: number; cache_write_tokens?: number }
+}
 export declare class ActorLease {
   private constructor()
   readonly identity: Readonly<ActorIdentity>
@@ -28,6 +33,11 @@ export declare class ActorLease {
   shellEnvironment(): Record<string, string>
   redactResult<T>(value: T): Promise<T>
   execute(program: 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
+  /** Native reservation only; persist the exact child event sequence. */
+  record(event: SessionEvent): Promise<unknown>
+  /** Trusted owner joins the native Agent and tools before sealing. */
+  sealNative(input: { result: import('@deepseek-ai/dsh-subagent').SubagentResult; quiescent: true; startupFailed: boolean; initialMessageId?: string;
+    session?: import('@deepseek-ai/dsh-agent').Agent['session']['header']; inheritedEventCount?: number }): Promise<{ native: NativeWorkerProof }>
   /** Data calls drain here; the caller must also join its native Agent/tools. */
   close(): Promise<void>
 }
@@ -44,7 +54,7 @@ export declare class TurnLease {
   record(event: SessionEvent): Promise<void>
   execute(program: 'mbot' | 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
   /** Trusted Host only; publish the native child after this reservation. */
-  delegate(options: { sessionId: string; role: string; taskId: string }): Promise<ActorLease>
+  delegate(options: { sessionId: string; role: string; taskId: string; native?: boolean }): Promise<ActorLease>
   finish(outcome: TurnOutcome): Promise<TurnResult>
   cancel(message?: string): Promise<TurnResult>
 }

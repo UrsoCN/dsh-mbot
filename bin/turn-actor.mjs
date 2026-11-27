@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { validateOwnership } from '../plugin/recovery-proof.js'
+import { workerProof } from '../plugin/worker-proof.js'
 import { redactValue } from '../plugin/redact.js'
 
 const prepare = process.argv[2] === '--prepare-finalization'
@@ -65,9 +66,15 @@ try {
     ids.add(actor.actorId); sessions.add(actor.sessionId); tokens.add(actor.token)
     if (actor.state === 'active') { if (tasks.has(actor.taskId)) fail('Invalid actor task reservation'); tasks.add(actor.taskId); live++ }
     const proof = JSON.parse(await safeFile(scratch, `actor-${actor.actorId}.json`, true))
-    if (!isDeepStrictEqual(proof.actor, { ...actor, state: 'active' }) || proof.snapshot.role !== actor.role
+    if (!isDeepStrictEqual(proof.actor, (() => { const { native, ...identity } = actor; return { ...identity, state: 'active' } })()) || proof.snapshot.role !== actor.role
       || proof.snapshot.head !== saved.baseHead || proof.snapshot.workspace !== workspace || proof.snapshot.taskId !== actor.taskId
       || createHash('sha256').update(JSON.stringify(proof.snapshot)).digest('hex') !== actor.snapshotHash) fail('Actor snapshot does not match its manifest')
+    if (actor.native) {
+      const seal = JSON.parse(await safeFile(scratch, `actor-${actor.actorId}.native.json`, true))
+      const events = (await safeFile(scratch, `actor-${actor.actorId}.events.jsonl`, true)).split('\n').filter(Boolean).map(line => JSON.parse(line))
+      const expected = workerProof(actor, proof.snapshot, events, { ...seal.input, parentSessionId: saved.sessionId, runId: saved.runId }, saved.runtimeOwnership)
+      if (!isDeepStrictEqual(expected, actor.native) || !isDeepStrictEqual(expected, seal.native)) fail('Worker native completion proof changed')
+    }
   }
   if (live > saved.runtimeOwnership.maxWorkers) fail('Invalid actor capacity')
   if (context) {
@@ -83,12 +90,13 @@ try {
     process.exit(0)
   }
   if (typeof request.requestId !== 'string' || !/^[a-f0-9-]{36}$/u.test(request.requestId) || request.token !== token) fail('Invalid actor control permission')
-  if (!['delegate', 'revoke'].includes(request.kind)) fail('Unknown actor operation')
+  if (!['delegate', 'revoke', 'actor-event', 'actor-seal'].includes(request.kind)) fail('Unknown actor operation')
   let response
   if (request.kind === 'delegate') {
     if (saved.expiresAt <= Date.now()) fail('Actor transaction expired')
-    if (Object.keys(request).some(key => !['kind', 'token', 'requestId', 'sessionId', 'role', 'taskId'].includes(key))
+    if (Object.keys(request).some(key => !['kind', 'token', 'requestId', 'sessionId', 'role', 'taskId', 'native'].includes(key))
       || !/^[a-z][a-z0-9_-]{0,31}$/u.test(request.role ?? '') || ['chief', 'human'].includes(request.role)
+      || request.native !== undefined && typeof request.native !== 'boolean'
       || typeof request.taskId !== 'string' || !/^[0-9]{3,9}$/u.test(request.taskId) || request.taskId === '000' || typeof request.sessionId !== 'string' || !request.sessionId
       || request.sessionId.length > 256 || /[\0\r\n]/u.test(request.sessionId) || request.sessionId === saved.sessionId) fail('Invalid actor assignment')
     if (saved.actors.length >= 256 || saved.actors.some(actor => actor.sessionId === request.sessionId)
@@ -110,17 +118,34 @@ try {
       workspace, [token, actorToken, ...saved.actors.map(actor => actor.token)])
     // Control identities must survive reference-text redaction unchanged.
     const snapshot = { head: saved.baseHead, role: request.role, workspace, taskId: request.taskId, ...reference }
-    const actor = { schemaVersion: 1, actorId: randomBytes(16).toString('hex'), sessionId: request.sessionId, role: request.role, taskId: request.taskId,
+    const actor = { schemaVersion: 1, ...(request.native ? { kind: 'native-worker' } : {}), actorId: randomBytes(16).toString('hex'), sessionId: request.sessionId, role: request.role, taskId: request.taskId,
       snapshotHash: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'), token: actorToken, state: 'active' }
     await replace(join(scratch, `actor-${actor.actorId}.json`), { actor, snapshot })
+    if (request.native) await writeFile(join(scratch, `actor-${actor.actorId}.events.jsonl`), '', { mode: 0o600, flag: 'wx' })
     saved.actors.push(actor)
     const secrets = JSON.parse(await safeFile(scratch, 'secrets.json', true))
     await replace(join(scratch, 'secrets.json'), [...new Set([...secrets, actorToken])])
     response = { kind: 'delegated', requestId: request.requestId, actorId: actor.actorId, token: actorToken, snapshot }
+  } else if (request.kind === 'actor-event' || request.kind === 'actor-seal') {
+    const actor = saved.actors.find(actor => actor.actorId === request.actorId)
+    if (!actor || actor.kind !== 'native-worker' || actor.state !== 'active' || actor.native) fail('Worker native lifetime is not active')
+    const file = `actor-${actor.actorId}.events.jsonl`
+    const events = (await safeFile(scratch, file, true)).split('\n').filter(Boolean).map(line => JSON.parse(line))
+    if (request.kind === 'actor-event') {
+      if (request.event?.seq !== events.length || typeof request.event.type !== 'string') fail('Worker native event cut changed')
+      await writeFile(join(scratch, file), JSON.stringify(request.event) + '\n', { flag: 'a' })
+      response = { kind: 'recorded', requestId: request.requestId }
+    } else {
+      const proof = JSON.parse(await safeFile(scratch, `actor-${actor.actorId}.json`, true))
+      actor.native = workerProof(actor, proof.snapshot, events, { ...request.input, parentSessionId: saved.sessionId, runId: saved.runId }, saved.runtimeOwnership)
+      await replace(join(scratch, `actor-${actor.actorId}.native.json`), { input: request.input, native: actor.native })
+      response = { kind: 'sealed', requestId: request.requestId, native: actor.native }
+    }
   } else {
     if (Object.keys(request).some(key => !['kind', 'token', 'requestId', 'actorId'].includes(key)) || !/^[a-f0-9]{32}$/u.test(request.actorId ?? '')) fail('Invalid actor revocation')
     const actor = saved.actors.find(actor => actor.actorId === request.actorId)
     if (!actor) fail('Actor permission was not issued by this turn')
+    if (actor.kind === 'native-worker' && !actor.native) fail('Native Worker must settle before data permission revocation')
     actor.state = 'revoked'
     response = { kind: 'revoked', requestId: request.requestId, actorId: actor.actorId }
   }

@@ -11,6 +11,8 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Sessions from '@deepseek-ai/dsh-session'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import Agents from '@deepseek-ai/dsh-agent'
+import Subagents from '@deepseek-ai/dsh-subagent'
+import * as SpawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Llm, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Query from '@deepseek-ai/dsh-session-query'
@@ -19,6 +21,7 @@ import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
 import Bash from '@deepseek-ai/dsh-bash-local'
 import Fs from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy'
 import * as ShellEnv from '@deepseek-ai/dsh-shell-env'
 import * as nativeBash from '@deepseek-ai/dsh-tool-bash'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
@@ -67,9 +70,8 @@ async function app(t, script, options = {}) {
   await ctx.plugin(Tools)
   await ctx.plugin(executor)
   await ctx.plugin(LocalSubprocess)
+  if (options.bash || options.workers) { await ctx.plugin(Fs); await ctx.plugin(WorkingDirectory) }
   if (options.bash) {
-    await ctx.plugin(Fs)
-    await ctx.plugin(WorkingDirectory)
     await ctx.plugin(ShellEnv, { dshHome: process.env.DSH_HOME })
     await ctx.plugin(Bash)
     await ctx.plugin(nativeBash)
@@ -78,7 +80,8 @@ async function app(t, script, options = {}) {
     constructor(ctx) { super(ctx, 'sandboxPolicy') }
     resolve() { return { mode: 'danger-full-access', workspaceRoot: root } }
   }
-  await ctx.plugin(Policy)
+  if (options.workers) await ctx.plugin(SandboxPolicy, { mode: options.policy ?? 'danger-full-access', workspaceRoot: root })
+  else await ctx.plugin(Policy)
   class Reads extends Query {}
   await ctx.plugin(Reads)
   class MemoryLoader extends Loader { commit() {} }
@@ -100,11 +103,12 @@ async function app(t, script, options = {}) {
   }
   await ctx.plugin(Editor)
   assert.equal((await ctx.mbot.execute('mbot', ['init'])).exitCode, 0)
-  const bot = await ctx.mbot.importBot(ws)
+  const bot = await ctx.mbot.importBot(ws, { defaultRole: options.role ?? 'chief' })
   await ctx.plugin(botTools)
   await ctx.plugin(AgentLoop, { agents: [] })
   await options.beforeRuntime?.(ctx)
-  const owner = ctx.plugin(runtime)
+  if (options.workers) { await ctx.plugin(Subagents); await ctx.plugin(SpawnProvider) }
+  const owner = ctx.plugin(runtime, { workers: options.workers === true })
   await owner
   const requests = []
   const errors = []
@@ -135,6 +139,419 @@ async function removalController(ctx, agent, resolve = async () => ({ agent })) 
   }
   await ctx.plugin(Controller)
 }
+
+test('real fresh Worker uses its role snapshot and native tools, then joins one parent audit', { timeout: 30000 }, async t => {
+  const steps = new Map()
+  const { ctx, ws, agent, requests } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      assert.ok(JSON.stringify(request.messages).includes('# MBot role: coder'))
+      assert.ok(JSON.stringify(request.messages).includes('coder-private-memory-334411'))
+      assert.ok(!JSON.stringify(request.messages).includes('private-parent-history-998877'))
+      return n === 1 ? response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+        : n === 2 ? response('', { name: 'botctl', args: { action: 'task_result', task_id: '001', text: 'native Worker task result' } })
+        : n === 3 ? response('', { name: 'botctl', args: { action: 'remember', text: 'native Worker remembered fact' } }) : response('native Worker finished')
+    }
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'board_add', owner: 'coder', text: 'native Worker task' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'board_set', task_id: '001', state: 'doing' } })
+      : n === 3 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 4 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('parent audit complete')
+  }, { workers: true, main: true })
+  const memory = join(ws, 'bots/coder/MEMORY.md')
+  await writeFile(memory, (await readFile(memory, 'utf8')) + '\ncoder-private-memory-334411\n')
+  git(ws, 'add', 'bots/coder/MEMORY.md'); git(ws, 'commit', '-m', 'fixture: private Worker memory')
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('private-parent-history-998877'))
+  await settle(ctx, agent)
+  const member = [...ctx.mbotRuntime.states.get(agent).current.workers][0]
+  assert.ok(member, JSON.stringify(requests.flatMap(request => request.messages.filter(message => message.role === 'tool')).at(-1)))
+  assert.equal(member.done, true, member.error?.stack)
+  assert.equal(ctx.mbotRuntime.workerManager.members.size, 0, 'Completed activations must leave the live registry')
+  assert.equal(member.result.stopReason, 'completed', member.startupError?.stack ?? member.error?.stack)
+  assert.equal(ctx.agents.get(member.id), undefined, 'Native child must be released before parent commits')
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  assert.match(await readFile(join(ws, 'tasks/001.md'), 'utf8'), /by: coder/u)
+  const meta = JSON.parse(git(ws, 'show', 'HEAD:' + git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').find(path => path.endsWith('.meta.json'))))
+  assert.equal(meta.runtime.actors[0].native.kind, 'native-worker')
+  assert.equal(meta.runtime.actors[0].native.executionFault, false)
+  assert.equal(meta.runtime.actors[0].native.usage.total_tokens, 60)
+  const parentLog = await ctx.sessionQuery.readSession(agent.id)
+  assert.equal(parentLog.events.some(event => event.type === 'user/message' && event.data.source.kind === 'subagent-settled'), false)
+  assert.ok(!JSON.stringify(parentLog.events).includes('coder-private-memory-334411'))
+})
+
+async function workerTasks(ctx, count = 1) {
+  for (let n = 1; n <= count; n++) {
+    assert.equal((await ctx.mbot.execute('botctl', ['board', 'add', `Worker task ${n}`, '--owner', 'coder'])).exitCode, 0)
+    assert.equal((await ctx.mbot.execute('botctl', ['board', 'set', String(n).padStart(3, '0'), 'doing'])).exitCode, 0)
+  }
+}
+const membersOf = (ctx, agent) => [...ctx.mbotRuntime.states.get(agent).current.workers ?? []]
+
+test('native Workers enforce two concurrent tasks, reject duplicate reservations and join before parent commit', { timeout: 30000 }, async t => {
+  const parentEntered = Promise.withResolvers(), childrenEntered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const steps = new Map()
+  let childCount = 0
+  const { ctx, ws, agent } = await app(t, async (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      const member = ctx.mbotRuntime.workerManager.members.get(request.sessionId)
+      assert.deepEqual(request.tools.map(tool => tool.name), ['botctl'])
+      if (n === 1) return response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: member.actor.identity.taskId } })
+      if (++childCount === 2) childrenEntered.resolve()
+      await release.promise
+      return response('parallel Worker complete')
+    }
+    if (n === 1) return response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+    parentEntered.resolve()
+    await release.promise
+    return response('parent waits for both children at the transaction boundary')
+  }, { workers: true, main: true })
+  await workerTasks(ctx, 3)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('run the Workers'))
+  await parentEntered.promise
+  const signal = new AbortController().signal
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_spawn', { bot: 'coder', task_id: '001' }, signal), /reserved/u)
+  const second = await ctx.mbotRuntime.workerAction(agent, 'worker_spawn', { bot: 'coder', task_id: '002' }, signal)
+  await childrenEntered.promise
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_spawn', { bot: 'coder', task_id: '003' }, signal), /reserved/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(ctx.agents.get(second.worker_id), undefined)
+  assert.equal(ctx.mbotRuntime.workerManager.members.size, 0)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+  for (const member of membersOf(ctx, agent).filter(member => member.actor)) {
+    assert.equal(member.done, true, member.error?.stack)
+    await assert.rejects(member.actor.execute('botctl', ['task', 'show', member.actor.identity.taskId]), /closed/u)
+  }
+})
+
+test('cancelling a Worker wait leaves execution active and creator corrections use only the child Inbox', { timeout: 30000 }, async t => {
+  const parentEntered = Promise.withResolvers(), childEntered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const steps = new Map()
+  const { ctx, agent, requests } = await app(t, async (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      if (n === 1) return response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      if (n === 2) { childEntered.resolve(); await release.promise; return response('', { name: 'botctl', args: { action: 'task_show', task_id: '001' } }) }
+      assert.match(JSON.stringify(request.messages), /creator-only-correction-445566/u)
+      return response('corrected Worker done')
+    }
+    if (n === 1) return response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+    parentEntered.resolve()
+    await release.promise
+    return response('parent complete')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  agent.followup(message('start a Worker'))
+  await Promise.all([parentEntered.promise, childEntered.promise])
+  const member = membersOf(ctx, agent)[0], waiting = new AbortController()
+  const result = ctx.mbotRuntime.workerAction(agent, 'worker_wait', { worker_id: member.id }, waiting.signal)
+  waiting.abort(new Error('observer stopped waiting'))
+  await assert.rejects(result, /observer stopped/u)
+  assert.equal(member.controller.signal.aborted, false)
+  const signal = new AbortController().signal
+  const messageId = await ctx.mbotRuntime.workerAction(agent, 'worker_message', { worker_id: member.id, text: 'creator-only-correction-445566' }, signal)
+  assert.equal(typeof messageId, 'string')
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_message', { worker_id: 'foreign-child', text: 'bad route' }, signal), /this turn/u)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(member.native.executionFault, false)
+  assert.ok(!JSON.stringify(requests.filter(request => request.sessionId === agent.id)).includes('creator-only-correction-445566'))
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_message', { worker_id: member.id, text: 'too late' }, signal), /active Chief/u)
+})
+
+test('parent user stop joins a late native Worker data writer and preserves pending parent input', { timeout: 30000 }, async t => {
+  const parentEntered = Promise.withResolvers(), writerEntered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const steps = new Map()
+  const { ctx, ws, agent } = await app(t, async (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) return n === 1
+      ? response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      : response('', { name: 'botctl', args: { action: 'task_result', task_id: '001', text: 'late Worker data call' } })
+    if (n === 1) return response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+    parentEntered.resolve()
+    await delay(60000, undefined, { signal: request.signal })
+    return response('unreachable')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  await writeFile(join(ws, '.mbot/failures'), '2\n')
+  const execute = ctx.mbot.execute.bind(ctx.mbot)
+  ctx.mbot.execute = async (program, args, options) => {
+    if (args[0] === 'task' && args[1] === 'result' && options?.permit) {
+      writerEntered.resolve()
+      await release.promise
+      // A provider may finish a captured write after cancellation. Its owner
+      // still joins this exact operation before closing the data capability.
+      return execute(program, args, { ...options, signal: undefined })
+    }
+    return execute(program, args, options)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('start and stop the Worker'))
+  await Promise.all([parentEntered.promise, writerEntered.promise])
+  const member = membersOf(ctx, agent)[0]
+  agent.inbox.splice('next-turn', 0, 0, [message('preserved parent followup')])
+  let stopped = false
+  const stop = ctx.mbotRuntime.stop(agent).then(value => { stopped = true; return value })
+  await delay(50)
+  assert.equal(stopped, false)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  const result = await stop
+  assert.equal(result.receipt.outcome, 'cancelled')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '2\n')
+  assert.equal(member.done, true, member.error?.stack)
+  assert.equal(member.result.stopReason, 'aborted')
+  assert.equal(member.native.executionFault, false)
+  assert.equal(ctx.agents.get(member.id), undefined)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.match(await readFile(join(ws, 'tasks/001.md'), 'utf8'), /late Worker data call/u)
+})
+
+test('native Worker tool faults propagate to one failed parent audit without exposing other tasks', { timeout: 30000 }, async t => {
+  const steps = new Map()
+  const { ctx, ws, agent } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) return n === 1
+      ? response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'task_result', task_id: '002', text: 'forbidden cross-task data' } }) : response('failed Worker answered')
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('parent cannot conceal child failure')
+  }, { workers: true, main: true })
+  await workerTasks(ctx, 2)
+  const task = await readFile(join(ws, 'tasks/002.md'), 'utf8'), base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('test Worker task restrictions'))
+  await settle(ctx, agent)
+  const member = membersOf(ctx, agent)[0]
+  assert.equal(member.native.executionFault, true)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  assert.equal(await readFile(join(ws, 'tasks/002.md'), 'utf8'), task)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+})
+
+test('one-call delegation approval grants only the assigned Worker data capability', { timeout: 30000 }, async t => {
+  const approvals = [], steps = new Map()
+  const { ctx, agent } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) return n === 1
+      ? response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'task_result', task_id: '001', text: 'explicitly delegated data' } }) : response('approved Worker complete')
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('approved parent complete')
+  }, { workers: true, main: true, policy: 'workspace-write', beforeRuntime: async ctx => {
+    class Approval extends Service {
+      constructor(ctx) { super(ctx, 'approval') }
+      async request(input) { approvals.push(input); return 'allowed-once' }
+    }
+    await ctx.plugin(Approval)
+  } })
+  await workerTasks(ctx)
+  agent.followup(message('delegate with approval'))
+  await settle(ctx, agent)
+  const member = membersOf(ctx, agent)[0]
+  assert.equal(approvals.length, 1)
+  assert.equal(approvals[0].toolName, 'botctl')
+  assert.equal(ctx.sandboxPolicy.resolve({ session: agent.session }).mode, 'workspace-write')
+  assert.equal(ctx.sandboxPolicy.resolve({ session: member.state.agent.session }).mode, 'workspace-write')
+  assert.equal(member.native.executionFault, false)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+})
+
+test('refused delegation never publishes a native Worker or issues a data permission', { timeout: 30000 }, async t => {
+  let n = 0
+  const { ctx, ws, agent, requests } = await app(t, () => ++n === 1
+    ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } }) : response('delegation denied'),
+  { workers: true, main: true, policy: 'read-only' })
+  await workerTasks(ctx)
+  const task = await readFile(join(ws, 'tasks/001.md'), 'utf8')
+  agent.followup(message('unapproved delegation'))
+  await settle(ctx, agent)
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.workers, undefined)
+  assert.equal(ctx.mbotRuntime.workerManager.members.size, 0)
+  assert.equal(requests.some(request => request.sessionId.startsWith('mbot-worker-')), false)
+  assert.equal(await readFile(join(ws, 'tasks/001.md'), 'utf8'), task)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+})
+
+test('Worker boot refusal is a recorded execution fault and cannot write the assigned task', { timeout: 30000 }, async t => {
+  const steps = new Map()
+  const { ctx, ws, agent } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) return n === 1
+      ? response('', { name: 'botctl', args: { action: 'task_result', task_id: '001', text: 'must boot before writing' } }) : response('no boot')
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('parent records the refusal')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  const task = await readFile(join(ws, 'tasks/001.md'), 'utf8')
+  agent.followup(message('try to bypass boot'))
+  await settle(ctx, agent)
+  assert.equal(membersOf(ctx, agent)[0].native.executionFault, true)
+  assert.equal(await readFile(join(ws, 'tasks/001.md'), 'utf8'), task)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+})
+
+test('cancellation during native Worker publication seals rollback and revokes its data reservation', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, agent, requests } = await app(t, () => response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } }),
+    { workers: true, main: true })
+  await workerTasks(ctx)
+  ctx.on('agent/created', async ({ agent: child }) => {
+    if (!child.id.startsWith('mbot-worker-')) return
+    entered.resolve()
+    await release.promise
+  })
+  agent.followup(message('cancel during publication'))
+  await entered.promise
+  let stopped = false
+  const stop = ctx.mbotRuntime.stop(agent).then(value => { stopped = true; return value })
+  await delay(50)
+  assert.equal(stopped, false)
+  release.resolve()
+  const result = await stop
+  const member = membersOf(ctx, agent)[0]
+  assert.equal(member.done, true, member.error?.stack)
+  assert.equal(member.native.started, false)
+  assert.equal(member.native.executionFault, false)
+  assert.equal(member.actor.closed, true)
+  assert.equal(ctx.agents.get(member.id), undefined)
+  assert.equal(requests.some(request => request.sessionId === member.id), false)
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  assert.equal(result.receipt.outcome, 'cancelled', JSON.stringify({ startup: { name: member.startupError?.name, message: member.startupError?.message },
+    tools: log.events.filter(event => event.type === 'tool/result').map(event => ({ error: event.data.error, message: event.data.message.content })) }))
+})
+
+test('an unreserved native Worker cannot attach to an active or retired Bot main Session', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent } = await app(t, () => response('unused'), { workers: true, main: true })
+  const create = () => ctx.agents.create({ sessionId: `orphan-worker-${++sequence}`, meta: {
+    cwd: ws, origin: 'subagent', parentSession: agent.id, delegationDepth: 1,
+  }, agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  await assert.rejects(create(), /unbound managed Worker/u)
+  await removalController(ctx, agent)
+  await ctx.mbot.removeBot(bot.botId)
+  await assert.rejects(create(), /unbound managed Worker/u)
+})
+
+test('explicit Worker stop closes only its activation and a replacement uses a fresh Session', { timeout: 30000 }, async t => {
+  const parentEntered = Promise.withResolvers(), release = Promise.withResolvers(), steps = new Map(), entered = new Set()
+  t.after(() => release.resolve())
+  const { ctx, agent } = await app(t, async (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      if (n === 1) return response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      entered.add(request.sessionId)
+      await delay(60000, undefined, { signal: request.signal })
+      return response('unreachable')
+    }
+    if (n === 1) return response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+    parentEntered.resolve()
+    await release.promise
+    return response('explicit stops are controlled by the Chief')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  agent.followup(message('start, stop and replace the Worker'))
+  await parentEntered.promise
+  const first = membersOf(ctx, agent)[0], signal = new AbortController().signal
+  while (!entered.has(first.id)) await delay(10)
+  const stopped = await ctx.mbotRuntime.workerAction(agent, 'worker_stop', { worker_id: first.id }, signal)
+  assert.equal(stopped.stopReason, 'aborted')
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.signal.aborted, false)
+  assert.equal(first.actor.closed, true)
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_message', { worker_id: first.id, text: 'cannot wake the closed assignment' }, signal), /already ended/u)
+  const replacement = await ctx.mbotRuntime.workerAction(agent, 'worker_spawn', { bot: 'coder', task_id: '001' }, signal)
+  assert.notEqual(replacement.worker_id, first.id)
+  while (!entered.has(replacement.worker_id)) await delay(10)
+  await ctx.mbotRuntime.workerAction(agent, 'worker_stop', { worker_id: replacement.worker_id }, signal)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+  assert.equal(ctx.mbotRuntime.workerManager.members.size, 0)
+})
+
+test('Worker token exhaustion preserves partial streamed output and fails the parent audit', { timeout: 30000 }, async t => {
+  const steps = new Map()
+  const { ctx, agent } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      if (n === 1) return response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      return (function* () {
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: 'partial Worker output' }
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      })()
+    }
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('partial work is not a successful task')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  agent.followup(message('exhaust the Worker token budget'))
+  await settle(ctx, agent)
+  const member = membersOf(ctx, agent)[0]
+  assert.equal(member.result.stopReason, 'max-tokens')
+  assert.deepEqual(member.result.output, [{ type: 'text', text: 'partial Worker output' }])
+  assert.equal(member.native.executionFault, true)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+})
+
+test('malformed Worker tool JSON is audited as a native failure without breaking event observers', { timeout: 30000 }, async t => {
+  const steps = new Map()
+  const { ctx, agent } = await app(t, (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      if (n === 1) return (function* () {
+        const block = { type: 'tool-call', id: `malformed-worker-${++sequence}`, name: 'botctl', arguments: '{broken' }
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'block-end', index: 0, block }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      })()
+      return response('malformed call refused')
+    }
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('parent audit includes the native refusal')
+  }, { workers: true, main: true })
+  await workerTasks(ctx)
+  agent.followup(message('send invalid Worker tool JSON'))
+  await settle(ctx, agent)
+  assert.equal(membersOf(ctx, agent)[0].done, true)
+  assert.equal(membersOf(ctx, agent)[0].native.executionFault, true)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'failed')
+})
+
+test('a coder main Session retains foreground ownership when native Workers are enabled', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, request => {
+    assert.match(JSON.stringify(request.messages), /managed main Session/u)
+    assert.ok(!JSON.stringify(request.messages).includes('As a native Worker'))
+    assert.ok(!JSON.stringify(request.tools).includes('worker_spawn'))
+    return response('coder main Session completed')
+  }, { workers: true, main: true, role: 'coder' })
+  agent.followup(message('talk to the coder Bot directly'))
+  await settle(ctx, agent)
+  const record = ctx.mbotRuntime.states.get(agent).current
+  assert.equal(ctx.mbotRuntime.worker(agent), false)
+  assert.equal(record.lease.runtimeOwnership.mode, 'foreground-only')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+})
 
 test('removal rejects a live turn, then revokes the mailbox and preserves native data and pending input', { timeout: 30000 }, async t => {
   const entered = Promise.withResolvers(), release = Promise.withResolvers()

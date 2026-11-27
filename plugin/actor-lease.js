@@ -4,6 +4,8 @@ export class ActorLease {
   #environment
   #redact
   #revoke
+  #record
+  #seal
   #calls = new Set()
   #closed = false
   #closing
@@ -14,6 +16,8 @@ export class ActorLease {
     this.#environment = capability.environment
     this.#redact = capability.redact
     this.#revoke = capability.revoke
+    this.#record = capability.record
+    this.#seal = capability.seal
   }
   get closed() { return this.#closed }
   shellEnvironment() {
@@ -28,6 +32,14 @@ export class ActorLease {
     this.#calls.add(operation)
     void operation.finally(() => this.#calls.delete(operation)).catch(() => {})
     return operation
+  }
+  record(event) {
+    if (this.#closed) return Promise.reject(new Error('Delegated actor is closed'))
+    return this.#record(structuredClone(event))
+  }
+  sealNative(input) {
+    if (this.#closed) return Promise.reject(new Error('Delegated actor is closed'))
+    return this.#seal(structuredClone(input))
   }
   /** Caller must join its Agent/tools before closing; this joins data calls. */
   close() {

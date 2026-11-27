@@ -1,3 +1,6 @@
+import z from '@deepseek-ai/schemastery'
+import { registerBotctl } from './tools.js'
+import { WorkerManager, WorkerSession, workerTools } from './workers.js'
 import { Service } from '@deepseek-ai/cordis'
 import * as nativeBash from '@deepseek-ai/dsh-tool-bash'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
@@ -10,6 +13,7 @@ import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
+export const Config = z.object({ workers: z.boolean().default(false).description('Enable native Worker execution while its extended recovery is being developed.') })
 export const runtimeRecordType = 'plugin:mbot/runtime-turn'
 const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
 
@@ -75,7 +79,7 @@ function installGates(agent, cell) {
   const layout = botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' })
   const signature = JSON.stringify(layout.map(({ name, required, interpolate }) => ({ name, required, interpolate })))
   if (installed && cell.sectionSignature !== signature) throw new Error('Managed Agent prompt layout changed without a gate ABI migration')
-  driver.sectionText = order => cell.state?.current?.lease ? botSections(cell.state.current.lease.snapshot)[order].text : ''
+  driver.sectionText = order => cell.state?.current?.lease ? botSections(cell.state.current.lease.snapshot, { worker: cell.state.worker === true })[order].text : ''
   driver.turnText = () => turnContext(cell.state?.current)
   if (!installed) {
     for (const [order, section] of layout.entries()) registrations.push(() => ctx.systemPrompt.section({ ...section, order: order * 10, text: () => cell.driver.sectionText(order) }))
@@ -98,7 +102,7 @@ function installGates(agent, cell) {
     if (!input.signal) return next()
     const record = await state.admit(input.signal)
     const assembled = await next()
-    const owned = new Map(botSections(record.lease.snapshot).map(section => [section.name, section]))
+    const owned = new Map(botSections(record.lease.snapshot, { worker: state.worker === true }).map(section => [section.name, section]))
     return { ...assembled, sections: assembled.sections.map(section => owned.get(section.name) ?? section),
       contexts: assembled.contexts.map(context => context.name === 'mbot:turn' ? { ...context, text: turnContext(record) } : context) }
   }, { prepend: true })
@@ -128,9 +132,8 @@ function installGates(agent, cell) {
     try {
       const state = requireState(cell)
       if (exec.agent !== agent || !state.current?.lease || state.current.ended) return 'No active MBot turn owns this tool call'
-      // Workers need role snapshots and a shared lease before their activation
-      // can be enabled; lifecycle tools cannot create unowned detached writers.
-      if (['spawn_agent', 'send_message'].includes(exec.name)) return 'Managed Worker routing is not yet connected'
+      if (state.worker) return state.guard(exec)
+      if (['spawn_agent', 'send_message'].includes(exec.name)) return 'Use botctl Worker operations bound to this audited turn'
       if (!state.runtime.foreground.has(exec.name)) return 'This tool has no managed foreground lifetime contract'
       if (state.current.lease.runtimeOwnership && !state.current.lease.runtimeOwnership.tools.includes(exec.name)) return 'This tool was not in the captured turn ownership contract'
       if (exec.name === 'bash' && (cell.bashFiber?.state !== 2
@@ -246,7 +249,8 @@ class ManagedSession {
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
           messages: record.messages,
           requestIds: record.messages.map(requestIdentity).filter(value => typeof value === 'string'),
-          signal, writerScope: 'agent-runtime', runtimeOwnership: { schemaVersion: 1, mode: 'foreground-only', workerDepth: 0, tools: [...this.runtime.foreground].sort() },
+          signal, writerScope: 'agent-runtime', runtimeOwnership: this.runtime.workersEnabled && this.runtime.workerManager && bot.defaultRole === 'chief' ? { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1, maxWorkers: 2, tools: [...this.runtime.foreground].sort(), workerTools }
+            : { schemaVersion: 1, mode: 'foreground-only', workerDepth: 0, tools: [...this.runtime.foreground].sort() },
           onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
         await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         for (const event of record.events) this.record(record, event)
@@ -297,12 +301,16 @@ class ManagedSession {
   }
 
   async stop(record, message) {
-    record.reason = { kind: 'aborted', message }
+    // Only the native turn/end defines the audit outcome. A late expiry or
+    // teardown callback must not overwrite an already recorded completion.
     if (this.current === record && !record.ended) {
       this.agent.cancel({ kind: 'hook', reason: message }, { keepInbox: true })
     }
     await record.end.promise
     await Promise.allSettled([...record.calls])
+    const workers = await Promise.allSettled([...record.workers ?? []].map(member => member.completion))
+    const failure = workers.find(item => item.status === 'rejected')
+    if (failure) throw failure.reason
   }
 
   async settle(record) {
@@ -315,6 +323,9 @@ class ManagedSession {
       }
       if (!record.lease) return
       await Promise.allSettled([...record.calls])
+      const workers = await Promise.allSettled([...record.workers ?? []].map(member => member.completion))
+      const failed = workers.find(item => item.status === 'rejected')
+      if (failed) throw failed.reason
       await this.publish(record, 'auditing').catch(error => { record.feedbackError = error })
       record.result = await record.lease.finish({ reason: record.reason, text: record.text ?? '' })
       await this.publish(record, record.result.success ? 'committed' : 'rejected')
@@ -359,9 +370,11 @@ class ManagedSession {
 /** Agent-scoped transaction owner. Native DSH remains the conversation driver. */
 export class MBotRuntime extends Service {
   static inject = inject
+  static Config = Config
 
-  constructor(ctx) {
+  constructor(ctx, config = {}) {
     super(ctx, 'mbotRuntime')
+    this.workersEnabled = config.workers === true
     this.states = new Map()
     this.foreground = new Set(foregroundTools)
     this.foregroundOwners = new Map()
@@ -369,7 +382,21 @@ export class MBotRuntime extends Service {
     this.recoveries = new Map()
     this.closed = false
     this.ready = false
+    ctx.inject(['subagents'], child => {
+      const manager = new WorkerManager(this, child)
+      this.workerManager = manager
+      child.effect(() => async () => { await manager.close(); if (this.workerManager === manager) this.workerManager = undefined })
+    })
     ctx.on('agent/created', async ({ agent }) => {
+      const member = this.workerManager?.members.get(agent.id)
+      if (member) { await this.attachWorker(agent, member); return }
+      if (agent.session.header.origin === 'subagent') {
+        const registry = ctx.mbot.registry()
+        const parent = agent.session.header.parentSession
+        if (registry.bots.some(bot => [bot.mainSessionId, bot.binding?.pendingSessionId].includes(parent))
+          || registry.retiredBots.some(entry => entry.sessionIds.includes(parent))
+          || this.managed(ctx.agents.get(parent))) throw new Error('Old or unbound managed Worker cannot resume its data assignment')
+      }
       const retired = ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
       if (retired) { await this.attachRetired(agent, retired); return }
       const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
@@ -504,6 +531,9 @@ export class MBotRuntime extends Service {
         cell.bashInstalled = true
       }
       if (this.closed) throw new Error('MBot Runtime disposed during attachment')
+      const workerControls = this.workersEnabled && this.workerManager && this.ctx.mbot.bot({ botId: state.botId }).defaultRole === 'chief'
+      if (workerControls && !cell.controlTool) cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerBotctl(child, { workers: true }))
+      if (!workerControls && cell.controlTool) { cell.controlTool(); cell.controlTool = undefined }
       cell.driver = driver
       state.initializing = false
       if (this.ready) cell.handoff = undefined
@@ -515,6 +545,29 @@ export class MBotRuntime extends Service {
       if (cell.state === state) cell.state = undefined
       throw error
     }
+  }
+
+  async attachWorker(agent, member) {
+    if (member.done || !member.actor || agent.session.header.parentSession !== member.parent.agent.id || agent.session.header.origin !== 'subagent'
+      || agent.session.header.delegationDepth !== 1 || agent.session.header.isSeeded === true) throw new Error('Worker publication does not match its reserved native identity')
+    const cell = { schemaVersion: gateSchemaVersion }
+    if (cells.has(agent)) throw new Error('Worker already has a gate owner')
+    cells.set(agent, cell)
+    const driver = installGates(agent, cell)
+    const state = new WorkerSession(this, agent, member)
+    cell.state = state
+    this.states.set(agent, state)
+    member.state = state
+    await state.initialize()
+    cell.driver = driver
+  }
+
+  worker(agent) { return this.states.get(agent)?.worker === true }
+  async workerAction(agent, action, args, signal) {
+    const state = this.states.get(agent)
+    if (!state || state.worker || !state.current?.lease || state.current.ended || state.current.lease.snapshot.role !== 'chief') throw new Error('Only an active Chief turn can control its Workers')
+    if (!this.workersEnabled || !this.workerManager) throw new Error('Native Worker execution is not enabled or its provider is unavailable')
+    return this.workerManager.action(state, state.current, action, structuredClone(args), signal)
   }
 
   managed(agent) { return this.states.has(agent) }
@@ -702,4 +755,4 @@ export class MBotRuntime extends Service {
   }
 }
 
-export async function apply(ctx) { await ctx.plugin(MBotRuntime) }
+export async function apply(ctx, config) { await ctx.plugin(MBotRuntime, config) }

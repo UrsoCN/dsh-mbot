@@ -72,15 +72,45 @@ async function setup(ctx) {
   }))
   ctx.effect(() => ctx.mbotRuntime.foregroundTool('mbot_gui_writer'))
   let toolSequence = 0
+  const workerSteps = new Map()
   class Scripted extends LlmAdapter {
     listModels() { return Promise.resolve([{ id: 'scripted', name: 'Scripted UI fixture' }]) }
     async *stream(request) {
       if (!request.purpose) {
+        const agent = ctx.agents.get(request.sessionId)
+        if (request.sessionId.startsWith('mbot-worker-')) {
+          const lease = ctx.mbotRuntime.dataLease(agent)
+          if (!JSON.stringify(request.messages).includes('# MBot role: coder')
+            || !JSON.stringify(request.messages).includes('gui-coder-private-memory-334411')) throw new Error('GUI Worker role snapshot missing')
+          const n = (workerSteps.get(request.sessionId) ?? 0) + 1
+          workerSteps.set(request.sessionId, n)
+          const args = n === 1 ? { action: 'boot', bot: 'coder', task_id: lease.identity.taskId }
+            : n === 2 ? { action: 'task_result', task_id: lease.identity.taskId, text: 'GUI native Worker result' }
+              : n === 3 ? { action: 'remember', text: 'GUI Worker candidate' } : undefined
+          const block = args ? { type: 'tool-call', id: `gui-worker-${++toolSequence}`, name: 'botctl', arguments: JSON.stringify(args) }
+            : { type: 'text', text: 'GUI Worker completed' }
+          yield { type: 'block-start', index: 0, blockType: block.type }
+          yield { type: 'block-end', index: 0, block }
+          yield { type: 'finish', reason: { kind: args ? 'tool-calls' : 'stop' } }
+          return
+        }
         const user = request.messages.filter(message => message.role === 'user' && message.content.some(block => block.type === 'text'
-          && /^(hold audit|slow writer|queued after writer|wake|fail audit|crash hold|resume after crash recovery)$/u.test(block.text))).at(-1)
+          && /^(hold audit|slow writer|queued after writer|wake|fail audit|crash hold|resume after crash recovery|native worker)$/u.test(block.text))).at(-1)
         const text = user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
         await appendFile(marker('requests.jsonl'), JSON.stringify({ sessionId: request.sessionId, text }) + '\n')
-        const agent = ctx.agents.get(request.sessionId)
+        if (text === 'native worker') {
+          const n = (workerSteps.get(request.sessionId) ?? 0) + 1
+          workerSteps.set(request.sessionId, n)
+          const members = [...ctx.mbotRuntime.states.get(agent).current.workers ?? []]
+          const args = n === 1 ? { action: 'worker_spawn', bot: 'coder', task_id: '001' }
+            : n === 2 ? { action: 'worker_wait', worker_id: members[0].id } : undefined
+          const block = args ? { type: 'tool-call', id: `gui-chief-worker-${++toolSequence}`, name: 'botctl', arguments: JSON.stringify(args) }
+            : { type: 'text', text: 'GUI Chief audited Worker result' }
+          yield { type: 'block-start', index: 0, blockType: block.type }
+          yield { type: 'block-end', index: 0, block }
+          yield { type: 'finish', reason: { kind: args ? 'tool-calls' : 'stop' } }
+          return
+        }
         if (text === 'crash hold') { await writeFile(marker('crash-model-waiting'), ''); await wait('release-crash-model') }
         if (text.includes('hold audit')) {
           const lease = ctx.mbotRuntime.dataLease(agent)

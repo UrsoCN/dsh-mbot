@@ -1,5 +1,16 @@
 # 发布说明
 
+## dev：原生 Worker 的任务执行与父审计（未发布）
+
+- 在已有 ActorLease 上接入 DSH fresh 子 Agent：固定角色/任务上下文，不继承主 Session 历史；通过原生 scoped botctl 写任务结果和记忆候选。Chief 的 botctl 增加 spawn/wait/message/stop，深度 1、最多两个并行 Worker；已结束任务需要新建 fresh 子 Session。
+- 等待取消不取消业务；父停止、期限与关闭先 join 子执行/前台数据写者，再 seal 子事件/输出/用量，撤销许可并由父 turn 单次提交。原生完成通知不 inject 主会话，跨任务、旧子身份、缺少 boot 和未授权委派被拒绝。
+- Worker 工具/模型失败及 token 耗尽传播到父审计；创建中取消根据原生 signal/cause 身份确认，回滚后保留正常用户停止计数。修复超时回调改写原生结束原因导致审计不一致；主 Session 的 coder 角色不误作 Worker。
+- 独立审计辅助脚本不依赖 DSH Host 的 SDK loader，source/tarball/Git/Web 安装保持兼容。公开 Config/API/types、上下文协议与安装资源检查同步维护，见 [原生 Worker](native-workers.md)。
+
+验收包括原生 Agent 的并发/纠偏/取消/晚到写者、一次批准与拒绝、失败/部分输出和 malformed JSON；完整类型、50 项 Host + 92 项 Runtime（142 项）及 64 组 Bash 检查。四类 DSH 安装与 Chromium 的实际主 Session 派活/结果/候选、一次父审计、角色记忆隔离、多窗口重放通过。证据：`/tmp/mbot-worker-suite-complete.log`、`/tmp/mbot-worker-install-final.log`、`/tmp/mbot-worker-gui.log`（浏览器产物 `/tmp/mbot-gui-runtime.qaHTYl`）。没有调用真实 DeepSeek API。
+
+workers 默认关闭；开启后的 Chief turn 使用 v3 契约，其完整冷恢复尚待实现。Bash/文件/PTC、活跃重载/其他写者、checkpoint/compact/sleep、IM/peer/outbox 和管理面板仍在 TODO。包仍为 0.1.1，本阶段提交 dev，不新增发布 tag。
+
 ## dev：Worker 委派的数据许可（未发布）
 
 - Chief 的 turn 可预留角色/任务/子 Session 并派生 ActorLease，固定 Git 上的人格/记忆和委派时的任务快照；支持本轮新建任务、同时最多两份许可、关闭释放容量，父回合统一提交。

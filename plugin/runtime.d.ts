@@ -1,8 +1,16 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import type z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { TurnLease } from './turn.js'
+import type { ActorIdentity, ActorLease, TurnLease } from './turn.js'
+import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
 export declare const name: 'mbot-runtime'
 export declare const inject: string[]
+export interface Config { /** Experimental task-scoped native Workers; default false until recovery is supported. */ workers?: boolean }
+export declare const Config: z<Config>
+export type WorkerAction = 'worker_spawn' | 'worker_wait' | 'worker_message' | 'worker_stop'
+export interface WorkerRequest { bot?: string; task_id?: string; text?: string; worker_id?: string }
+export interface WorkerReceipt { worker_id: string; name?: string; role?: string; task_id?: string; stopReason?: SubagentResult['stopReason']; output?: SubagentResult['output']; native?: import('./turn.js').NativeWorkerProof }
+export interface WorkerAssignment extends ActorIdentity { schemaVersion: 1; memoryCommit: string; snapshotHash: string }
 export declare const runtimeRecordType: 'plugin:mbot/runtime-turn'
 export interface RuntimeTurnReceipt {
   schemaVersion: 1; botId: string; sessionId: string; turn: number
@@ -53,10 +61,14 @@ export interface OwnerMailbox {
 }
 export declare class MBotRuntime extends Service {
   static inject: string[]
-  constructor(ctx: Context)
+  static Config: typeof Config
+  constructor(ctx: Context, config?: Config)
   /** Trusted Host attachment; use before the Agent starts work. */
   attach(agent: Agent, options: { botId: string }): Promise<void>
   managed(agent: Agent): boolean
+  worker(agent: Agent): boolean
+  /** Scoped to this active Chief turn; a wait signal cancels observation only. */
+  workerAction(agent: Agent, action: WorkerAction, args: WorkerRequest, signal: AbortSignal): Promise<WorkerReceipt | string>
   /** Trusted Host coordinator; retains the Runtime's Cordis dependency scope. */
   coordinateRecovery(bot: import('./instances.js').BotRegistration, journal: Record<string, unknown> | undefined, options?: import('./index.js').ManagementOptions & { retiredSessionIds?: string[] }): Promise<import('./index.js').RecoverTurnResult | undefined>
   /** Trusted removal coordinator: hold before ConfigEditor save, commit only its saved retirement. */
@@ -65,14 +77,17 @@ export declare class MBotRuntime extends Service {
   ownerMailbox(agent: Agent, binding: OwnerMailboxBinding): OwnerMailbox
   /** Trusted Host contract: the tool joins all writers before returning. */
   foregroundTool(name: string): () => void
-  dataLease(agent: Agent): TurnLease
+  dataLease(agent: Agent): TurnLease | ActorLease
   settled(agent: Agent): Promise<void>
   status(agent: Agent): Promise<RuntimeStatus>
   stop(agent: Agent, options?: { signal?: AbortSignal }): Promise<RuntimeStopResult>
 }
-export declare function apply(ctx: Context): Promise<void>
+export declare function apply(ctx: Context, config?: Config): Promise<void>
 declare module '@deepseek-ai/cordis' { interface Context { mbotRuntime: MBotRuntime } }
-declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap { 'plugin:mbot/runtime-turn': RuntimeTurnReceipt } }
+declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap {
+  'plugin:mbot/runtime-turn': RuntimeTurnReceipt
+  'plugin:mbot/worker-assignment': WorkerAssignment
+} }
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'mbot-owner-rpc': { kind: 'user'; rpcId: string; mbot: OwnerMailboxBinding & {

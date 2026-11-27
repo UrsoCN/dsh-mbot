@@ -1,6 +1,6 @@
 # Worker 委派的数据许可（dev）
 
-本阶段交付共享事务下的角色/任务许可和固定上下文，是 [Worker 接入](../TODO.md) 的数据基础。原生 MBot Runtime 仍使用 foreground-only 契约，尚未开放 Worker 模型执行；本页的 Host API 不自行创建 Agent。完整上下文与通信设计见 [Session Runtime](session-runtime.md)。
+本阶段交付共享事务下的角色/任务许可和固定上下文，是 [Worker 接入](../TODO.md) 的数据基础。原生 Runtime 默认仍使用 foreground-only 契约；[原生 Worker 阶段](native-workers.md) 可显式开启模型执行。本页的基础 Host API 不自行创建 Agent。完整上下文与通信设计见 [Session Runtime](session-runtime.md)。
 
 ## 一份事务，不同角色
 
@@ -37,13 +37,13 @@ Actor.close 立即拒绝新调用，等待已经执行的数据子进程，再�
 
 v3 保留规范化 completed/cancelled/failed 与故障计数规则；旧 reader 不能将委派回合当成普通 v2 恢复。当前恢复只核实既有前台契约，v3 的完整 Worker/原生 Session/其他写者证明尚待实现，独立恢复继续拒绝并保持现场，不删除 journal 或修改 writerScope。
 
-## 下一步原生接入
+## 原生接入
 
 以 DSH 0.2.2-rc.5 的公开 API 为依据：先预留 childId 和 Actor，再通过 `subagents.startActivation` 使用 fresh `spawn` provider。SDK 的 `prepareContinuable` 只返回创建数据，不提供自定义 child setup；MBot 应在 SDK 等待的 `agent/created` 阶段接管已预留 childId，在第一次模型请求前安装角色上下文、数据工具和来源闸门。
 
 每个 turn 持有自己的 SubagentActivation/result/dispose，取消只处理该 turn 的子代理；`drainDescendants` 的 cutoff 持续到根 Agent 离开 registry，不能每轮都调用它来收尾持久主 Session。初次接入使用 caller delivery，并通过任务/显式结果交接；原生自动完成通知不直接注入主 Session。Chief 的树内纠偏只指向本轮仍活跃的 Worker，不能借 sendMessage 恢复旧 Actor 或跨 Bot 路由。
 
-尚需真实 Agent、首个 boot、工具/任务范围、深度/并发、前台清理与 native writer、子事件/用量审计、失败传播和重载/崩溃恢复的专项验证。Worker/PTC、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍在完整目标中。
+真实 Agent、首个 boot、scoped botctl/任务范围、深度/并发、前台清理、子事件/用量审计和失败传播已在 [原生 Worker](native-workers.md) 阶段接入并验证；其他写者、活跃重载/崩溃恢复仍需专项验收。Worker/PTC、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍在完整目标中。
 
 ## 验证范围
 

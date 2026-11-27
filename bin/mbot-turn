@@ -103,7 +103,7 @@ while IFS= read -r -t "$transport_timeout" frame; do
     jq -ec '.event | select(type=="object" and (.type|type)=="string")' "$MBOT_SCRATCH/frame.json" >> "$MBOT_SCRATCH/session-events.jsonl"
     continue
   fi
-  if [[ $kind == delegate || $kind == revoke ]]; then
+  if [[ $kind == delegate || $kind == revoke || $kind == actor-event || $kind == actor-seal ]]; then
     flock 9
     node "$MBOT_ROOT/bin/turn-actor.mjs" "$MBOT_SCRATCH" "$MBOT_WS" < "$MBOT_SCRATCH/frame.json"
     flock -u 9

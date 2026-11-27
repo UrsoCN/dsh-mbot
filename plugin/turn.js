@@ -108,7 +108,7 @@ export class TurnLease {
       const reply = done ? undefined : JSON.parse(value)
       if (reply?.requestId !== requestId) throw new Error('Delegated actor protocol did not confirm its request')
       if (reply.kind === 'actor-error') throw new Error(reply.error)
-      if (reply.kind !== (kind === 'delegate' ? 'delegated' : 'revoked')) throw new Error('Invalid delegated actor response')
+      if (reply.kind !== ({ delegate: 'delegated', revoke: 'revoked', 'actor-event': 'recorded', 'actor-seal': 'sealed' })[kind]) throw new Error('Invalid delegated actor response')
       return reply
     })
     this.#controls = operation.catch(() => {})
@@ -121,9 +121,10 @@ export class TurnLease {
     if (this.runtimeOwnership?.schemaVersion !== 2) return Promise.reject(new Error('Turn has no delegated Worker lifetime contract'))
     let request
     try {
-      if (!options || Object.keys(options).some(key => !['sessionId', 'role', 'taskId'].includes(key))
+      if (!options || Object.keys(options).some(key => !['sessionId', 'role', 'taskId', 'native'].includes(key))
         || typeof options.sessionId !== 'string' || !options.sessionId || options.sessionId.length > 256 || /[\0\r\n]/u.test(options.sessionId)
         || typeof options.role !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/u.test(options.role) || ['human', 'chief'].includes(options.role)
+        || options.native !== undefined && typeof options.native !== 'boolean'
         || typeof options.taskId !== 'string' || !/^[0-9]{3,9}$/u.test(options.taskId)) throw new Error('Invalid actor assignment')
       request = { ...options }
     } catch (error) { return Promise.reject(error) }
@@ -144,10 +145,15 @@ export class TurnLease {
             return { ...this.shellEnvironment(), DSH_MBOT_PERMIT_TOKEN: ready.token }
           },
           redact: value => this.redactResult(value),
+          record: event => this.#control('actor-event', { actorId: ready.actorId, event }),
+          seal: input => this.#control('actor-seal', { actorId: ready.actorId, input }),
           revoke: async () => { await this.#control('revoke', { actorId: ready.actorId }); this.#actors.delete(ready.actorId) },
         })
         this.#actors.set(ready.actorId, actor)
-        if (this.#cancel.signal.aborted) { await actor.close(); throw new Error('Managed turn was cancelled during actor admission') }
+        // Native owners must seal startup/Agent quiescence before revocation.
+        // Return their reservation even on cancellation so the manager can
+        // settle an unpublished startup instead of losing the capability.
+        if (this.#cancel.signal.aborted && !request.native) { await actor.close(); throw new Error('Managed turn was cancelled during actor admission') }
         return actor
       } finally { this.#actorPending-- }
     })()
