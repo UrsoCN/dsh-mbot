@@ -37,7 +37,7 @@ Config.registry 文档升级为 v2：活动 bots 与 retiredBots 分开，后者
 
 临时闸门持有期间的新原生输入不会开启数据事务。即使输入已 claim，也返回唯一原生 Inbox；不另建消息队列。Runtime 重载和 Host 重启都会按持久退役 ID 附着被动闸门，旧 Session 不成为普通、不受管理的业务会话。
 
-这是受信任 Host 的生命周期约束，同权限插件/用户手改 profile 文件不属于安全沙箱。退役不等于 agent-runtime journal 恢复；遗留证据和 PAUSED 继续保留，需要专门协调恢复。活动列表对原生实体缺失/归档的主动诊断与管理面板仍在 TODO。
+这是受信任 Host 的生命周期约束，同权限插件/用户手改 profile 文件不属于安全沙箱。退役不等于 agent-runtime journal 恢复；遗留证据和 PAUSED 继续保留，可由 [前台 Runtime 恢复](runtime-recovery.md) 协调已支持契约；未知旧契约/写者仍保留待核实。活动列表对原生实体缺失/归档的主动诊断与管理面板仍在 TODO。
 
 ## 验收
 

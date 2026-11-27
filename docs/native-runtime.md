@@ -1,6 +1,6 @@
 # 原生 Agent Runtime 接入（dev）
 
-2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。dev 已通过 [主会话绑定](main-session.md) 自动创建 DSH 工作区/主 Session；未交付 Worker、完整消息门面、compact/sleep/checkpoint 或 Runtime 崩溃恢复；这些继续在 [TODO](../TODO.md) 推进。
+2026-11-27。本阶段把事务桥接入真实 DSH Agent，不再仅用直接调用 beginTurn 的测试代替会话执行。dev 已通过 [主会话绑定](main-session.md) 自动创建 DSH 工作区/主 Session；已接入 [前台 Runtime 恢复](runtime-recovery.md)，未交付 Worker、完整消息门面、compact/sleep/checkpoint 或其他写者的恢复；这些继续在 [TODO](../TODO.md) 推进。
 
 ## Host 接口
 
@@ -34,7 +34,7 @@ Worker 的固定角色快照、共享事务和生命周期尚未连接，spawn_a
 
 ## 恢复与验证
 
-此 Runtime 的 journal 标为 writerScope=agent-runtime。已有 mbot recover 只验证 data-subprocesses；对 Runtime journal 明确拒绝，保留证据。不能靠改 scope、删 journal 或普通 resume 掩盖未确定的 Agent/工具现场。Runtime/Worker、Session checkpoint 的恢复继续在 P1 完成。
+此 Runtime 的 journal 标为 writerScope=agent-runtime，新 turn 保存固定 foreground-only v1 契约。Host /mbot recover 与 botctl recover 已协调原生写者、Agent/工具、Git 和回执；独立 mbot recover 仍只处理 data-subprocesses。原生 resume 产生真实 closers，旧头须有原 Host 的捕获记录；不能改 scope、删 journal 或普通 resume 绕过。Worker、后台/IPC 写者、缺失日志/旧契约迁移及 checkpoint 继续在 P1，见 [Runtime 恢复](runtime-recovery.md)。
 
 验证使用真实 AgentLoop、LLM service/本地 scripted adapter、原生工具执行器、Bash/subprocess 和 Git，没有调用 DeepSeek API：
 

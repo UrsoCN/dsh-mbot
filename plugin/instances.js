@@ -102,6 +102,7 @@ export function registryTransition(previous, next) {
     const active = after.bots.find(item => item.botId === bot.botId)
     const retired = after.retiredBots.find(entry => entry.bot.botId === bot.botId)
     if (!active && !isDeepStrictEqual(retired?.bot, bot)) throw new Error('Remove Bots through /mbot remove; registry edits must retain their Session ownership')
+    if (active && active.workspacePath !== bot.workspacePath) throw new Error('Registered Bot data directory is immutable; import another directory as a new Bot')
     if (active && [bot.mainSessionId, bot.binding?.pendingSessionId].filter(Boolean).some(id => id !== active.mainSessionId && id !== active.binding?.pendingSessionId)) throw new Error('Existing managed Session ownership cannot be discarded by editing the registry')
   }
   return after

@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const usage = `Usage: botctl talk --profile NAME --bot ID --request-id ID --text TEXT|--stdin
        botctl receipt --profile NAME --bot ID --request-id ID [--wait --timeout-ms 60000]
-       botctl runtime|stop --profile NAME --bot ID
+       botctl runtime|stop|recover --profile NAME --bot ID
        botctl bots --profile NAME
        botctl remove --profile NAME --bot ID [--revision NUMBER]
        botctl removed --profile NAME

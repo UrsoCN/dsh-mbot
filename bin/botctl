@@ -14,7 +14,7 @@ if [[ ${1:-} == -C ]]; then
   MBOT_CLI_WS=$2; shift 2
 fi
 case ${1:-} in
-  talk|receipt|runtime|stop|bots|remove|removed)
+  talk|receipt|runtime|stop|bots|remove|removed|recover)
     if [[ -v MBOT_CLI_WS ]]; then
       printf '%s\n' 'mbot: Host commands use --bot and --profile, not -C' >&2
       exit 2
@@ -31,7 +31,7 @@ case ${1:---help} in
       '       botctl [-C dir] task show|result ...' \
       '       botctl [-C dir] remember "fact" [--as bot] [--task id]' \
       '       botctl [-C dir] lint' \
-      '       botctl talk|receipt|runtime|stop|bots|remove|removed --profile NAME ...' \
+      '       botctl talk|receipt|runtime|stop|bots|remove|removed|recover --profile NAME ...' \
       '       botctl talk --help'
     exit 0 ;;
 esac

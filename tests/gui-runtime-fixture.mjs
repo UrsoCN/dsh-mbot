@@ -77,10 +77,11 @@ async function setup(ctx) {
     async *stream(request) {
       if (!request.purpose) {
         const user = request.messages.filter(message => message.role === 'user' && message.content.some(block => block.type === 'text'
-          && /^(hold audit|slow writer|queued after writer|wake|fail audit)$/u.test(block.text))).at(-1)
+          && /^(hold audit|slow writer|queued after writer|wake|fail audit|crash hold|resume after crash recovery)$/u.test(block.text))).at(-1)
         const text = user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
         await appendFile(marker('requests.jsonl'), JSON.stringify({ sessionId: request.sessionId, text }) + '\n')
         const agent = ctx.agents.get(request.sessionId)
+        if (text === 'crash hold') { await writeFile(marker('crash-model-waiting'), ''); await wait('release-crash-model') }
         if (text.includes('hold audit')) {
           const lease = ctx.mbotRuntime.dataLease(agent)
           const finish = lease.finish.bind(lease)

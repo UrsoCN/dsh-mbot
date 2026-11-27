@@ -3,7 +3,7 @@ import { nativeBindingAvailable, sessionResult } from './binding.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover [Bot ID or name] | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -14,7 +14,7 @@ export function commandArgs(raw) {
   if (action === 'help') return null
   if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
   if (action === 'removed' && !rest) return { program: 'host', argv: ['removed'] }
-  if (action === 'recover' && !rest) return { program: 'host', argv: ['recover'] }
+  if (action === 'recover') return { program: 'host', argv: ['recover', ...(rest ? [rest] : [])] }
   if (['open', 'repair', 'runtime', 'stop'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
   if (['import', 'select', 'remove'].includes(action)) {
     if (!rest) throw new Error(usage)
@@ -67,8 +67,9 @@ export function apply(ctx) {
             return { kind: 'success', text: await redact(`Bot removed from active registry: ${result.bot.name} (${result.bot.botId})\nData preserved: ${result.bot.workspacePath}\nRetired Sessions: ${result.sessionIds.join(', ') || 'none'}\nView: /mbot removed\n`, result.bot.workspacePath) }
           }
           if (command.argv[0] === 'recover') {
-            const result = await ctx.mbot.recoverTurn(options)
-            return { kind: 'success', text: result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
+            const result = await ctx.mbot.recoverTurn({ ...options, ...(command.argv[1] ? { botId: command.argv[1] } : {}) })
+            return { kind: 'success', text: result.receiptRepaired ? 'Native audit receipt repaired; no new Git commit. Review /mbot runtime.'
+              : result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
           }
           if (command.argv[0] === 'import') {
             let bot = await ctx.mbot.importBot(command.argv[1], options)

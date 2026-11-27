@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { redact, redactValue } from './redact.js'
 import { processStart } from './recovery.js'
+import { validateOwnership } from './recovery-proof.js'
 
 function write(stream, value) {
   return new Promise((resolve, reject) => stream.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()))
@@ -23,7 +24,7 @@ export class TurnLease {
   #cancellation
   #botctl
 
-  constructor(mbot, child, frames, ready, identity, finalizationTimeoutMs, onExpiry, onCancel, root) {
+  constructor(mbot, child, frames, ready, identity, finalizationTimeoutMs, onExpiry, onCancel, root, runtimeOwnership) {
     this.mbot = mbot
     this.child = child
     this.frames = frames
@@ -36,6 +37,7 @@ export class TurnLease {
     this.#finalizationTimeoutMs = finalizationTimeoutMs
     Object.defineProperty(this, 'identity', { value: Object.freeze({ ...identity, runId: ready.runId }) })
     Object.defineProperty(this, 'snapshot', { value: Object.freeze(ready.snapshot) })
+    Object.defineProperty(this, 'runtimeOwnership', { value: runtimeOwnership && Object.freeze({ ...runtimeOwnership, tools: Object.freeze([...runtimeOwnership.tools]) }) })
     const scheduleExpiry = () => {
       if (this.#closed) return
       const remaining = ready.expiresAt - Date.now()
@@ -144,7 +146,8 @@ export async function openTurn(mbot, root, bot, options) {
   const finalizationTimeoutMs = options.finalizationTimeoutMs ?? 30000
   const header = { kind: 'begin', schemaVersion: 1, botId: bot.botId, sessionId: options.sessionId,
     turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs,
-    ...(options.messages === undefined ? {} : { messages: structuredClone(options.messages) }) }
+    ...(options.messages === undefined ? {} : { messages: structuredClone(options.messages) }),
+    ...(options.runtimeOwnership === undefined ? {} : { runtimeOwnership: structuredClone(options.runtimeOwnership) }) }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
     || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
     || header.requestIds.some(id => typeof id !== 'string' || !id || /[\0\r\n]/u.test(id))
@@ -155,6 +158,10 @@ export async function openTurn(mbot, root, bot, options) {
     || (header.writerScope === 'agent-runtime' && (!Array.isArray(header.messages) || header.messages.some(message =>
       message.role !== 'user' || typeof message.id !== 'string' || !message.id || !Array.isArray(message.content) || typeof message.source?.kind !== 'string')))
     || !Number.isSafeInteger(finalizationTimeoutMs) || finalizationTimeoutMs < 1 || finalizationTimeoutMs > 2147483647) throw new Error('Invalid managed turn identity or request')
+  if (header.runtimeOwnership !== undefined) {
+    if (header.writerScope !== 'agent-runtime') throw new Error('Runtime ownership requires an Agent turn')
+    validateOwnership(header.runtimeOwnership)
+  }
   const ownerStart = await processStart()
   options.signal?.throwIfAborted()
   const child = mbot.ctx.subprocess.spawn({ argv: [join(root, 'bin', 'mbot-turn'), '-C', bot.workspacePath, bot.defaultRole],
@@ -178,7 +185,7 @@ export async function openTurn(mbot, root, bot, options) {
     const ready = JSON.parse(value)
     if (ready.kind !== 'ready' || !/^[a-f0-9]{64}$/u.test(ready.token) || ready.snapshot?.workspace !== bot.workspacePath
       || !Number.isSafeInteger(ready.expiresAt) || ready.expiresAt <= Date.now()) throw new Error('Invalid managed turn admission')
-    const lease = new TurnLease(mbot, child, frames, ready, { botId: bot.botId, sessionId: header.sessionId, turn: header.turn }, finalizationTimeoutMs, options.onExpiry, options.onCancel, root)
+    const lease = new TurnLease(mbot, child, frames, ready, { botId: bot.botId, sessionId: header.sessionId, turn: header.turn }, finalizationTimeoutMs, options.onExpiry, options.onCancel, root, header.runtimeOwnership)
     mbot.leases.add(lease)
     if (mbot.closed) {
       await lease.cancel('MBot plugin disposed during admission')

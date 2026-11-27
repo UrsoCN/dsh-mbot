@@ -12,11 +12,12 @@ botctl talk --profile web --bot 'bot-实际ID' --request-id 'manual-001' --text 
 botctl receipt --profile web --bot 'bot-实际ID' --request-id 'manual-001'
 botctl runtime --profile web --bot 'bot-实际ID'
 botctl stop --profile web --bot 'bot-实际ID'
+botctl recover --profile web --bot 'bot-实际ID'
 botctl remove --profile web --bot 'bot-实际ID'
 botctl removed --profile web
 ```
 
-源码可用 `./bin/botctl`；安装后的 bin 在 profile 的 node_modules/.bin 下。框架不修改全局 PATH。`--bot` 可接受登记名称，稳定脚本建议用 bots 返回的 botId；remove 必须使用完整的稳定 botId，不能使用名称。`--profile` 必须显式指定，并使用与宿主相同的 DSH_HOME。支持中文 profile 名和符号链接指向的同一 profile。
+源码可用 `./bin/botctl`；安装后的 bin 在 profile 的 node_modules/.bin 下。框架不修改全局 PATH。`--bot` 可接受登记名称，稳定脚本建议用 bots 返回的 botId；remove/recover 必须使用完整的稳定 botId，不能使用名称。`--profile` 必须显式指定，并使用与宿主相同的 DSH_HOME。支持中文 profile 名和符号链接指向的同一 profile。
 
 多行 UTF-8 文本用 stdin：
 
@@ -39,7 +40,7 @@ stdout 是 JSON，包含 schemaVersion、transportId、profileId、instanceId、
 | 0 | 操作得到确认；talk 只表示准入/持久化成功 |
 | 1 | 宿主不可用，或操作明确拒绝 |
 | 2 | CLI 参数/输入错误或试图从 managed run 调所有者入口 |
-| 3 | 传输/持久确认不确定；talk 用原 requestId，remove 用原稳定 botId 查回/重试 |
+| 3 | 传输/持久确认不确定；talk 用原 requestId，remove/recover 用原稳定 botId 查回/重试 |
 | 4 | receipt --wait 截止，执行继续；用原 ID 再查询 |
 
 `value.confirmation` 和 `value.delivery` 沿用消息准入的两个维度。queued/claimed/ended/cancelled 不等同于 guard/Git 提交成功，查询 runtime 看事务结果；缺失 requestId 查询返回 null。dev 的 receipt 另带 [已核验结果/回答](request-replies.md)，--wait 可等待该请求终态；尚不输出聊天流或向 IM 投递结果。
@@ -69,7 +70,7 @@ Config 可关闭入口或显式配置短目录：
 
 端点的 owner.json 原子保存 schemaVersion、PID 出生身份、instanceId 和 profileId，不记录对话。仅锁进程退出不能证明宿主静止：若原 PID/出生身份仍存活，后继 Host 仍须等待。监听锁意外丢失会停止准入；正常关闭先停止监听、断开观察者、join 所有已转交操作，再移除自己的归属记录并释放 flock。锁文件保留 inode，避免两把 flock 保护不同文件。只有已证明原 Host 不再存活且取得 flock 时，才回收符合类型/所有者/权限的遗留 socket。
 
-原生 Session log 继续保存消息，IPC 不复制队列。重启后去重由 Runtime 的原生日志投影恢复；agent-runtime journal 的完整恢复仍未交付，不能删除 journal 或改 scope 绕过。
+原生 Session log 继续保存消息，IPC 不复制队列。重启后去重由 Runtime 的原生日志投影恢复；agent-runtime 的前台契约已通过 Host recover 协调；Worker/IPC 写者、未知旧契约和 checkpoint 仍待接齐，不能删除 journal 或改 scope 绕过。
 
 ## 验证
 
@@ -82,3 +83,5 @@ source/tarball/Git 基础安装与 Web tarball 安装覆盖实际 bin/资源/端
 ## Bot 注销
 
 remove 可带 `--revision <当前登记版本>`，未注销时拒绝过期版本；已退役的同一稳定 ID 重试为 no-op。断连后先查 removed，或重试同一 ID，不以名称误删重新导入的实例。bots 只返回活动登记；removed 返回退役快照。业务 talk/receipt 拒绝退役身份，查询旧历史使用原生 Session 日志与 Git；旧 mailbox 同时失效。详见 [Bot 注销与 Session 退役](bot-removal.md)。
+
+recover 由当前 Runtime 取得原生 Session writer 并核实所有已支持的前台写者，结算 Git 与回执；不调用模型或自动 resume，退役身份也可显式恢复遗留事务。未知/后台/Worker 契约继续拒绝，详见 [前台 Runtime 恢复](runtime-recovery.md)。

@@ -432,6 +432,8 @@ test('registry migration is explicit and retired references cannot be discarded 
   const bot = await ctx.mbot.importBot(ws)
   const before = ctx.mbot.registry()
   await assert.rejects(editor.edit(current => ({ ...current, registry: { ...current.registry, bots: [] } })), /retain/u)
+  await assert.rejects(editor.edit(current => ({ ...current, registry: { ...current.registry,
+    bots: current.registry.bots.map(item => ({ ...item, workspacePath: '/tmp/redirected-Bot' })) } })), /immutable/u)
   assert.deepEqual(ctx.mbot.registry(), before)
   await ctx.mbot.removeBot(bot.botId)
   const retired = ctx.mbot.registry()

@@ -12,12 +12,12 @@ export interface Config { workspace: Volatile<string>; registry: Volatile<BotReg
 export declare const Config: z<{ workspace?: string | null; registry?: BotRegistryInput | null }, Config>
 export declare const packageRoot: string
 export interface BotSelection { botId?: string; sessionId?: string }
-export interface ExecuteOptions extends BotSelection { signal?: AbortSignal; input?: string; /** Trusted Host override; not exposed to the model tool. */ workspace?: string; /** Host-held active transaction identity. */ permit?: { runId: string; token: string }; /** Host asserts its owned data calls have settled. */ recoveryOwner?: { pid: number; start: string } }
+export interface ExecuteOptions extends BotSelection { signal?: AbortSignal; input?: string; /** Trusted Host override; not exposed to the model tool. */ workspace?: string; /** Host-held active transaction identity. */ permit?: { runId: string; token: string }; /** Host asserts its owned data calls have settled. */ recoveryOwner?: { pid: number; start: string; runtimeProof?: string } }
 export interface ManagementOptions { signal?: AbortSignal; revision?: number }
 export interface ImportOptions extends ManagementOptions { name?: string; defaultRole?: string }
 export type RemoveBotResult = RetiredBot & { alreadyRemoved: boolean }
 export interface ExecuteResult { exitCode: number; stdout: string; stderr: string; truncated: boolean; workspace?: string }
-export type RecoverTurnResult = { kind: 'recovered'; needed: false } | {
+export type RecoverTurnResult = { kind: 'recovered'; needed: false; receiptRepaired?: true } | {
   kind: 'recovered'; needed: true; alreadyCommitted: boolean; runId: string; head: string; meta: string; transcript?: string; success: boolean
   outcome: import('./turn.js').ManagedOutcome; failureCountEffect: import('./turn.js').FailureCountEffect
 }

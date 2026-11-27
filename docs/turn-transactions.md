@@ -1,6 +1,6 @@
 # 受管理的 turn 事务桥（dev）
 
-2026-11-27。本文说明事务基础与数据 turn 恢复；dev 已通过 [原生 Runtime](native-runtime.md) 接入真实 Agent，实际主 Session 实体/导航仍未创建，不代表 0.2 已交付。完整消息准入、Worker 与睡眠/checkpoint 继续按 [TODO](../TODO.md) 推进。
+2026-11-27。本文说明事务基础与数据 turn 恢复；dev 已通过 [原生 Runtime](native-runtime.md) 接入真实 Agent，实际主 Session 实体/导航已接入，不代表 0.2 已交付。完整消息准入、Worker 与睡眠/checkpoint 继续按 [TODO](../TODO.md) 推进。
 
 ## Host 接口与数据边界
 
@@ -51,3 +51,5 @@ dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot rec
 下一步在组装系统提示之前接入 Runtime 的 lease 闸门、Agent-scoped SOUL/记忆提供者和受管理消息通道；验证真实模型视图中的旧快照 shadow、近期摘要与 compact，再完成实际工作区/主 Session 绑定。
 
 Managed turn 的结果现返回 outcome/failureCountEffect，审计 meta 保存版本化取消/故障判定。干净的原生用户停止保留 baseFailures，completed 归零、failed 递增；恢复使用相同校验与结算，旧 meta 按原 success 布尔值处理。规则与新增故障验收见 [turn outcome](turn-outcomes.md)。
+
+Host 前台 agent-runtime 恢复已单独交付：原生独占写者/closers、固定 foreground-only 契约、Bot 准入闸门、私有 proof、原生/Git 回执验证与单次结算见 [Runtime 恢复](runtime-recovery.md)。本文的数据子进程边界继续用于独立 CLI；它不会自动扩展到 Worker、后台/IPC 写者或 checkpoint。

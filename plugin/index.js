@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { redact } from './redact.js'
 import { BotRegistry, BotRegistrySchema, emptyRegistry, findBot, registration, revise, uniqueName, registryTransition } from './instances.js'
 import { openTurn } from './turn.js'
-import { processStart } from './recovery.js'
 import { nativeBindingAvailable, provisionBinding, resolveBinding, sessionResult } from './binding.js'
 import { removeBot } from './removal.js'
+import { recoverSelected } from './runtime-recovery.js'
 
 export const name = 'mbot'
 export const inject = ['subprocess']
@@ -233,6 +233,7 @@ export class MBotService extends Service {
       if (program !== 'mbot' || args[0] !== 'recover' || options.recoveryOwner.pid !== process.pid) throw new Error('Invalid recovery owner')
       env.MBOT_RECOVERY_OWNER = String(options.recoveryOwner.pid)
       env.MBOT_RECOVERY_START = options.recoveryOwner.start
+      if (options.recoveryOwner.runtimeProof) env.MBOT_RUNTIME_RECOVERY_PROOF = options.recoveryOwner.runtimeProof
     }
     if (program === 'mbot' && ['run', 'tick', 'dream'].includes(args[0])) {
       env.DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
@@ -265,19 +266,9 @@ export class MBotService extends Service {
     return openTurn(this, packageRoot, bot, { ...options })
   }
 
-  async recoverTurn(options = {}) {
+  recoverTurn(options = {}) {
     options = { ...options }
-    const bot = this.bot(options)
-    if (!bot) throw new Error('Recovery requires a registered Bot')
-    for (const lease of this.leases) {
-      if (lease.snapshot.workspace !== bot.workspacePath) continue
-      if (!lease.transportEnded) throw new Error('Managed turn is still active; cancel or settle it first')
-      await lease.cancel('Settling disconnected turn for recovery').catch(() => {})
-    }
-    const result = await this.execute('mbot', ['recover'], { workspace: bot.workspacePath, signal: options.signal,
-      recoveryOwner: { pid: process.pid, start: await processStart() } })
-    if (result.exitCode) throw new Error(result.stderr || result.stdout)
-    return JSON.parse(result.stdout)
+    return this.manage(() => recoverSelected(this, options))
   }
 }
 

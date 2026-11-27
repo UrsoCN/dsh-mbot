@@ -5,6 +5,7 @@ import { botSections, reconcileContext, turnContext } from './context.js'
 import { redact } from './redact.js'
 import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSource, deliveryReceipt, operationalSource } from './messages.js'
 import { messageReceipt } from './receipts.js'
+import { recoverRuntime, repairNativeReceipt } from './runtime-recovery.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
@@ -32,6 +33,7 @@ function requireState(cell) {
   if (cell.retired) throw new Error('This Bot was removed; its old managed Session is retired')
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
   if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
+  if (cell.state.runtime.recoveries.has(cell.state.botId)) throw new Error('Bot recovery is in progress; accepted input stays in the native Inbox')
   if (cell.state.runtime.ctx.mbot.registry().retiredBots.some(entry => entry.bot.botId === cell.state.botId)) throw new Error('This Bot was removed; its old managed Session is retired')
   return cell.state
 }
@@ -114,6 +116,7 @@ function installGates(agent, cell) {
       // can be enabled; lifecycle tools cannot create unowned detached writers.
       if (['spawn_agent', 'send_message'].includes(exec.name)) return 'Managed Worker routing is not yet connected'
       if (!state.runtime.foreground.has(exec.name)) return 'This tool has no managed foreground lifetime contract'
+      if (state.current.lease.runtimeOwnership && !state.current.lease.runtimeOwnership.tools.includes(exec.name)) return 'This tool was not in the captured turn ownership contract'
       if (exec.name === 'bash' && (cell.bashFiber?.state !== 2
         || ctx.tools.get('bash', agent, exec.toolSet) !== ctx.tools.get('bash', agent))) {
         // Cordis const enum FiberState.ACTIVE is 2. Reject a tool admission
@@ -211,7 +214,8 @@ class ManagedSession {
         record.lease = await this.runtime.ctx.mbot.beginTurn({ botId: this.botId, sessionId: this.agent.id, turn: record.turn, request,
           messages: record.messages,
           requestIds: record.messages.map(requestIdentity).filter(value => typeof value === 'string'),
-          signal, writerScope: 'agent-runtime', onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
+          signal, writerScope: 'agent-runtime', runtimeOwnership: { schemaVersion: 1, mode: 'foreground-only', workerDepth: 0, tools: [...this.runtime.foreground].sort() },
+          onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
         await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         for (const event of record.events) this.record(record, event)
         record.events = []
@@ -289,6 +293,7 @@ class ManagedSession {
         : await redact(error.message ?? String(error), this.runtime.ctx.mbot.bot({ botId: this.botId }).workspacePath)
       const failure = new Error(message)
       this.error = record.failure = failure
+      if (record.lease) { this.failedAuditRunId = record.lease.identity.runId; this.failedAuditRecord = record }
       await this.publish(record, 'failed', { error: message }).catch(() => {})
       await this.runtime.ctx.sessions.flush(this.agent.session).catch(() => {})
       throw failure
@@ -327,6 +332,7 @@ export class MBotRuntime extends Service {
     this.foreground = new Set(foregroundTools)
     this.foregroundOwners = new Map()
     this.attachments = new Map()
+    this.recoveries = new Map()
     this.closed = false
     ctx.on('agent/created', async ({ agent }) => {
       const retired = ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
@@ -350,6 +356,7 @@ export class MBotRuntime extends Service {
     })
     ctx.effect(() => async () => {
       this.closed = true
+      await Promise.allSettled([...this.recoveries.values()].map(item => item.promise))
       await Promise.allSettled([...this.attachments.values()].map(item => item.promise))
       await Promise.allSettled([...this.states.values()].map(state => state.close()))
       for (const [agent, state] of this.states) {
@@ -433,6 +440,11 @@ export class MBotRuntime extends Service {
 
   managed(agent) { return this.states.has(agent) }
 
+  /** Enter through the service method so Cordis retains Runtime dependency scope. */
+  coordinateRecovery(bot, journal, options = {}) {
+    return journal ? recoverRuntime(this, bot, journal, options) : repairNativeReceipt(this, bot, options)
+  }
+
   attachRetired(agent, retired) {
     let cell = cells.get(agent)
     if (!cell) { cell = {}; cells.set(agent, cell); installGates(agent, cell) }
@@ -452,7 +464,7 @@ export class MBotRuntime extends Service {
 
   /** Reversible pre-save gate. No active turn/tool/audit is cancelled by removal. */
   prepareRemoval(botId) {
-    if (this.closed || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment is busy')
+    if (this.closed || this.recoveries.has(botId) || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment/recovery is busy')
     const states = [...this.states.values()].filter(state => state.botId === botId)
     if (states.some(state => state.closing || state.retiring || state.agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; stop and settle its current turn before removal')
     for (const state of states) state.retiring = true
@@ -533,7 +545,7 @@ export class MBotRuntime extends Service {
 
   /** Trusted Host declaration: the tool must join every writer before returning. */
   foregroundTool(name) {
-    if (this.closed || typeof name !== 'string' || !name || !this.ctx.tools.get(name)) throw new Error('Register a known foreground tool')
+    if (this.closed || typeof name !== 'string' || !name || !this.ctx.tools.get(name) || ['run_code', 'spawn_agent', 'send_message'].includes(name)) throw new Error('Register a known foreground tool; lifecycle tools require managed ownership')
     this.foregroundOwners.set(name, (this.foregroundOwners.get(name) ?? 0) + 1)
     this.foreground.add(name)
     let active = true
@@ -575,7 +587,7 @@ export class MBotRuntime extends Service {
     const error = state.error ? record?.lease ? await record.lease.redactResult(state.error.message ?? String(state.error))
       : await redact(state.error.message ?? String(state.error), this.ctx.mbot.bot({ botId: state.botId }).workspacePath) : undefined
     return structuredClone({ botId: state.botId, sessionId: agent.id,
-      state: this.closed || state.closing ? 'unavailable' : state.retiring ? 'removing' : error ? 'failed'
+      state: this.closed || state.closing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : error ? 'failed'
         : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
       queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
       ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })

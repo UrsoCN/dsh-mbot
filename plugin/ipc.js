@@ -25,8 +25,8 @@ function validateRequest(input, profileId) {
     || !hostActions.includes(input.action) || typeof input.transportId !== 'string' || !/^[0-9a-f-]{36}$/u.test(input.transportId)
     || Object.keys(input).some(key => ![...common, ...fields].includes(key))) throw new Error('Invalid IPC request version, profile, action or fields')
   if (!['bots', 'removed'].includes(input.action) && (typeof input.botId !== 'string' || !input.botId || input.botId.length > 1024 || /[\0\r\n]/u.test(input.botId))) throw new Error('IPC operation requires a Bot identity')
-  if (input.action === 'remove' && (!/^bot-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(input.botId)
-    || input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0))) throw new Error('IPC removal requires a stable Bot ID and valid optional revision')
+  if (['remove', 'recover'].includes(input.action) && (!/^bot-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(input.botId)
+    || input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0))) throw new Error('IPC removal/recovery requires a stable Bot ID and valid optional revision')
   return input
 }
 
@@ -172,7 +172,8 @@ export class MBotIpc extends Service {
       } else if (input.action === 'removed') {
         const registry = this.ctx.mbot.registry()
         response.value = { schemaVersion: registry.schemaVersion, revision: registry.revision, retiredBots: registry.retiredBots }
-      } else if (input.action === 'remove') response.value = await this.ctx.mbot.removeBot(input.botId, { revision: input.revision })
+      } else if (input.action === 'recover') response.value = await this.ctx.mbot.recoverTurn({ botId: input.botId })
+      else if (input.action === 'remove') response.value = await this.ctx.mbot.removeBot(input.botId, { revision: input.revision })
       else {
         // Capture the stable Bot identity before any asynchronous resolution.
         const bot = this.ctx.mbot.bot({ botId: input.botId })

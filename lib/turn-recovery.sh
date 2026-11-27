@@ -7,18 +7,40 @@ mbot_turn_save_settings() {
   done > "$MBOT_SCRATCH/settings"
 }
 
+# A failed Host commit has already copied its own audit artifacts. Remove only
+# exact private-snapshot copies before guard re-runs; modified copies remain
+# subject to the normal violation/rollback rules. Nothing in HEAD is removed.
+mbot_turn_retry_artifacts() {
+  local intent=$MBOT_SCRATCH/commit-intent.json meta transcript rel source
+  [[ -f $intent ]] || return 0
+  jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" '
+    .parent==$base and .ref==$ref and (.tree|test("^([a-f0-9]{40}|[a-f0-9]{64})$"))
+    and (.meta|test("^transcripts/[0-9]{4}-[0-9]{2}-[0-9]{2}/"+$id+"\\.meta\\.json$"))
+    and .transcript==(.meta|sub("\\.meta\\.json$";".md")) and (.message|type)=="string"' "$intent" >/dev/null \
+    || { mbot_error 'invalid saved commit intent; preserve recovery evidence'; return 1; }
+  meta=$(jq -r .meta "$intent"); transcript=$(jq -r .transcript "$intent")
+  while IFS= read -r rel && IFS= read -r source; do
+    mbot_path "$rel" >/dev/null
+    if [[ -f $MBOT_WS/$rel && ! -L $MBOT_WS/$rel && -f $MBOT_SCRATCH/$source && ! -L $MBOT_SCRATCH/$source ]] \
+      && ! mbot_git cat-file -e "$MBOT_BASE:$rel" 2>/dev/null && cmp -s "$MBOT_WS/$rel" "$MBOT_SCRATCH/$source"; then
+      rm -- "$MBOT_WS/$rel"
+    fi
+  done < <(printf '%s\n' "$meta" meta.json "$transcript" transcript.md ".mbot/runs/$MBOT_RUN_ID.jsonl" raw.jsonl ".mbot/runs/$MBOT_RUN_ID.session.jsonl" session-events.jsonl)
+}
+
 mbot_turn_recover() {
-  local ledger scratch actual key value role base_failures start settled=0
+  local ledger scratch actual key value role base_failures start settled=0 scope
   local -A limits=()
   ledger=$(mbot_turn_ledger)
   exec 8> "$(mbot_path .mbot/lock)"
   flock -n 8 || { mbot_error 'turn writer is active; cannot recover it'; return 1; }
   if [[ ! -e $ledger ]]; then printf '{"kind":"recovered","needed":false}\n'; return; fi
   [[ -f $ledger && ! -L $ledger ]] || { mbot_error 'invalid turn journal'; return 1; }
-  if jq -e '(.schemaVersion==1 or .schemaVersion==2) and .writerScope=="agent-runtime"' "$ledger" >/dev/null 2>&1; then
-    mbot_error 'Agent Runtime recovery needs Agent/tool coordination; this recovery command only supports data-subprocesses'; return 1
+  scope=$(jq -r '.writerScope // ""' "$ledger")
+  if [[ $scope == agent-runtime && -z ${MBOT_RUNTIME_RECOVERY_PROOF:-} ]]; then
+    mbot_error 'Agent Runtime recovery needs the live Host and native Session/tool coordination; use /mbot recover or botctl recover'; return 1
   fi
-  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2) and .workspace==$workspace and .writerScope=="data-subprocesses"
+  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))
     and (.scratch|type)=="string" and (.scratch|test("^/tmp/mbot-turn\\.[A-Za-z0-9]+$"))
@@ -43,7 +65,7 @@ mbot_turn_recover() {
     and (.requestIds|type)=="array" and all(.requestIds[]; type=="string" and length>0 and (test("[\u0000\r\n]")|not))
     and $token[0]==$saved[0].token' "$scratch/header.json" >/dev/null 2>&1 \
     || { mbot_error 'turn inputs do not match their private identity'; return 1; }
-  node "$MBOT_ROOT/bin/turn-writers.mjs" "$ledger" "${MBOT_RECOVERY_OWNER:-0}" "${MBOT_RECOVERY_START:-}" >/dev/null
+  node "$MBOT_ROOT/bin/turn-writers.mjs" "$ledger" "${MBOT_RECOVERY_OWNER:-0}" "${MBOT_RECOVERY_START:-}" "${MBOT_RUNTIME_RECOVERY_PROOF:-}" >/dev/null
   MBOT_SCRATCH=$scratch
   MBOT_GIT_DIR=$(jq -r .gitDir "$ledger")
   MBOT_GIT_INODE=$(jq -r .gitInode "$ledger")
@@ -98,6 +120,9 @@ mbot_turn_recover() {
     mbot_git show "$commit:$meta" | jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --slurpfile header "$scratch/header.json" '
       .run_id==$id and .base_head==$base and (.success|type)=="boolean" and .runtime.kind=="managed-turn"
       and .runtime.bot_id==$header[0].botId and .runtime.session_id==$header[0].sessionId and .runtime.turn==$header[0].turn' >/dev/null
+    if [[ $scope == agent-runtime ]]; then
+      node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --audit-existing "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS" "$commit"
+    fi
     mbot_turn_settle "$meta"
     settled=1
     rm -rf -- "$scratch"
@@ -112,12 +137,18 @@ mbot_turn_recover() {
   done
   [[ ! -L $scratch/ignored/.mbot/runs/active-turn.json ]] || { mbot_error 'unsafe journal snapshot'; return 1; }
   cp -- "$ledger" "$scratch/ignored/.mbot/runs/active-turn.json"
-  if [[ ! -f $scratch/finish.json ]]; then
+  if [[ $scope == agent-runtime ]]; then
+    node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --materialize "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS"
+    MBOT_RECOVERY_EVENTS=$scratch/runtime-recovery.events.jsonl
+    MBOT_RECOVERY_FINISH=$scratch/runtime-recovery.finish.json
+  fi
+  if [[ ! -f $scratch/finish.json && $scope != agent-runtime ]]; then
     jq -n --slurpfile token "$scratch/token.json" '{kind:"finish",token:$token[0],reason:{kind:"aborted",message:"Recovered interrupted turn"},text:""}' > "$scratch/finish.json"
   fi
-  jq -e --slurpfile token "$scratch/token.json" '.token==$token[0] and (.reason.kind|type)=="string" and (.text|type)=="string"' "$scratch/finish.json" >/dev/null 2>&1 \
+  jq -e --slurpfile token "$scratch/token.json" '.token==$token[0] and (.reason.kind|type)=="string" and (.text|type)=="string"' "${MBOT_RECOVERY_FINISH:-$scratch/finish.json}" >/dev/null 2>&1 \
     || { mbot_error 'invalid saved turn completion; review and retry recovery'; return 1; }
   MBOT_RECOVERING=1
+  mbot_turn_retry_artifacts
   mbot_turn_finalize
   rm -rf -- "$scratch"
   trap - EXIT

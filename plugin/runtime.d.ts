@@ -12,7 +12,7 @@ export interface RuntimeTurnReceipt {
 }
 export interface RuntimeStatus {
   botId: string; sessionId: string
-  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing'
+  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing' | 'recovering'
   queued: { nextTurn: number; nextStep: number }
   lastReceipt?: RuntimeTurnReceipt & { seq: number }; error?: string
 }
@@ -57,6 +57,8 @@ export declare class MBotRuntime extends Service {
   /** Trusted Host attachment; use before the Agent starts work. */
   attach(agent: Agent, options: { botId: string }): Promise<void>
   managed(agent: Agent): boolean
+  /** Trusted Host coordinator; retains the Runtime's Cordis dependency scope. */
+  coordinateRecovery(bot: import('./instances.js').BotRegistration, journal: Record<string, unknown> | undefined, options?: import('./index.js').ManagementOptions & { retiredSessionIds?: string[] }): Promise<import('./index.js').RecoverTurnResult | undefined>
   /** Trusted removal coordinator: hold before ConfigEditor save, commit only its saved retirement. */
   prepareRemoval(botId: string): { sessionIds: string[]; commit(retired: import('./instances.js').RetiredBot): void; release(): void }
   /** Trusted Host capability: caller verifies the owner and binds a private main route. */

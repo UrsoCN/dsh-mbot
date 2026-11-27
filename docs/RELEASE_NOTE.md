@@ -1,5 +1,14 @@
 # 发布说明
 
+## dev：前台 Runtime/Agent 中断恢复（未发布）
+
+- /mbot recover 与 botctl recover 已协调原生 Session writer、Agent/前台工具和数据事务；保留 Bot ID、主 Session、Inbox、PAUSED 与单次 Git/故障计数结算。DSH 原生 resume 补齐崩溃回合，MBot 核对私有桥事件及真实结束事件，恢复不调用模型或自动 resume。
+- 新 turn 保存固定 foreground-only v1 契约；私有 Host proof 绑定原生 cut、journal 和 PID 出生身份，存活 helper/许可进程、writer-held、未知/Worker/后台契约继续拒绝。已登记 Bot 的数据目录禁止配置改绑。旧头需原 Host 的捕获记录，无 messages 的旧头继续旧审计，不生成新回复证明。
+- 提交失败后仅识别与 commit intent/私有副本一致的 Host 审计产物，正常 guard 继续检查修改过的副本。Git 已提交时只核验/结算；原生回执保存失败可独立补 flush，恢复自身在 Git 成功后的 flush 失败也能重试而不重复提交。
+- 43 项 Host、69 项 Runtime（含 12 项恢复专项）、类型、64 组 Bash、四种安装及 Chromium 验收通过。真实浏览器验证提交失败恢复、模型运行中 SIGKILL Host、原生 closers、固定请求失败回复和显式 resume；没有调用 DeepSeek API。证据：`/tmp/mbot-recovery-suite-final.log`、`/tmp/mbot-plugin-install.ouOlB3`、`/tmp/mbot-gui-runtime.ICQgBw`，详见 [Runtime 恢复](runtime-recovery.md)。
+
+当前恢复覆盖前台契约；Worker/PTC/IPC 写者、未知旧契约/原生日志丢失的迁移与恢复、compact/睡眠/checkpoint、IM/peer、outbox 和管理面板继续在 TODO。用户旧 Chief journal 的真实恢复不由隔离测试结果证明，原始反馈和证据保留。包仍为 0.1.1，未打新 tag。
+
 ## dev：Bot 注销与持久 Session 退役（未发布）
 
 - 新增 /mbot remove/removed 与 botctl remove/removed，解决创建后无法退出活动列表的反馈。原生工作区删除保留独立 Bot，显式注销保留 Git 数据、Session 历史、Inbox 和恢复证据；重新导入生成新的 Bot 身份与主 Session。
