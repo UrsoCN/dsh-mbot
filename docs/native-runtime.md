@@ -16,7 +16,7 @@ managed(agent) 查询是否已接入；dataLease(agent) 只在本轮活动期间
 - SOUL、AGENTS 和共享/角色 MEMORY 放入 Agent-scoped 系统段，禁止变量插值。近期对话继续使用 DSH 当前 surface；动态必需上下文记录 Bot/Session/turn、memoryCommit 和 runId，许可不进入提示。
 - 原生 providers 的求值先于 assembly waterfall，所以首次占位求值不等于准入。Runtime 在返回 presentation 时覆盖自己的段，再于 prepend 的 pre-step 闸门核实最终组装结果，防止 complete prompt 或其他提供者丢弃 MBot 段。
 - 使用公开 sessionQuery 与 Session.append 的 surface replacement 更新系统头、清空旧系统尾部，退役旧 runtime-context 中的 MBot 段并保留其他运行信息；原始 log 保持 append-only。下一轮先等待上轮审计，不能拿未提交目录组装新快照。
-- 准入失败时，未取消的已 claim 输入放回 DSH Inbox。Runtime 关闭时保留 Agent-owned 闸门，拒绝模型执行并暂存新输入；重载接管同一 cell，Agent 释放时这些注册随 scope 清理。
+- 准入失败时，未取消的已 claim 输入放回 DSH Inbox。Runtime 关闭时保留 Agent-owned 闸门，拒绝模型执行并暂存新输入；真正替换 ESM 模块时通过版本化共享 cell/driver 接管；先等待旧写者、审计与消息 flush，全部 attachment ready 后才开放业务，保留失败证明。Agent 释放时这些注册随 scope 清理；详见 [模块交接](runtime-handoff.md)。
 
 这证明模型请求中的旧人格/记忆快照可以物理退役，不证明任意历史发言或模型摘要中的旧规则已经被语义清除。人格/记忆不应进入对话摘要的提示约束已加入；实际 compaction 后端、手动 /compact 的维护闸门与 checkpoint 仍待专门验收。
 

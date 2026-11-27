@@ -10,7 +10,7 @@ Bot 实例是用户创建的一套独立数据及会话绑定；chief/coder 是�
 
 实例登记、init 身份保存、list/import/select、版本/revision 校验及路由基础已在 dev 实现，见 [实例登记](docs/bot-instances.md)。下面只列未完成部分。
 
-Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，[停止/故障计数](docs/turn-outcomes.md) 已区分。[所有者消息准入](docs/message-admission.md) 已提供可信 Host 门面、来源/flush 闸门及原生日志去重收据；[botctl 宿主 IPC](docs/host-ipc.md) 已接入外部 CLI、profile 隔离与端点归属；[请求结果](docs/request-replies.md) 已核验原生/Git/journal 并查回已审计回答。已支持 [Bot 注销与旧 Session 退役](docs/bot-removal.md)，原生工作区删除不自动丢弃身份。已支持 [前台 Runtime 中断恢复](docs/runtime-recovery.md)，已支持 [核心只读旧回合迁移](docs/legacy-migration.md)；Worker、非只读旧契约/原生日志缺失的恢复与睡眠/checkpoint 尚未交付。
+Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实现；[原生 Agent Runtime](docs/native-runtime.md) 已接入真实上下文、前台工具、取消和审计。实际主 Session 实体、init/import/open/repair 已接入，见 [主会话](docs/main-session.md)；[审计反馈与停止](docs/runtime-feedback.md) 已验收，[停止/故障计数](docs/turn-outcomes.md) 已区分。[所有者消息准入](docs/message-admission.md) 已提供可信 Host 门面、来源/flush 闸门及原生日志去重收据；[botctl 宿主 IPC](docs/host-ipc.md) 已接入外部 CLI、profile 隔离与端点归属；[请求结果](docs/request-replies.md) 已核验原生/Git/journal 并查回已审计回答。已支持 [Bot 注销与旧 Session 退役](docs/bot-removal.md)，原生工作区删除不自动丢弃身份。已支持 [前台 Runtime 中断恢复](docs/runtime-recovery.md)，已支持 [核心只读旧回合迁移](docs/legacy-migration.md) 与 [Runtime 模块交接](docs/runtime-handoff.md)；Worker、非只读旧契约/原生日志缺失的恢复与睡眠/checkpoint 尚未交付。
 
 - [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
 - [ ] 在 ownerMailbox/CLI IPC 基础上接真实适配器及对话域权限；附件与持久路由恢复复用 DSH Inbox，不另造消费状态。独立 wake 衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；继续验收跨 Host 原生 writer-held 与端点交接
@@ -19,7 +19,7 @@ Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实�
 - [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期，并与 compact/checkpoint 事务绑定
 - [ ] 在已验证的前台 Runtime/Agent 恢复基础上接齐 Worker/PTC/IPC 写者及 checkpoint 静止协议；在已验收核心只读旧回合迁移上补非只读/未知旧契约、原生日志/原所有者丢失的迁移和恢复，不能用前台契约或 data-subprocesses 的核实替代其他写者证明
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
-- [ ] 补真实模块替换下 Agent-owned 闸门与 Runtime 状态的版本化交接、插件级安全重载及失败回退；不丢失旧 lease/Inbox，不因代码更新叠加不可接管的旧闸门，不以全 Host 重启代替核实其他插件写者
+- [ ] 在已交付 [Runtime 模块交接](docs/runtime-handoff.md) 上补共享 registry 之前旧闸门的支持迁移，核实其他插件/后台写者的静止；保留原 Agent/主 Session，不通过清除 provider 或全 Host 重启掩盖未知所有权
 - [ ] 在列表/管理页主动检查缺失/归档实体，显示修复入口；已完成调用 Session 路由、持久绑定与 open/repair，继续验收多 Host writer-held、实体意外返回与故障重启
 - [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在
 

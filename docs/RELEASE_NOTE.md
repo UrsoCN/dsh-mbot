@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：真实 Runtime 模块交接（未发布）
+
+- Agent-owned 闸门改为版本化共享 WeakMap/driver；真正替换 ESM 模块后接管原 Agent/主 Session，不叠加旧 provider。关闭等待旧工具、审计、消息与回复 flush；整组 attachment 成功后才开放业务，首次注册失败只回滚自己的 effects。
+- 重载保留去重索引、已审计回复、失败证明与退役归属，current 由新原生事件建立；初始化/失败期间的输入留在 DSH Inbox。兼容模块可重试加载并修复原回执，不重复 Git 提交。
+- 类型、43 项 Host + 78 项 Runtime（121 项）和 64 组 Bash 回归通过。新增 Chromium 真实 HMR 验证旧写者收尾、同一主 Session、SOUL/MEMORY 更新、profile 替换导入失败/修正重试，以及无关 Session 可用；四类安装及既有 Runtime/迁移浏览器回归也通过。证据：`/tmp/mbot-handoff-suite-serial.log`、`/tmp/mbot-plugin-install.Xqps39`、`/tmp/mbot-gui-handoff.8qhavO`、`/tmp/mbot-gui-runtime.QYJS76`、`/tmp/mbot-gui-migration.vke9Qu`。没有调用真实 DeepSeek API；详见 [模块交接](runtime-handoff.md)。
+
+DSH 文件监听的导入预检与 profile reconciliation 的先停后导入分别保留旧版或保持不可用，按实际路径处理失败。无共享 cell 的旧版闸门仍需要支持迁移，作者真实旧 Host 的实际续聊尚未验收；Worker/PTC、compact/sleep/checkpoint、IM/peer/outbox 和管理面板继续在 TODO。包仍为 0.1.1，未打新 tag。
+
 ## dev：旧只读回合迁移与升级（未发布）
 
 - 新增 botctl migrate-readonly/--check，通过官方 DSH 只读 handle 核对旧回合；不执行生产 profile、创建第二个 Agent 或改写原生日志。完整核心只读调用/结束事实、工具定义、Git 基准和两把数据锁支持原 Host 仍存活时恢复旧审计；写操作/Bash/未知工具继续拒绝，scope 不改变。

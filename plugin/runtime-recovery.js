@@ -80,7 +80,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     const agent = resolved.agent
     if (agent.id !== journal.sessionId || agent.session.header.cwd !== bot.workspacePath || agent.status !== 'idle') throw new Error('Native recovery Session ownership is not idle or does not match the Bot')
     const retired = runtime.ctx.mbot.registry().retiredBots.find(entry => entry.bot.botId === bot.botId)
-    if (retired) runtime.attachRetired(agent, retired)
+    if (retired) await awaited(options.signal, runtime.attachRetired(agent, retired))
     else await awaited(options.signal, runtime.attach(agent, { botId: bot.botId }))
     const ownerStart = await processStart()
     const captured = journal.ownerPid === process.pid && journal.ownerStart === ownerStart

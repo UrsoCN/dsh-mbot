@@ -62,7 +62,8 @@
     "test:real-plugin": "bash tests/real-plugin.sh",
     "test:runtime": "node --test tests/runtime.test.js",
     "test:gui-runtime": "node tests/gui-runtime.mjs",
-    "test:gui-migration": "node tests/gui-migration.mjs"
+    "test:gui-migration": "node tests/gui-migration.mjs",
+    "test:gui-handoff": "node tests/gui-handoff.mjs"
   },
   "engines": {
     "node": ">=22",

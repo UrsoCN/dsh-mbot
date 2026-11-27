@@ -6,6 +6,7 @@ import { redact } from './redact.js'
 import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSource, deliveryReceipt, operationalSource } from './messages.js'
 import { messageReceipt } from './receipts.js'
 import { recoverRuntime, repairNativeReceipt } from './runtime-recovery.js'
+import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
@@ -25,13 +26,13 @@ function validReceipt(event) {
 
 // Agent-owned gates outlive a Runtime reload. An unavailable owner fails closed;
 // a replacement Runtime adopts the same cell rather than stacking old guards.
-const cells = new WeakMap()
 const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit', 'apply_patch', 'glob', 'grep',
   'web_search', 'web_fetch', 'ask_user_question', 'session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
 
 function requireState(cell) {
   if (cell.retired) throw new Error('This Bot was removed; its old managed Session is retired')
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
+  if (!cell.state.runtime.ready || cell.state.initializing) throw new Error('MBot Runtime attachment is initializing; accepted input stays in the native Inbox')
   if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
   if (cell.state.runtime.recoveries.has(cell.state.botId)) throw new Error('Bot recovery is in progress; accepted input stays in the native Inbox')
   if (cell.state.runtime.ctx.mbot.registry().retiredBots.some(entry => entry.bot.botId === cell.state.botId)) throw new Error('This Bot was removed; its old managed Session is retired')
@@ -49,23 +50,38 @@ async function flushInput(ctx, session, signal) {
 
 function installGates(agent, cell) {
   const ctx = agent.ctx
-  ctx.on('session/event', (session, event) => {
+  if (cell.schemaVersion !== gateSchemaVersion || cell.disposed) throw new Error('Managed Agent gate ABI is incompatible or disposed')
+  const installed = cell.installed === true
+  const driver = { schemaVersion: gateSchemaVersion }
+  const registrations = []
+  const on = (name, callback, options) => {
+    driver[name] = callback
+    if (!installed) registrations.push(() => ctx.on(name, (...args) => cell.driver[name](...args), options))
+  }
+  const guard = callback => {
+    driver.guard = callback
+    if (!installed) registrations.push(() => ctx.tools.guard((...args) => cell.driver.guard(...args)))
+  }
+  on('session/event', (session, event) => {
     if (session !== agent.session) return
     if (!cell.state && event.type === 'turn/start') cell.parked = []
     cell.state?.observe(event)
   })
-  ctx.on('agent/inbox/claimed', ({ message, turn }) => {
+  on('agent/inbox/claimed', ({ message, turn }) => {
     const state = cell.state
     if (state?.current?.turn === turn) state.current.messages.push(message)
     else (cell.parked ??= []).push(message)
   })
-  for (const [order, section] of botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' }).entries()) {
-    ctx.systemPrompt.section({ ...section, order: order * 10,
-      text: () => cell.state?.current?.lease ? botSections(cell.state.current.lease.snapshot)[order].text : '' })
+  const layout = botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' })
+  const signature = JSON.stringify(layout.map(({ name, required, interpolate }) => ({ name, required, interpolate })))
+  if (installed && cell.sectionSignature !== signature) throw new Error('Managed Agent prompt layout changed without a gate ABI migration')
+  driver.sectionText = order => cell.state?.current?.lease ? botSections(cell.state.current.lease.snapshot)[order].text : ''
+  driver.turnText = () => turnContext(cell.state?.current)
+  if (!installed) {
+    for (const [order, section] of layout.entries()) registrations.push(() => ctx.systemPrompt.section({ ...section, order: order * 10, text: () => cell.driver.sectionText(order) }))
+    registrations.push(() => ctx.systemPrompt.context({ name: 'mbot:turn', order: 130, required: true, interpolate: false, text: () => cell.driver.turnText() }))
   }
-  ctx.systemPrompt.context({ name: 'mbot:turn', order: 130, required: true, interpolate: false,
-    text: () => turnContext(cell.state?.current) })
-  ctx.on('system-prompt/assemble', async (presentation, input, next) => {
+  on('system-prompt/assemble', async (presentation, input, next) => {
     let state
     try { state = requireState(cell) }
     catch (error) {
@@ -86,7 +102,7 @@ function installGates(agent, cell) {
     return { ...assembled, sections: assembled.sections.map(section => owned.get(section.name) ?? section),
       contexts: assembled.contexts.map(context => context.name === 'mbot:turn' ? { ...context, text: turnContext(record) } : context) }
   }, { prepend: true })
-  ctx.on('agent/pre-step', async (input, next) => {
+  on('agent/pre-step', async (input, next) => {
     const state = requireState(cell)
     const record = await state.admit(input.signal)
     record.step = input.step
@@ -108,7 +124,7 @@ function installGates(agent, cell) {
     }
     return changed && decision.kind === 'enter' ? { ...decision, startsRequestSeries: true } : decision
   }, { prepend: true })
-  ctx.tools.guard(exec => {
+  guard(exec => {
     try {
       const state = requireState(cell)
       if (exec.agent !== agent || !state.current?.lease || state.current.ended) return 'No active MBot turn owns this tool call'
@@ -125,7 +141,7 @@ function installGates(agent, cell) {
       }
     } catch (error) { return error.message }
   })
-  ctx.on('tools/execute', async (exec, next) => {
+  on('tools/execute', async (exec, next) => {
     const state = requireState(cell)
     const record = state.current
     if (!record?.lease || record.ended) throw new Error('No active MBot turn owns this tool call')
@@ -134,12 +150,27 @@ function installGates(agent, cell) {
     try { return record.lease.redactResult(await operation) }
     finally { record.calls.delete(operation) }
   })
-  ctx.on('tools/post-execute', async (exec, result, next) => {
+  on('tools/post-execute', async (exec, result, next) => {
     const decision = await next()
     const lease = cell.state?.current?.lease
     return lease ? lease.redactResult(decision) : decision
   })
-  ctx.effect(() => () => { cell.state = undefined })
+  if (!installed) {
+    const disposers = []
+    cell.driver = driver
+    try {
+      for (const register of registrations) disposers.push(register())
+      ctx.effect(() => () => { cell.state = undefined; cell.disposed = true })
+      cell.sectionSignature = signature
+      cell.installed = true
+    } catch (cause) {
+      for (const dispose of disposers.reverse()) dispose()
+      cell.driver = undefined
+      cells.delete(agent)
+      throw new Error('Cannot register MBot Agent gates; legacy or conflicting providers require a supported reload before adoption', { cause })
+    }
+  }
+  return driver
 }
 
 class ManagedSession {
@@ -149,6 +180,7 @@ class ManagedSession {
     this.botId = botId
     this.pending = Promise.resolve()
     this.closing = false
+    this.initializing = true
     this.error = undefined
     this.messageIndex = new MessageIndex()
     this.messageOperations = Promise.resolve()
@@ -319,6 +351,8 @@ class ManagedSession {
     this.agent.cancel({ kind: 'hook', reason: 'MBot Runtime disposed' }, { keepInbox: true })
     await this.agent.whenIdle()
     await this.pending.catch(() => {})
+    await this.messageOperations.catch(() => {})
+    if (this.agent.status !== 'idle' || this.current?.calls.size || this.current?.lease && !this.current.lease.transportEnded) throw new Error('Managed Session writers have not drained for Runtime handoff')
   }
 }
 
@@ -334,17 +368,18 @@ export class MBotRuntime extends Service {
     this.attachments = new Map()
     this.recoveries = new Map()
     this.closed = false
+    this.ready = false
     ctx.on('agent/created', async ({ agent }) => {
       const retired = ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
-      if (retired) { this.attachRetired(agent, retired); return }
+      if (retired) { await this.attachRetired(agent, retired); return }
       const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
       if (bot) await this.attach(agent, { botId: bot.botId })
     })
     ctx.on('agent/disposed', ({ agent }) => {
       const state = this.states.get(agent)
-      void state?.pending.finally(() => {
+      void state?.close().then(() => {
         if (this.states.get(agent) === state) this.states.delete(agent)
-      }).catch(() => {})
+      }).catch(error => { state.error ??= error })
     })
     ctx.inject(['shellEnv'], child => {
       child.shellEnv.register({ name: 'mbot-turn', variables: {
@@ -354,37 +389,70 @@ export class MBotRuntime extends Service {
         DSH_MBOT_BOTCTL: { description: 'Bundled botctl executable for managed shell calls.' },
       }, resolve: exec => this.states.get(exec.agent)?.current?.lease?.shellEnvironment() ?? {} })
     })
-    ctx.effect(() => async () => {
-      this.closed = true
+    ctx.effect(() => () => this.close())
+  }
+
+  close() {
+    if (this.shutdown) return this.shutdown
+    this.closed = true
+    const states = [...this.states.values()]
+    const completion = Promise.withResolvers()
+    this.shutdown = completion.promise
+    for (const state of states) {
+      const cell = cells.get(state.agent)
+      if (cell?.state === state) cell.quiescence = this.shutdown
+    }
+    void (async () => {
       await Promise.allSettled([...this.recoveries.values()].map(item => item.promise))
       await Promise.allSettled([...this.attachments.values()].map(item => item.promise))
-      await Promise.allSettled([...this.states.values()].map(state => state.close()))
-      for (const [agent, state] of this.states) {
-        const cell = cells.get(agent)
-        if (cell?.state === state) cell.state = undefined
+      // A rejected writer drain cannot become a successful handoff.
+      const draining = new Set([...states, ...this.states.values()])
+      for (const state of draining) {
+        const cell = cells.get(state.agent)
+        if (cell?.state === state) cell.quiescence = this.shutdown
+      }
+      await Promise.all([...draining].map(state => state.close()))
+      for (const state of draining) {
+        const cell = cells.get(state.agent)
+        if (cell?.state !== state) continue
+        if (this.ready || !cell.handoff) cell.handoff = { botId: state.botId, lastReceipt: state.lastReceipt,
+          error: state.error, failedAuditRunId: state.failedAuditRunId, failedAuditRecord: state.failedAuditRecord }
+        cell.state = undefined
       }
       this.states.clear()
-    })
+    })().then(completion.resolve, completion.reject)
+    return this.shutdown
   }
 
   async [Service.init]() {
-    for (const agent of this.ctx.agents.list()) {
-      const retired = this.ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
-      if (retired) {
+    try {
+      for (const agent of this.ctx.agents.list()) {
+        const prior = cells.get(agent)
+        if (prior?.state && this.states.get(agent) !== prior.state && !prior.state.runtime.closed) throw new Error('Managed Session already has a Runtime owner')
+        if (prior?.quiescence) await prior.quiescence
+        const retired = this.ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
+        if (retired) {
+          if (agent.status !== 'idle') {
+            agent.cancel({ kind: 'hook', reason: 'Retiring removed MBot Session' }, { keepInbox: true })
+            await agent.whenIdle()
+          }
+          await this.attachRetired(agent, retired)
+          continue
+        }
+        const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
+        if (!bot) continue
         if (agent.status !== 'idle') {
-          agent.cancel({ kind: 'hook', reason: 'Retiring removed MBot Session' }, { keepInbox: true })
+          agent.cancel({ kind: 'hook', reason: 'Preparing managed MBot Session' }, { keepInbox: true })
           await agent.whenIdle()
         }
-        this.attachRetired(agent, retired)
-        continue
+        await this.attach(agent, { botId: bot.botId })
       }
-      const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
-      if (!bot) continue
-      if (agent.status !== 'idle') {
-        agent.cancel({ kind: 'hook', reason: 'Preparing managed MBot Session' }, { keepInbox: true })
-        await agent.whenIdle()
-      }
-      await this.attach(agent, { botId: bot.botId })
+      if (this.closed) throw new Error('MBot Runtime closed during initialization')
+      this.ready = true
+      for (const agent of this.states.keys()) { const cell = cells.get(agent); if (cell?.state && this.states.get(agent) === cell.state) cell.handoff = undefined }
+    } catch (error) {
+      await this.close()
+      throw error
     }
   }
 
@@ -409,18 +477,23 @@ export class MBotRuntime extends Service {
     const bot = this.ctx.mbot.bot({ botId })
     if (!bot || agent.session.header.cwd !== bot.workspacePath) throw new Error('Managed Session must belong to the Bot data directory')
     if (agent.session.header.origin === 'subagent') throw new Error('Managed Worker routing is not yet connected')
-    if (agent.status !== 'idle') throw new Error('Attach MBot Runtime before Agent work starts')
     let cell = cells.get(agent)
+    if (cell?.state && !cell.state.runtime.closed) throw new Error('Managed Session already has a Runtime owner')
+    if (cell?.quiescence) await cell.quiescence
+    if (agent.status !== 'idle') throw new Error('Attach MBot Runtime before Agent work starts')
+    if (this.closed) throw new Error('MBot Runtime closed while waiting for prior writers')
     if (!cell) {
-      cell = {}
+      cell = { schemaVersion: gateSchemaVersion }
       cells.set(agent, cell)
-      installGates(agent, cell)
     } else if (cell.state && !cell.state.runtime.closed) throw new Error('Managed Session already has a Runtime owner')
+    if (cell.handoff && cell.handoff.botId !== botId) throw new Error('Managed Session handoff cannot redirect its Bot identity')
+    const driver = installGates(agent, cell)
     const state = new ManagedSession(this, agent, botId)
     cell.state = state
     this.states.set(agent, state)
     try {
       await state.initialize()
+      if (cell.handoff) for (const key of ['lastReceipt', 'error', 'failedAuditRunId', 'failedAuditRecord']) state[key] = cell.handoff[key]
       if (!cell.bashInstalled && this.ctx.tools.get('bash', agent)) {
         // The official foreground-only composition kills and joins commands
         // at timeout; a returned job receipt is not writer-quiescence proof.
@@ -431,7 +504,13 @@ export class MBotRuntime extends Service {
         cell.bashInstalled = true
       }
       if (this.closed) throw new Error('MBot Runtime disposed during attachment')
+      cell.driver = driver
+      state.initializing = false
+      if (this.ready) cell.handoff = undefined
     } catch (error) {
+      // Keep the gates closed while any event/message operations from this
+      // failed attachment finish; a failed drain remains a failed handoff.
+      await state.close()
       this.states.delete(agent)
       if (cell.state === state) cell.state = undefined
       throw error
@@ -442,12 +521,17 @@ export class MBotRuntime extends Service {
 
   /** Enter through the service method so Cordis retains Runtime dependency scope. */
   coordinateRecovery(bot, journal, options = {}) {
+    if (this.closed || !this.ready) throw new Error('MBot Runtime is not ready for recovery')
     return journal ? recoverRuntime(this, bot, journal, options) : repairNativeReceipt(this, bot, options)
   }
 
-  attachRetired(agent, retired) {
+  async attachRetired(agent, retired) {
     let cell = cells.get(agent)
-    if (!cell) { cell = {}; cells.set(agent, cell); installGates(agent, cell) }
+    if (cell?.state && this.states.get(agent) !== cell.state && !cell.state.runtime.closed) throw new Error('Managed Session already has a Runtime owner')
+    if (cell?.quiescence) await cell.quiescence
+    if (this.closed) throw new Error('MBot Runtime closed while adopting a retired Session')
+    if (!cell) { cell = { schemaVersion: gateSchemaVersion }; cells.set(agent, cell) }
+    const driver = installGates(agent, cell)
     const state = this.states.get(agent)
     const onlyHeldAdmission = state?.retiring && !state.current?.lease && !state.current?.admission
     if (state && !onlyHeldAdmission && (agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; wait for its managed turn/audit before removal')
@@ -459,21 +543,22 @@ export class MBotRuntime extends Service {
     if (state) state.closing = true
     cell.state = undefined
     cell.retired = structuredClone(retired)
+    cell.driver = driver
     this.states.delete(agent)
   }
 
   /** Reversible pre-save gate. No active turn/tool/audit is cancelled by removal. */
   prepareRemoval(botId) {
-    if (this.closed || this.recoveries.has(botId) || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment/recovery is busy')
+    if (this.closed || !this.ready || this.recoveries.has(botId) || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment/recovery is busy')
     const states = [...this.states.values()].filter(state => state.botId === botId)
     if (states.some(state => state.closing || state.retiring || state.agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; stop and settle its current turn before removal')
     for (const state of states) state.retiring = true
     let committed = false
     return {
       sessionIds: states.map(state => state.agent.id),
-      commit: retired => {
+      commit: async retired => {
         committed = true
-        for (const state of states) this.attachRetired(state.agent, retired)
+        await Promise.all(states.map(state => this.attachRetired(state.agent, retired)))
       },
       release: () => { if (!committed) for (const state of states) state.retiring = false },
     }
@@ -482,7 +567,7 @@ export class MBotRuntime extends Service {
   /** Host capability: the caller verifies owner identity and binds the route. */
   ownerMailbox(agent, options) {
     const state = this.states.get(agent)
-    if (!state || this.closed || state.closing) throw new Error('Session is not managed by the active MBot Runtime')
+    if (!state || this.closed || !this.ready || state.closing || state.initializing) throw new Error('Session is not managed by the active MBot Runtime')
     if (state.earlyEvents) throw new Error('Managed Session attachment is still initializing')
     const bot = this.ctx.mbot.bot({ botId: state.botId })
     if (bot.mainSessionId !== agent.id || bot.binding?.state !== 'ready') throw new Error('Owner mailbox requires a ready Bot main Session')
@@ -494,6 +579,7 @@ export class MBotRuntime extends Service {
       if (current.mainSessionId !== agent.id || current.binding?.state !== 'ready') throw new Error('Bot main Session binding changed; reopen the mailbox')
     }
     const operation = run => {
+      try { check() } catch (error) { return Promise.reject(error) }
       const pending = state.messageOperations.then(() => { check(); return run() })
       state.messageOperations = pending.catch(() => {})
       return pending
@@ -524,7 +610,7 @@ export class MBotRuntime extends Service {
           }
         })
       },
-      receipt: async requestId => {
+      receipt: requestId => operation(async () => {
         check()
         const probe = ownerMessage(binding, { requestId, text: 'receipt lookup' })
         const record = state.messageIndex.requests.get(requestIdentity(probe))
@@ -535,10 +621,11 @@ export class MBotRuntime extends Service {
         let confirmation = 'confirmed'
         try { await this.ctx.sessions.flush(agent.session); check() }
         catch { confirmation = 'unconfirmed' }
+        check()
         const receipt = await messageReceipt(this, agent, state.botId, record.rpcId, binding, confirmation)
         check()
         return receipt
-      },
+      }),
       dispose: () => { revoked = true },
     })
   }
@@ -587,7 +674,7 @@ export class MBotRuntime extends Service {
     const error = state.error ? record?.lease ? await record.lease.redactResult(state.error.message ?? String(state.error))
       : await redact(state.error.message ?? String(state.error), this.ctx.mbot.bot({ botId: state.botId }).workspacePath) : undefined
     return structuredClone({ botId: state.botId, sessionId: agent.id,
-      state: this.closed || state.closing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : error ? 'failed'
+      state: this.closed || !this.ready || state.closing || state.initializing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : error ? 'failed'
         : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
       queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
       ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })
@@ -598,7 +685,7 @@ export class MBotRuntime extends Service {
     options = { ...options }
     options.signal?.throwIfAborted()
     const state = this.states.get(agent)
-    if (!state || this.closed || state.closing) throw new Error('Session is not managed by the active MBot Runtime')
+    if (!state || this.closed || !this.ready || state.closing || state.initializing) throw new Error('Session is not managed by the active MBot Runtime')
     const record = state.current
     if (record && !record.ended) {
       agent.cancel({ kind: 'user' }, { keepInbox: true })
@@ -615,4 +702,4 @@ export class MBotRuntime extends Service {
   }
 }
 
-export function apply(ctx) { ctx.plugin(MBotRuntime) }
+export async function apply(ctx) { await ctx.plugin(MBotRuntime) }

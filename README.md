@@ -149,7 +149,7 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-dev 当前有公开类型、43 项 Cordis/Host、70 项真实 Agent Runtime 和 64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+dev 当前有公开类型、43 项 Cordis/Host、78 项真实 Agent Runtime 和 64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`；旧版无共享闸门的升级与生命周期仍有待办。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 `npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。`npm run test:gui-runtime` 使用本地 adapter 另验主 Session 的审计卡片、原生停止、晚到写者、队列及失败重放。dev 的主 Session/导航已另行验收，设置页仍需实现。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 

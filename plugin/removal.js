@@ -76,7 +76,7 @@ export async function removeBot(host, identity, options) {
           registry: revise(registry, { bots: registry.bots.filter(item => item.botId !== bot.botId), retiredBots: [...registry.retiredBots, retired], selectedBotId: selected }) }
       })
       // Durable retirement wins over a caller disconnect after ConfigEditor saved.
-      hold?.commit(retired)
+      await hold?.commit(retired)
       return { ...structuredClone(retired), alreadyRemoved: false }
     } finally { hold?.release() }
   })

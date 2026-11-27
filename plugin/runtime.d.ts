@@ -60,7 +60,7 @@ export declare class MBotRuntime extends Service {
   /** Trusted Host coordinator; retains the Runtime's Cordis dependency scope. */
   coordinateRecovery(bot: import('./instances.js').BotRegistration, journal: Record<string, unknown> | undefined, options?: import('./index.js').ManagementOptions & { retiredSessionIds?: string[] }): Promise<import('./index.js').RecoverTurnResult | undefined>
   /** Trusted removal coordinator: hold before ConfigEditor save, commit only its saved retirement. */
-  prepareRemoval(botId: string): { sessionIds: string[]; commit(retired: import('./instances.js').RetiredBot): void; release(): void }
+  prepareRemoval(botId: string): { sessionIds: string[]; commit(retired: import('./instances.js').RetiredBot): Promise<void>; release(): void }
   /** Trusted Host capability: caller verifies the owner and binds a private main route. */
   ownerMailbox(agent: Agent, binding: OwnerMailboxBinding): OwnerMailbox
   /** Trusted Host contract: the tool joins all writers before returning. */
@@ -70,7 +70,7 @@ export declare class MBotRuntime extends Service {
   status(agent: Agent): Promise<RuntimeStatus>
   stop(agent: Agent, options?: { signal?: AbortSignal }): Promise<RuntimeStopResult>
 }
-export declare function apply(ctx: Context): void
+export declare function apply(ctx: Context): Promise<void>
 declare module '@deepseek-ai/cordis' { interface Context { mbotRuntime: MBotRuntime } }
 declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap { 'plugin:mbot/runtime-turn': RuntimeTurnReceipt } }
 declare module '@deepseek-ai/dsh-llm' {

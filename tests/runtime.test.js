@@ -5,6 +5,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Sessions from '@deepseek-ai/dsh-session'
@@ -28,6 +29,7 @@ import * as runtime from '../plugin/runtime.js'
 import Commands from '@deepseek-ai/dsh-commands'
 import * as botCommands from '../plugin/commands.js'
 import { MessageIndex } from '../plugin/messages.js'
+import { runtimeCells } from '../plugin/runtime-cells.js'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
@@ -164,7 +166,7 @@ test('removal rejects a live turn, then revokes the mailbox and preserves native
   assert.throws(() => ctx.mbot.workspace({ sessionId: agent.id }), /removed/u)
   assert.equal((await ctx.mbot.removeBot(bot.botId, { revision: 0 })).alreadyRemoved, true)
   await owner.dispose()
-  await ctx.plugin(runtime)
+  await ctx.plugin(await replacementRuntime())
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
   const fresh = await ctx.mbot.importBot(ws)
   assert.notEqual(fresh.botId, bot.botId)
@@ -451,6 +453,9 @@ test('Runtime recovery rejects unsupported cold ownership contracts and native w
   assert.equal(ctx.mbotRuntime.recoveries.size, 0)
   ctx.sessionController.resolveAgent = resolve
   await owner.dispose()
+  // This cold-loss fixture retains native events but intentionally loses the
+  // process-local handoff. Warm ESM replacement is covered separately.
+  runtimeCells.get(agent).handoff = undefined
   await ctx.plugin(runtime)
   const headerFile = join(journal.scratch, 'header.json')
   const header = JSON.parse(await readFile(headerFile, 'utf8'))
@@ -519,7 +524,9 @@ test('cold legacy readonly recovery proves the native tool contract and refuses 
     const changed = structuredClone(input); mutate(changed)
     assert.throws(() => readonlyLegacy(journal, changed), /readonly|writer|unknown|contract|boundary/u)
   }
-  await owner.dispose(); await ctx.plugin(runtime)
+  await owner.dispose()
+  runtimeCells.get(agent).handoff = undefined // emulate cold process loss, not a warm reload
+  await ctx.plugin(runtime)
   const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
   assert.equal(recovered.success, true)
   const meta = JSON.parse(await readFile(join(ws, recovered.meta), 'utf8'))
@@ -1552,6 +1559,259 @@ test('Runtime unload blocks model execution, parks native input, and reload adop
   assert.equal(requests.length, 3)
   assert.ok(JSON.stringify(requests[1].messages).includes('while Runtime is unavailable'))
   assert.equal(ctx.agents.list().length, 1)
+})
+
+// Load new source and a new registry module namespace, as ESM eviction does.
+// Local dependencies keep their official identities; no real profile is used.
+async function replacementRuntime(rewrite = source => source) {
+  const directory = await mkdtemp(join(root, 'replacement.'))
+  await symlink(fileURLToPath(new URL('../node_modules', import.meta.url)), join(directory, 'node_modules'))
+  await writeFile(join(directory, 'package.json'), '{"type":"module"}')
+  const source = (await readFile(new URL('../plugin/runtime.js', import.meta.url), 'utf8'))
+    .replace(/from '(\.\/[^']+)'/gu, (match, path) => path === './runtime-cells.js' ? match
+      : `from '${new URL(path, new URL('../plugin/runtime.js', import.meta.url)).href}'`)
+  await writeFile(join(directory, 'runtime.js'), rewrite(source))
+  await writeFile(join(directory, 'runtime-cells.js'), await readFile(new URL('../plugin/runtime-cells.js', import.meta.url)))
+  const replacement = await import(pathToFileURL(join(directory, 'runtime.js')).href)
+  assert.notEqual(replacement, runtime)
+  assert.notEqual(replacement.MBotRuntime, runtime.MBotRuntime)
+  return replacement
+}
+
+test('different Runtime module adopts the same Agent, refreshes driver code and preserves request proofs', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner, requests } = await app(t, (_options, n) => n === 2
+    ? response('', { name: 'replacement_unowned', args: {} }) : response('module replacement reply'), { main: true })
+  const beforeMailbox = mainMailbox(ctx, agent)
+  const sent = await beforeMailbox.send({ requestId: 'before-replacement', text: 'before new module' })
+  await settle(ctx, agent)
+  const beforeReply = (await beforeMailbox.receipt('before-replacement')).result.reply
+  const replacement = await replacementRuntime(source => source.replace('This tool has no managed foreground lifetime contract', 'Replacement driver rejects unowned lifetime'))
+  await owner.dispose()
+  await ctx.plugin(replacement)
+  assert.equal(ctx.mbotRuntime.states.get(agent).current, undefined, 'A settled old current record is not a live new turn')
+  const mailbox = mainMailbox(ctx, agent)
+  assert.equal((await mailbox.send({ requestId: 'before-replacement', text: 'before new module' })).messageId, sent.messageId)
+  assert.deepEqual((await mailbox.receipt('before-replacement')).result.reply, beforeReply)
+  assert.equal(requests.length, 1, 'Dedup does not manufacture a wake')
+  let executed = false
+  ctx.tools.register(defineTool({ name: 'replacement_unowned', description: 'Unowned replacement probe', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    execute() { executed = true; return 'must not execute' } }))
+  await mailbox.send({ requestId: 'after-replacement', text: 'use new driver' })
+  await settle(ctx, agent)
+  assert.equal(executed, false)
+  assert.ok(JSON.stringify(requests[2].messages).includes('Replacement driver rejects unowned lifetime'))
+  assert.equal((await mailbox.receipt('after-replacement')).result.final, true)
+  assert.equal(ctx.agents.get(agent.id), agent)
+  assert.equal(ctx.agents.list().length, 1)
+})
+
+test('input claimed while a new module initializes stays queued and does not replace the old audit state', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner, requests } = await app(t, () => response('after initialization'), { main: true })
+  agent.followup(message('first completed turn'))
+  await settle(ctx, agent)
+  await owner.dispose()
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  const parked = message('another window during initialization')
+  let injected = false
+  ctx.sessionQuery.readSession = async id => {
+    const log = await read(id)
+    if (!injected && id === agent.id) {
+      injected = true
+      assert.equal((await ctx.mbotRuntime.status(agent)).state, 'unavailable')
+      agent.followup(parked)
+      await agent.whenIdle()
+      assert.equal(requests.length, 1)
+    }
+    return log
+  }
+  t.after(() => { if (ctx.sessionQuery) ctx.sessionQuery.readSession = read })
+  await ctx.plugin(await replacementRuntime())
+  ctx.sessionQuery.readSession = read
+  assert.equal(agent.inbox.nextTurn[0].id, parked.id)
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.messages.length, 0)
+  agent.followup(message('explicit wake after replacement'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+  assert.ok(JSON.stringify(requests[1].messages).includes('another window during initialization'))
+})
+
+test('different Runtime module retains failed audit proof and repairs the original request without a second commit', { timeout: 30000 }, async t => {
+  let emitted = false, failed = false
+  const { ctx, ws, bot, agent, owner, requests } = await app(t, () => { emitted = true; return response('flush repair after replacement') }, { main: true })
+  await removalController(ctx, agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => {
+    if (emitted && !failed) { failed = true; throw new Error('replacement receipt flush failure') }
+    return flush(session)
+  }
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'replacement-repair', text: 'commit then fail flush' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent))
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const runId = ctx.mbotRuntime.states.get(agent).failedAuditRunId
+  ctx.sessions.flush = flush
+  await owner.dispose()
+  await ctx.plugin(await replacementRuntime())
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+  assert.equal(ctx.mbotRuntime.states.get(agent).failedAuditRunId, runId)
+  agent.followup(message('must remain parked before repair'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).receiptRepaired, true)
+  assert.equal((await mainMailbox(ctx, agent).receipt('replacement-repair')).result.final, true)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+})
+
+test('new module cannot activate before old tool cleanup, audit and message flush drain', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), cancelled = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, ws, agent, owner, requests } = await app(t, (_options, n) => n === 1
+    ? response('', { name: 'handoff_writer', args: {} }) : response('after writer handoff'), { main: true })
+  ctx.tools.register(defineTool({ name: 'handoff_writer', description: 'Owns late cancellation cleanup', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(_args, exec) {
+      const lease = ctx.mbotRuntime.dataLease(exec.agent)
+      entered.resolve()
+      await new Promise(resolve => exec.signal.aborted ? resolve() : exec.signal.addEventListener('abort', resolve, { once: true }))
+      cancelled.resolve()
+      await release.promise
+      await lease.execute('botctl', ['remember', 'old module cleanup joined'])
+      return 'joined'
+    } }))
+  ctx.mbotRuntime.foregroundTool('handoff_writer')
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('old writer'))
+  await entered.promise
+  agent.inbox.splice('next-turn', 0, 0, [message('queued during unload')])
+  const replacement = await replacementRuntime()
+  const disposing = owner.dispose()
+  await cancelled.promise
+  const next = ctx.plugin(replacement)
+  let activated = false
+  const starting = Promise.resolve(next).then(() => { activated = true })
+  await delay(30)
+  assert.equal(activated, false)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  await disposing
+  await starting
+  assert.notEqual(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'rejected')
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  agent.followup(message('explicit wake after writer handoff'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+  assert.ok(git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').some(path => /^inbox\/.*\.md$/u.test(path)
+    && git(ws, 'show', `HEAD:${path}`).includes('old module cleanup joined')))
+})
+
+test('native Agent disposal retains an in-flight reply flush until Runtime close joins it', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, agent, handle, owner } = await app(t, () => response('receipt flush lifetime'), { main: true })
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'handoff-receipt', text: 'a verified answer' })
+  await settle(ctx, agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  t.after(() => { if (ctx.sessions) ctx.sessions.flush = flush })
+  ctx.sessions.flush = async session => { entered.resolve(); await release.promise; return flush(session) }
+  const receipt = mailbox.receipt('handoff-receipt')
+  const rejected = assert.rejects(receipt, /unavailable/u)
+  await entered.promise
+  const old = ctx.mbotRuntime
+  await handle.dispose()
+  const closing = owner.dispose()
+  let closed = false
+  const draining = closing.then(() => { closed = true })
+  await delay(30)
+  assert.equal(old.states.has(agent), true, 'Native Agent disposal must retain the state until reply flush drains')
+  assert.equal(closed, false, 'The captured state still owns a pending native flush')
+  release.resolve()
+  await rejected
+  await draining
+  assert.equal(old.states.has(agent), false)
+})
+
+test('first gate registration rolls back its own effects and preserves foreign legacy providers', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, requests } = await app(t, () => response('registration rollback reply'))
+  const handle = await ctx.agents.create({ sessionId: `legacy-gates-${++sequence}`, meta: { cwd: ws }, agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  const agent = handle.agent
+  const foreign = agent.ctx.systemPrompt.section({ name: 'mbot:protocol', order: 10, text: 'foreign legacy protocol' })
+  await assert.rejects(ctx.mbotRuntime.attach(agent, { botId: bot.botId }), /legacy or conflicting providers/u)
+  assert.equal(ctx.mbotRuntime.managed(agent), false)
+  const assembly = await agent.ctx.systemPrompt.assemble({ agent, scope: agent })
+  assert.equal(assembly.sections.filter(section => section.name === 'mbot:protocol').length, 1)
+  assert.equal(assembly.sections.find(section => section.name === 'mbot:protocol').text, 'foreign legacy protocol')
+  assert.equal(assembly.contexts.some(section => section.name === 'mbot:turn'), false)
+  agent.followup(message('ordinary unbound Agent still works'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1, 'No leaked managed callbacks or guards')
+  foreign()
+  await ctx.mbotRuntime.attach(agent, { botId: bot.botId })
+  agent.followup(message('retry after supported cleanup'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+})
+
+test('incompatible prompt ABI rejects replacement and compatible module can reacquire unchanged proofs', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner, requests } = await app(t, () => response('ABI retained'), { main: true })
+  agent.followup(message('before ABI failure'))
+  await settle(ctx, agent)
+  await owner.dispose()
+  const incompatible = await replacementRuntime(source => source.replace('if (installed && cell.sectionSignature !== signature)', 'if (installed)'))
+  const rejected = ctx.plugin(incompatible)
+  await assert.rejects(Promise.resolve(rejected), /prompt layout changed/u)
+  await rejected.dispose()
+  agent.followup(message('parked after ABI failure'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  await ctx.plugin(await replacementRuntime())
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  agent.followup(message('compatible explicit wake'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+})
+
+test('partial group activation parks input for initialized Agents and retains failed proof for compatible retry', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner, requests } = await failedRuntime(t)
+  const priorRun = ctx.mbotRuntime.states.get(agent).failedAuditRunId
+  const ws2 = join(root, `group Bot ${++sequence}`)
+  assert.equal((await ctx.mbot.execute('mbot', ['init'], { workspace: ws2 })).exitCode, 0)
+  const bot2 = await ctx.mbot.importBot(ws2)
+  const handle2 = await ctx.agents.create({ sessionId: `group-second-${++sequence}`, meta: { cwd: ws2 },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' }, setup: (_ctx, agent) => ctx.mbotRuntime.attach(agent, { botId: bot2.botId }) })
+  await ctx.configEditor.edit(ctx.configEditor.entries()[0], current => ({ ...current, registry: { ...current.registry,
+    revision: current.registry.revision + 1, bots: current.registry.bots.map(item => item.botId !== bot2.botId ? item : {
+      ...item, workspaceId: `workspace-group-${sequence}`, mainSessionId: handle2.agent.id,
+      binding: { state: 'ready', pendingSessionId: null, error: null },
+    }) } }))
+  await owner.dispose()
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  const parked = message('arrived after first Agent initialized before group readiness')
+  ctx.sessionQuery.readSession = async id => {
+    if (id === handle2.agent.id) {
+      assert.equal((await ctx.mbotRuntime.status(agent)).state, 'unavailable')
+      agent.followup(parked)
+      await agent.whenIdle()
+      assert.equal(requests.length, 1)
+      throw new Error('second Agent activation failed')
+    }
+    return read(id)
+  }
+  t.after(() => { if (ctx.sessionQuery) ctx.sessionQuery.readSession = read })
+  const rejected = ctx.plugin(await replacementRuntime())
+  await assert.rejects(Promise.resolve(rejected), /second Agent activation failed/u)
+  await rejected.dispose()
+  ctx.sessionQuery.readSession = read
+  assert.equal(agent.inbox.nextTurn[0].id, parked.id)
+  await ctx.plugin(await replacementRuntime())
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+  assert.equal(ctx.mbotRuntime.states.get(agent).failedAuditRunId, priorRun)
+  assert.equal(ctx.mbotRuntime.managed(handle2.agent), true)
+  assert.equal(requests.length, 1)
 })
 
 test('owned runtime facts retire before older pre-step consumers while operational context survives', { timeout: 30000 }, async t => {
