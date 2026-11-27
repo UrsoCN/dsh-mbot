@@ -15,7 +15,7 @@ Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实�
 - [ ] 在已接入实际主 Session 的 SOUL/MEMORY 与历史 surface 上，补近期摘要/checkpoint 的持久恢复、memoryCommit/contextEpoch/sourceCut，以及真实 compaction 后旧规则不复活的验收
 - [ ] 在 ownerMailbox/CLI IPC 基础上接真实适配器及对话域权限；附件与持久路由恢复复用 DSH Inbox，不另造消费状态。独立 wake 衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；继续验收跨 Host 原生 writer-held 与端点交接
 - [ ] 在已核验请求结果/固定回复信封的基础上实现按原 replyRoute 投递的 outbox 与外部 ack/不确定状态；验收断连/崩溃转交、编辑冲突修复、跨域路由与多个 Host，不复制原生消费队列，不把 confirmed/ended 或展示记录当事务证明
-- [ ] 接齐 Worker 的固定角色快照、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，验收真实 PTC/run_code（其保留名称不能用自定义工具覆盖），保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
+- [ ] 在已交付 [角色/任务委派许可](docs/worker-leases.md) 上接齐真实 Worker Agent 的固定上下文、共享 lease、深度/并发、工具与结束边界；为需要后台/跨系统执行的工具补所有权与静止协议，验收真实 PTC/run_code（其保留名称不能用自定义工具覆盖），保留已验证的原生前台工具准入，不用全局 process.env 保存多 Bot 身份
 - [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期，并与 compact/checkpoint 事务绑定
 - [ ] 在已验证的前台 Runtime/Agent 恢复基础上接齐 Worker/PTC/IPC 写者及 checkpoint 静止协议；在已验收核心只读旧回合迁移上补非只读/未知旧契约、原生日志/原所有者丢失的迁移和恢复，不能用前台契约或 data-subprocesses 的核实替代其他写者证明
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行

@@ -15,6 +15,7 @@ import * as plugin from '../plugin/index.js'
 import * as tools from '../plugin/tools.js'
 import * as commands from '../plugin/commands.js'
 import { redact } from '../plugin/redact.js'
+import { setTimeout as delay } from 'node:timers/promises'
 import { BotRegistry } from '../plugin/instances.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
@@ -472,6 +473,7 @@ test('managed turn pins context, lets its tools mutate without requeue, and make
   const bot = await ctx.mbot.importBot(ws)
   const base = git(ws, 'rev-parse', 'HEAD')
   const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'managed-session', turn: 1, request: 'create a task', requestIds: ['request-one'] })
+  await assert.rejects(lease.delegate({ sessionId: 'legacy-delegate', role: 'coder', taskId: '001' }), /no delegated Worker/u)
   assert.equal(lease.snapshot.head, base)
   assert.equal(lease.snapshot.memory, await readFile(join(ws, 'MEMORY.md'), 'utf8'))
   assert.ok(Object.isFrozen(lease.snapshot))
@@ -491,6 +493,209 @@ test('managed turn pins context, lets its tools mutate without requeue, and make
   assert.deepEqual(meta.runtime.request_ids, ['request-one'])
   await assert.rejects(lease.execute('botctl', ['board', 'add', 'late task']), /closed/u)
   await assert.rejects(access(join(ws, '.mbot/runs/active-turn.json')))
+})
+
+async function actorTurn(t, options = {}) {
+  const fixture = await app(t)
+  const { ctx, ws, owner } = fixture
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const role = options.role ?? 'coder'
+  if (role !== 'coder') {
+    await mkdir(join(ws, 'bots', role))
+    for (const file of ['SOUL.md', 'MEMORY.md']) await writeFile(join(ws, 'bots', role, file), await readFile(join(ws, 'bots/coder', file)))
+    git(ws, 'add', 'bots'); git(ws, 'commit', '-m', 'fixture: custom role identity')
+  }
+  if (options.timeout) {
+    const file = join(ws, '.mbot/config')
+    await writeFile(file, (await readFile(file, 'utf8')).replace(/^MBOT_TIMEOUT=.*$/mu, `MBOT_TIMEOUT=${options.timeout}`))
+    git(ws, 'add', '.mbot/config'); git(ws, 'commit', '-m', 'fixture: actor deadline')
+  }
+  const tasks = []
+  for (let i = 0; i < 3; i++) {
+    const added = await ctx.mbot.execute('botctl', ['board', 'add', `actor task ${i}`, '--owner', role])
+    assert.equal(added.exitCode, 0)
+    const id = added.stdout.trim()
+    assert.equal((await ctx.mbot.execute('botctl', ['board', 'set', id, 'doing'])).exitCode, 0)
+    tasks.push(id)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  let lease, sequence = 0, ended = false
+  const cancel = async message => {
+    if (ended || !lease) return
+    ended = true
+    await lease.record({ seq: sequence++, type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', message } } })
+  }
+  lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: `actor-parent-${++seq}`, turn: 1, request: 'delegate data work',
+    messages: [], writerScope: 'agent-runtime', runtimeOwnership: { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1,
+      maxWorkers: 2, tools: ['botctl'], workerTools: ['botctl'] }, onExpiry: async () => {}, onCancel: cancel })
+  await lease.record({ seq: sequence++, type: 'turn/start', data: { turn: 1 } })
+  const finish = async (text = 'delegated data finished') => {
+    const reason = { kind: 'completed' }
+    if (!ended) {
+      if (text) await lease.record({ seq: sequence++, type: 'assistant/message', data: { turn: 1, message: {
+        role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text }] } } })
+      ended = true
+      await lease.record({ seq: sequence++, type: 'turn/end', data: { turn: 1, reason } })
+    }
+    return lease.finish({ reason, text })
+  }
+  return { ...fixture, bot, tasks, base, lease, finish }
+}
+
+test('delegated actors share one commit with fixed role/task snapshots and reject cross-task data operations', async t => {
+  const { ctx, ws, tasks, base, lease, finish } = await actorTurn(t)
+  const fresh = await lease.execute('botctl', ['board', 'add', 'new task inside parent turn', '--owner', 'coder'])
+  assert.equal(fresh.exitCode, 0)
+  tasks[0] = fresh.stdout.trim()
+  assert.equal((await lease.execute('botctl', ['board', 'set', tasks[0], 'doing'])).exitCode, 0)
+  const actor = await lease.delegate({ sessionId: 'actor-coder-one', role: 'coder', taskId: tasks[0] })
+  assert.equal(actor.snapshot.head, base)
+  assert.equal(actor.snapshot.role, 'coder')
+  assert.equal(actor.identity.parentSessionId, lease.identity.sessionId)
+  assert.equal(actor.identity.sessionId, 'actor-coder-one')
+  assert.ok(Object.isFrozen(actor.snapshot))
+  const token = actor.shellEnvironment().DSH_MBOT_PERMIT_TOKEN
+  assert.notEqual(token, lease.shellEnvironment().DSH_MBOT_PERMIT_TOKEN)
+  const boot = await actor.execute('botctl', ['boot', 'coder', '--task', tasks[0]])
+  assert.equal(boot.exitCode, 0, boot.stderr)
+  assert.ok(boot.stdout.includes(actor.snapshot.soul))
+  assert.ok(boot.stdout.includes(actor.snapshot.task))
+  for (const args of [
+    ['board', 'add', 'must not add'], ['board', 'set', tasks[0], 'done'], ['boot', 'chief'],
+    ['task', 'show', tasks[1]], ['task', 'result', tasks[1]], ['remember', 'wrong author', '--as', 'chief'],
+    ['remember', 'wrong candidate task', '--task', tasks[1]],
+  ]) assert.equal((await actor.execute('botctl', args, { input: 'unauthorized result' })).exitCode, 1, args.join(' '))
+  assert.equal((await actor.execute('botctl', ['task', 'result', tasks[0]], { input: 'scoped coder result' })).exitCode, 0)
+  assert.equal((await actor.execute('botctl', ['remember', 'scoped coder candidate'])).exitCode, 0)
+  await assert.rejects(actor.execute('mbot', ['dream']), /scoped botctl/u)
+  await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: 'premature' }), /drain and close/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  const closing = actor.close()
+  assert.equal(actor.close(), closing)
+  await closing
+  assert.equal(actor.closed, true)
+  assert.throws(() => actor.shellEnvironment(), /closed/u)
+  const result = await finish(`finished; private actor token ${token}`)
+  assert.equal(result.success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  assert.match(await readFile(join(ws, `tasks/${tasks[0]}.md`), 'utf8'), /by: coder/u)
+  const candidate = git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').find(path => path.startsWith('inbox/') && path.endsWith('.md'))
+  assert.match(git(ws, 'show', `HEAD:${candidate}`), new RegExp(`by: coder;.*task: ${tasks[0]}`, 'u'))
+  const meta = JSON.parse(await readFile(join(ws, result.meta), 'utf8'))
+  assert.equal(meta.runtime.journal_schema_version, 3)
+  assert.equal(meta.runtime.actors[0].state, 'revoked')
+  assert.equal(meta.runtime.actors[0].role, 'coder')
+  assert.ok(!JSON.stringify(meta).includes(token))
+  assert.ok(!(await readFile(join(ws, result.transcript), 'utf8')).includes(token))
+  const stale = await ctx.mbot.execute('botctl', ['remember', 'late revoked data'], { workspace: ws, permit: { runId: lease.identity.runId, token } })
+  assert.equal(stale.exitCode, 1)
+})
+
+test('actor control identities survive credential-shaped reference text redaction', async t => {
+  const role = 'sk-persona-role'
+  const { lease, tasks, finish } = await actorTurn(t, { role })
+  const actor = await lease.delegate({ sessionId: 'actor-custom-role', role, taskId: tasks[0] })
+  assert.equal(actor.identity.role, role)
+  assert.equal(actor.snapshot.role, role)
+  await actor.close()
+  assert.equal((await finish()).success, true)
+})
+
+test('actor reservations are concurrent, capacity bounded and use immutable assignment input', async t => {
+  const { lease, tasks, finish } = await actorTurn(t)
+  const input = { sessionId: 'actor-capacity-one', role: 'coder', taskId: tasks[0] }
+  const first = lease.delegate(input)
+  input.role = 'chief'; input.taskId = tasks[2]
+  const second = lease.delegate({ sessionId: 'actor-capacity-two', role: 'coder', taskId: tasks[1] })
+  const third = assert.rejects(lease.delegate({ sessionId: 'actor-capacity-three', role: 'coder', taskId: tasks[2] }), /capacity/u)
+  await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: 'race pending reservations' }), /drain and close/u)
+  const [one, two] = await Promise.all([first, second])
+  await third
+  assert.equal(one.snapshot.role, 'coder')
+  assert.equal(one.snapshot.taskId, tasks[0])
+  await one.close()
+  await assert.rejects(lease.delegate({ sessionId: 'actor-capacity-one', role: 'coder', taskId: tasks[2] }), /identity/u)
+  const three = await lease.delegate({ sessionId: 'actor-capacity-three', role: 'coder', taskId: tasks[2] })
+  await Promise.all([two.close(), three.close()])
+  assert.equal((await finish()).success, true)
+})
+
+test('actor boot stays at its assignment cut and a later owner/state change fences old results', async t => {
+  const { ws, tasks, lease, finish } = await actorTurn(t)
+  const actor = await lease.delegate({ sessionId: 'actor-cut', role: 'coder', taskId: tasks[0] })
+  assert.equal((await lease.execute('botctl', ['task', 'result', tasks[0]], { input: 'new instructions after assignment 774422' })).exitCode, 0)
+  const boot = await actor.execute('botctl', ['boot', 'coder', '--task', tasks[0]])
+  assert.equal(boot.exitCode, 0)
+  assert.doesNotMatch(boot.stdout, /new instructions after assignment 774422/u)
+  assert.equal((await lease.execute('botctl', ['board', 'set', tasks[0], 'done'])).exitCode, 0)
+  const before = await readFile(join(ws, `tasks/${tasks[0]}.md`), 'utf8')
+  const late = await actor.execute('botctl', ['task', 'result', tasks[0]], { input: 'must not rewrite completed assignment' })
+  assert.equal(late.exitCode, 1)
+  assert.match(late.stderr, /assignment changed/u)
+  assert.equal(await readFile(join(ws, `tasks/${tasks[0]}.md`), 'utf8'), before)
+  await actor.close()
+  assert.equal((await finish()).success, true)
+})
+
+test('actor close joins an executing CLI before revocation and finalization', async t => {
+  const release = join(root, `actor-release-${++seq}`)
+  t.after(() => writeFile(release, ''))
+  const { ctx, ws, tasks, lease, base, finish } = await actorTurn(t)
+  const actor = await lease.delegate({ sessionId: 'actor-late-write', role: 'coder', taskId: tasks[0] })
+  const wrapper = join(root, `actor-waiting-${++seq}`)
+  const started = wrapper + '.started'
+  await writeFile(wrapper, '#!/bin/sh\n: > "$MBOT_ACTOR_TEST_STARTED"\nwhile ! test -f "$MBOT_ACTOR_TEST_RELEASE"; do sleep 0.02; done\nexec "$@"\n', { mode: 0o700 })
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/botctl') && spec.argv.includes('remember')
+    ? spawn({ ...spec, argv: [wrapper, ...spec.argv], env: { ...spec.env, MBOT_ACTOR_TEST_STARTED: started, MBOT_ACTOR_TEST_RELEASE: release } }) : spawn(spec)
+  const pending = actor.execute('botctl', ['remember', 'joined actor cleanup'])
+  for (let i = 0; i < 500 && !await access(started).then(() => true, () => false); i++) await delay(10)
+  await access(started)
+  const closing = actor.close()
+  let closed = false
+  void closing.then(() => { closed = true })
+  await delay(30)
+  assert.equal(closed, false)
+  await assert.rejects(lease.finish({ reason: { kind: 'completed' }, text: '' }), /drain and close/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  await writeFile(release, '')
+  assert.equal((await pending).exitCode, 0)
+  await closing
+  ctx.subprocess.spawn = spawn
+  assert.equal((await finish()).success, true)
+})
+
+test('actor permits expire but can still be revoked and the owning timeout settles once', async t => {
+  const { ctx, ws, tasks, lease, base } = await actorTurn(t, { timeout: 3 })
+  const actor = await lease.delegate({ sessionId: 'actor-expiry', role: 'coder', taskId: tasks[0] })
+  const token = actor.shellEnvironment().DSH_MBOT_PERMIT_TOKEN
+  const result = await lease.child.done
+  assert.equal(result.exitCode, 0)
+  assert.equal(actor.closed, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '1\n')
+  assert.equal((await ctx.mbot.execute('botctl', ['remember', 'expired write'], { workspace: ws, permit: { runId: lease.identity.runId, token } })).exitCode, 1)
+})
+
+test('delegated journal downgrade or missing ownership proof cannot enable actor writes or ordinary recovery', async t => {
+  const { ctx, ws, tasks, bot, lease } = await actorTurn(t)
+  const actor = await lease.delegate({ sessionId: 'actor-proof', role: 'coder', taskId: tasks[0] })
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const original = await readFile(journalPath, 'utf8')
+  await writeFile(journalPath, JSON.stringify({ ...JSON.parse(original), schemaVersion: 2 }))
+  const denied = await actor.execute('botctl', ['remember', 'downgraded journal'])
+  assert.equal(denied.exitCode, 1)
+  assert.match(denied.stderr, /identity changed/u)
+  await writeFile(journalPath, original)
+  lease.child.terminate()
+  await lease.child.waitForExit()
+  const abandoned = await readFile(journalPath, 'utf8')
+  await assert.rejects(actor.execute('botctl', ['remember', 'dead transport']), /transport ended/u)
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /active MBot Runtime|native Session|incomplete turn journal/u)
+  assert.equal(await readFile(journalPath, 'utf8'), abandoned)
+  await assert.rejects(lease.cancel())
 })
 
 test('managed turn rejects stale permits and restores forbidden memory and HEAD changes', async t => {

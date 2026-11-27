@@ -9,11 +9,15 @@ export const journalDigest = journal => {
   const { phase, ...identity } = journal
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
 }
-export function validateOwnership(value) {
-  if (!value || value.schemaVersion !== 1 || value.mode !== 'foreground-only' || value.workerDepth !== 0
-    || Object.keys(value).some(key => !['schemaVersion', 'mode', 'workerDepth', 'tools'].includes(key))
-    || !Array.isArray(value.tools) || !value.tools.length || value.tools.some(name => typeof name !== 'string' || !name || /[\0\r\n]/u.test(name)
-      || ['run_code', 'spawn_agent', 'send_message'].includes(name)) || new Set(value.tools).size !== value.tools.length) throw new Error('Unsupported Runtime writer ownership contract')
+export function validateOwnership(value, allowWorkers = false) {
+  const tools = names => Array.isArray(names) && names.length > 0 && names.every(name => typeof name === 'string' && name
+    && !/[\0\r\n]/u.test(name) && !['run_code', 'spawn_agent', 'send_message'].includes(name)) && new Set(names).size === names.length
+  const foreground = value?.schemaVersion === 1 && value.mode === 'foreground-only' && value.workerDepth === 0
+    && Object.keys(value).every(key => ['schemaVersion', 'mode', 'workerDepth', 'tools'].includes(key))
+  const workers = allowWorkers && value?.schemaVersion === 2 && value.mode === 'foreground-workers' && value.workerDepth === 1
+    && value.maxWorkers === 2 && tools(value.workerTools)
+    && Object.keys(value).every(key => ['schemaVersion', 'mode', 'workerDepth', 'maxWorkers', 'tools', 'workerTools'].includes(key))
+  if (!value || !(foreground || workers) || !tools(value.tools)) throw new Error('Unsupported Runtime writer ownership contract')
   return value
 }
 export async function privateFile(path, maxSize = 16 * 1024 * 1024) {

@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and any(.path=="plugin/removal.js") and any(.path=="plugin/runtime-cells.js") and any(.path=="plugin/runtime-recovery.js") and any(.path=="plugin/recovery-proof.js") and any(.path=="plugin/recovery-audit.js") and any(.path=="plugin/native-reply.js") and any(.path=="bin/turn-runtime-recovery.mjs") and any(.path=="bin/botctl-migrate.mjs") and any(.path=="plugin/readonly-migration.js") and any(.path=="plugin/native-storage.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and any(.path=="plugin/removal.js") and any(.path=="bin/turn-actor.mjs") and any(.path=="plugin/actor-lease.js") and any(.path=="plugin/runtime-cells.js") and any(.path=="plugin/runtime-recovery.js") and any(.path=="plugin/recovery-proof.js") and any(.path=="plugin/recovery-audit.js") and any(.path=="plugin/native-reply.js") and any(.path=="bin/turn-runtime-recovery.mjs") and any(.path=="bin/botctl-migrate.mjs") and any(.path=="plugin/readonly-migration.js") and any(.path=="plugin/native-storage.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -48,6 +48,21 @@ async function probe(ctx) {
     await turn.execute('botctl', ['remember', 'installed managed candidate', '--as', 'chief'])
     const turnResult = await turn.finish({ reason: { kind: 'completed' }, text: 'installed transaction succeeded' })
     if (!turnResult.success) throw new Error('installed transaction bridge failed')
+    const actors = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-actor-protocol', turn: 1,
+      request: 'installed scoped data capability', writerScope: 'agent-runtime', messages: [],
+      runtimeOwnership: { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1, maxWorkers: 2, tools: ['botctl'], workerTools: ['botctl'] },
+      onExpiry: async () => {}, onCancel: async () => {} })
+    const assigned = await actors.execute('botctl', ['board', 'add', 'installed actor task', '--owner', 'coder'])
+    if (assigned.exitCode) throw new Error('installed actor task creation failed')
+    const taskId = assigned.stdout.trim()
+    if ((await actors.execute('botctl', ['board', 'set', taskId, 'doing'])).exitCode) throw new Error('installed actor assignment failed')
+    const actor = await actors.delegate({ sessionId: 'installed-coder-actor', role: 'coder', taskId })
+    if ((await actor.execute('botctl', ['boot', 'coder', '--task', taskId])).exitCode
+      || (await actor.execute('botctl', ['board', 'add', 'actor must not change board'])).exitCode !== 1
+      || (await actor.execute('botctl', ['task', 'result', taskId], { input: 'installed actor result' })).exitCode) throw new Error('installed actor data scope failed')
+    await actor.close()
+    await actors.record({ seq: 0, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    if (!(await actors.finish({ reason: { kind: 'completed' }, text: '' })).success) throw new Error('installed actor settlement failed')
     const interrupted = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 2, request: 'installed recovery' })
     interrupted.child.stdin.end()
     await interrupted.child.done
@@ -177,11 +192,12 @@ for mode in tarball source git web-tarball; do
   app_args=()
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/$mode.runtime.log" 2>&1
-  jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
+  jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|test("^[0-9]{3,9}")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
   jq -e '.registry.schemaVersion==2 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
-  [[ $(git -C "$ws" log -1 --format=%s) == 'human: board add 001'* ]]
+  installed_task_id=$(jq -r '.output | rtrimstr("\n")' "$root/$mode.result.json")
+  [[ $(git -C "$ws" log -1 --format=%s) == "human: board add $installed_task_id "* ]]
   [[ -x $DSH_HOME/profiles/$profile/node_modules/.bin/mbot && -x $DSH_HOME/profiles/$profile/node_modules/.bin/botctl ]]
   "$DSH_HOME/profiles/$profile/node_modules/.bin/botctl" -C "$ws" lint > "$root/$mode.lint.log"
   if [[ $mode != web-tarball ]]; then

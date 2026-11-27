@@ -131,6 +131,8 @@ dev 已支持 [显式注销与持久 Session 退役](bot-removal.md)：独立 Bo
 
 当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定已接入；对话域、迁移与完整生命周期仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
 
+dev 已交付 [Worker 数据许可](worker-leases.md)：父 turn 可预留角色/任务/子 Session 身份，派生数据许可和固定快照，共享一次 Git 结算。普通前台仍写 journal v2；委派契约使用 v3，其他 writer 的恢复不沿用原契约。真实 Worker Agent/工具/事件生命周期及模型执行继续在 P1。
+
 dev 已接齐 [Runtime 模块交接](runtime-handoff.md)：Agent 持有一次注册的闸门，版本化共享 cell 把执行交给当前模块；等待旧前台写者/审计/消息持久化，整组 attachment 成功后才 ready。失败审计与退役归属保留，原生 Inbox 和主 Session 稳定。共享 registry 之前旧闸门的支持迁移、其他插件/后台写者及真实旧 Host 续聊继续验收。
 
 ## 9. 下一轮：设置与管理面板

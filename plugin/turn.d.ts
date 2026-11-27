@@ -15,7 +15,22 @@ export interface TurnOutcome { reason: { kind: string; [key: string]: unknown };
 export type ManagedOutcome = 'completed' | 'cancelled' | 'failed'
 export type FailureCountEffect = 'reset' | 'preserve' | 'increment'
 export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean; readonly outcome: ManagedOutcome; readonly failureCountEffect: FailureCountEffect }
-export interface RuntimeOwnership { schemaVersion: 1; mode: 'foreground-only'; workerDepth: 0; tools: readonly string[] }
+export type RuntimeOwnership = { schemaVersion: 1; mode: 'foreground-only'; workerDepth: 0; tools: readonly string[] }
+  | { schemaVersion: 2; mode: 'foreground-workers'; workerDepth: 1; maxWorkers: 2; tools: readonly string[]; workerTools: readonly string[] }
+export interface ActorIdentity { readonly botId: string; readonly runId: string; readonly parentSessionId: string; readonly parentTurn: number; readonly sessionId: string; readonly role: string; readonly taskId: string; readonly actorId: string }
+export interface ActorSnapshot extends ContextSnapshot { readonly taskId: string; readonly task: string }
+export declare class ActorLease {
+  private constructor()
+  readonly identity: Readonly<ActorIdentity>
+  readonly snapshot: Readonly<ActorSnapshot>
+  /** Admission flag; await close() for data quiescence and revocation. */
+  readonly closed: boolean
+  shellEnvironment(): Record<string, string>
+  redactResult<T>(value: T): Promise<T>
+  execute(program: 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
+  /** Data calls drain here; the caller must also join its native Agent/tools. */
+  close(): Promise<void>
+}
 export interface BeginTurnOptions { runtimeOwnership?: RuntimeOwnership; botId?: string; sessionId: string; turn: number; request: string; requestIds?: string[]; /** Native claimed input, required to seal agent-runtime replies. */ messages?: readonly import('@deepseek-ai/dsh-llm').UserMessage[]; /** Admission cancellation; published work uses cancel(). */ signal?: AbortSignal; finalizationTimeoutMs?: number; writerScope?: 'data-subprocesses' | 'agent-runtime'; /** Required for agent-runtime: cancel and join the model/tools before settlement. */ onExpiry?: () => Promise<void>; onCancel?: (message: string) => Promise<void> }
 export declare class TurnLease {
   readonly identity: TurnIdentity
@@ -28,6 +43,8 @@ export declare class TurnLease {
   redactResult<T>(value: T): Promise<T>
   record(event: SessionEvent): Promise<void>
   execute(program: 'mbot' | 'botctl', args: string[], options?: { signal?: AbortSignal; input?: string }): Promise<ExecuteResult>
+  /** Trusted Host only; publish the native child after this reservation. */
+  delegate(options: { sessionId: string; role: string; taskId: string }): Promise<ActorLease>
   finish(outcome: TurnOutcome): Promise<TurnResult>
   cancel(message?: string): Promise<TurnResult>
 }

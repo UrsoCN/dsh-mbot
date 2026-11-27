@@ -12,6 +12,9 @@ mbot_turn_write_ledger() {
 mbot_turn_finalize() {
   local events_file=${MBOT_RECOVERY_EVENTS:-$MBOT_SCRATCH/session-events.jsonl} finish_file=${MBOT_RECOVERY_FINISH:-$MBOT_SCRATCH/finish.json}
   flock 9
+  if [[ $(jq -r .schemaVersion "$MBOT_SCRATCH/ledger.json") == 3 ]]; then
+    node "$MBOT_ROOT/bin/turn-actor.mjs" --prepare-finalization "$MBOT_SCRATCH" "$MBOT_WS"
+  fi
   [[ $(stat -c '%d:%i' "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_INODE" && $(realpath -e -- "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_DIR" ]] || { mbot_error 'Git directory replaced during managed turn'; exit 1; }
   mbot_guard_run
   mbot_turn_write_ledger committing
@@ -31,7 +34,7 @@ mbot_turn_finalize() {
     include "turn-outcome";
     mbot_execution_fault($session) as $execution_fault |
     (if .success then "completed"
-     elif $journal[0].schemaVersion==2 and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
+     elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
      else "failed" end) as $outcome |
     . + {outcome:$outcome, failure_count_effect:(if $outcome=="completed" then "reset" elif $outcome=="cancelled" then "preserve" else "increment" end),
       runtime:({kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,
@@ -39,7 +42,8 @@ mbot_turn_finalize() {
         request_ids:(reduce ($header[0].requestIds[], ($session[] | select(.type=="user/message") | .data.source |
           select(.kind=="user" or .kind=="retry") | (.rpcId // .requestId) | select(type=="string" and length>0))) as $id
           ([]; if index($id)==null then . + [$id] else . end))}
-          + (if $reply[0]==null then {} else {writer_scope:"agent-runtime",journal_schema_version:$journal[0].schemaVersion,reply:$reply[0]} end))}' \
+          + (if $reply[0]==null then {} else {writer_scope:"agent-runtime",journal_schema_version:$journal[0].schemaVersion,reply:$reply[0]} end)
+          + (if $journal[0].schemaVersion==3 then {actors:[$journal[0].actors[] | del(.token)]} else {} end))}' \
     "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
   node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" > "$MBOT_SCRATCH/sealed-meta.json"
   mv -- "$MBOT_SCRATCH/sealed-meta.json" "$MBOT_SCRATCH/meta.json"

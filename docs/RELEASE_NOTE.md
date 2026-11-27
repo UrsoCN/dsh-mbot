@@ -1,5 +1,15 @@
 # 发布说明
 
+## dev：Worker 委派的数据许可（未发布）
+
+- Chief 的 turn 可预留角色/任务/子 Session 并派生 ActorLease，固定 Git 上的人格/记忆和委派时的任务快照；支持本轮新建任务、同时最多两份许可、关闭释放容量，父回合统一提交。
+- native/shell 数据调用绑定 Actor 的角色与任务；禁止改看板、跨任务或冒用署名，remember 自动关联任务，归属/状态改变后拒绝旧结果。close 等待数据调用并撤销，父完成等待全部 Actor 关闭；过期可收尾，断连/部分保存/降版本保留证据，许可在上下文与审计中脱敏。
+- 委派契约使用 journal v3，普通前台继续 v2，旧 v1 保持兼容；Host 的许可登记须核验后才同步自身 guard 快照。原生 Runtime 尚未开放 Worker 模型执行，v3 的完整 Worker/原生 writer 恢复仍待接入；见 [数据许可与下一步](worker-leases.md)。
+
+类型、50 项 Host + 78 项 Runtime（128 项）、64 组 Bash 和四种安装通过；安装夹具实际运行委派数据流程，既有 Chromium Runtime/恢复回归通过。证据：`/tmp/mbot-actor-suite-verified.log`、`/tmp/mbot-plugin-install.8LWStN`、`/tmp/mbot-gui-runtime.4tCDza`。没有调用真实 DeepSeek API。
+
+本阶段按数据桥/CLI/Git 验收，不将数据许可当作原生 Worker 已交付。包仍为 0.1.1；Worker Agent/工具/事件、PTC、compact/sleep/checkpoint、IM/peer/outbox 与管理面板继续在 TODO。
+
 ## dev：真实 Runtime 模块交接（未发布）
 
 - Agent-owned 闸门改为版本化共享 WeakMap/driver；真正替换 ESM 模块后接管原 Agent/主 Session，不叠加旧 provider。关闭等待旧工具、审计、消息与回复 flush；整组 attachment 成功后才开放业务，首次注册失败只回滚自己的 effects。

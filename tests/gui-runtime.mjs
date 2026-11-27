@@ -164,6 +164,20 @@ try {
   await command(`/mbot init ${cliWs}`)
   const ctl = join(env.DSH_HOME, 'profiles/web/node_modules/.bin/botctl')
   const hostCall = async args => JSON.parse(await run(ctl, [...args, '--profile', 'web']))
+  const recoverHost = async botId => {
+    const deadline = Date.now() + 5000
+    for (;;) {
+      try { return await hostCall(['recover', '--bot', botId]) }
+      catch (error) {
+        // A sandboxed browser process can be briefly unreadable while exiting.
+        // Retry only the explicitly refused operation; every attempt rechecks
+        // ownership and Git/native evidence through the ordinary Host API.
+        if (Date.now() >= deadline || !error.message.includes('IPC_REJECTED')
+          || !error.message.includes('Cannot inspect possible writer pid ')) throw error
+        await delay(50)
+      }
+    }
+  }
   const cliBot = (await hostCall(['bots'])).value.bots.find(bot => bot.workspacePath === cliWs)
   assert.ok(cliBot.mainSessionId)
   const cliArgs = ['talk', '--bot', cliBot.botId, '--request-id', 'gui-cli-1', '--text', 'External CLI message']
@@ -258,7 +272,7 @@ try {
   await server.child.finished
   await rm(join(root, 'fixture-ready'))
   server = await host()
-  const recoveredCrash = await hostCall(['recover', '--bot', crashBot.botId])
+  const recoveredCrash = await recoverHost(crashBot.botId)
   assert.equal(recoveredCrash.value.success, false)
   assert.equal(recoveredCrash.value.outcome, 'failed')
   assert.equal(crashGit('rev-list', '--count', `${crashBase}..HEAD`), '1')

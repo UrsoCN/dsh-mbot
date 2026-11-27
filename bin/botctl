@@ -51,6 +51,7 @@ flock 9
 mutation=1
 if [[ ${1:-} == boot || ${1:-} == lint || ( ${1:-} == board && ${2:-} == show ) || ( ${1:-} == task && ${2:-} == show ) ]]; then mutation=0; fi
 mbot_check_permit "$mutation"
+mbot_check_command "$@"
 command=${1:-}; shift || true
 case $command in
   boot) mbot_boot "$@" ;;

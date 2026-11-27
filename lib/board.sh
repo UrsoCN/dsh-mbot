@@ -136,6 +136,10 @@ mbot_remember() {
   mbot_line "${MBOT_RUN_ID:-human}" || { mbot_error 'invalid run id'; return 1; }
   mbot_role "$actor"
   mbot_check_actor "$actor"
+  if [[ -v MBOT_ACTOR_ID ]]; then
+    [[ -z $task || $task == "$MBOT_ACTOR_TASK" ]] || { mbot_error 'candidate task must match the delegated task'; return 1; }
+    task=$MBOT_ACTOR_TASK
+  fi
   [[ -z $task ]] || mbot_task_path "$task" >/dev/null
   mbot_path inbox >/dev/null
   rel=inbox/$(date +%F).md
