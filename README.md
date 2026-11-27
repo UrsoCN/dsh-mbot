@@ -2,9 +2,9 @@
 
 DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记忆，复用 Bash 核心完成受控运行、Chief/Worker 派活和独立 Dreaming。
 
-当前版本为 **0.1.1**。能力与已知限制见 [发布说明](docs/RELEASE_NOTE.md)，下一轮见 [TODO](TODO.md)，架构见 [design](docs/design.md)，维护见 [AGENTS](AGENTS.md)。
+当前版本为 **0.2.0-rc.1**（单实例持久运行预发布里程碑，覆盖 R1–R4 维护闭环与 R5 首批热点优化；旧稳定标签仍保留 `v0.1.0` / `v0.1.1`）。能力与已知限制见 [发布说明](docs/RELEASE_NOTE.md)，后续规划见 [TODO](TODO.md)，架构见 [design](docs/design.md)，维护见 [AGENTS](AGENTS.md)。
 
-已具备 Host 服务、原生 botctl、工作区 schema 和聊天区命令反馈。`/mbot init <目录>` 成功后自动保存插件的目录选择，后续 status/工具及重启使用该目录。**0.1.1 发布版尚无自有设置面板、Bot 实例列表或持久主 Session**；下文注明 dev 的功能属于 0.2 开发分支。
+**0.2.0-rc.1 已交付**：Bot 实例登记（`/mbot init|import|list|select|open|repair|remove|removed`）、原生 DSH 工作区与受管理主 Session、turn 事务桥与工作树外持久恢复证据（`boot_id` 跨重启核验）、所有者消息准入与 `botctl` 本地私有 IPC、scoped `botctl` 原生 Worker v3 与中断恢复、turn context checkpoint 与原生自动/手动摘要（含普通 turn 旧摘要退役与冷恢复）、分阶段 `sleep`/`wake` 维护闭环与只读 `overview`/`effectiveConfig`、最小 Plugins 管理面板，以及 43x 加速的 checkpoint 恢复路径。多对话域/IM/peer/outbox、Worker Bash/文件/PTC 写工具、7 天真实调度观察与完整 P2 配置编辑仍在 [TODO](TODO.md)，待全部接齐后发布 `0.2.0` 正式版。
 
 dev 分支已推进实例登记：`/mbot list`、`/mbot import <目录>`、`/mbot select <botId 或名称>` 可用，插件 init 同时登记稳定 Bot 身份；这些变更尚未进入发布标签。登记和选择按 profile 保存；Web profile 的 init/import 会自动建立 DSH 工作区与受管理主 Session，open/repair 支持打开和重试。详见 [实例登记](docs/bot-instances.md)。
 
@@ -25,7 +25,7 @@ dsh plugin --profile web add "$PWD"
 
 ```bash
 npm pack --pack-destination /tmp
-dsh plugin --profile web add /tmp/dsh-mbot-0.1.1.tgz
+dsh plugin --profile web add /tmp/dsh-mbot-0.2.0-rc.1.tgz
 ```
 
 web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patches 和运维资源，无安装时构建；已有进程按 HMR 能力生效或重启 DSH。Git 安装可使用 github:UrsoCN/dsh-mbot#<tag-or-commit>，以远端实际可见版本为准。

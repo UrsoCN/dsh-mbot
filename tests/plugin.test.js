@@ -1212,6 +1212,13 @@ test('native results redact environment keys and credential-file literals', asyn
     assert.doesNotMatch(text(fallback), /credential-file-secret/u)
     await rm(config)
     assert.equal(await redact('https://user:password@example.test Bearer abcdefgh123456'), 'https://[REDACTED]@example.test Bearer [REDACTED]')
+    const { registerSecret } = await import('../plugin/redact.js')
+    const unregister = registerSecret('dynamic-short-lived-token-9999')
+    try {
+      assert.equal(await redact('leak dynamic-short-lived-token-9999 https://api.test/x?access_token=abc12345&ok=1'),
+        'leak [REDACTED] https://api.test/x?access_token=[REDACTED]&ok=1')
+      assert.equal(await redact('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg==\n-----END PRIVATE KEY-----'), '[REDACTED_PRIVATE_KEY]')
+    } finally { unregister() }
   } finally { delete process.env.MBOT_TEST_SECRET }
 })
 

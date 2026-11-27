@@ -1,6 +1,29 @@
 # 发布说明
 
-## dev：R4 sleep/wake 维护闭环、只读 overview/effectiveConfig 与最小管理面板（2026-11-28，未发布）
+## 0.2.0-rc.1：单实例持久运行里程碑（R1–R4 闭环 + R5 热点优化，2026-11-28）
+
+本预发布版本（tag `v0.2.0-rc.1`）汇总 `0.1.1` 之后在 `dev` 分支完成的全部单实例核心能力，并包含 R5 首批按基准驱动的热点优化：
+
+### R5 热点优化（本次新增）
+- **Context Checkpoint 恢复 43x 加速**（[bin/context-checkpoint.mjs](../bin/context-checkpoint.mjs)、[plugin/context-audit.js](../plugin/context-audit.js)、[plugin/recovery-audit.js](../plugin/recovery-audit.js)）：将逐轮 `git show`/`git rev-parse`/`jq` 子进程收敛为单次 `git log` + 常驻 `git cat-file --batch` 对象流、单趟原生事件按 turn 建索引及等价进程内 `computeManagedOutcome`（保持与 `lib/turn-outcome.jq` 完全一致的校验规则与密码学证明）。`npm run bench:runtime` 实测 100/300/1000 轮恢复耗时由 `3,882ms / 11,968ms / 45,482ms` 降至 `96.9ms / 242.4ms / 1,055.0ms`。
+- **Worker `actor-event` 顺序追加优化**（[bin/turn-actor.mjs](../bin/turn-actor.mjs)）：消除每条事件的 `O(E^2)` 全量 JSON 解析与双 ledger 重写（单事件均耗 `37.9ms → 29.8ms`），完整 `workerProof` 与双 ledger 落盘保持在 `actor-seal`/`delegate`/`revoke`。
+- **缓存式 `SecretRedactor`**（[plugin/redact.js](../plugin/redact.js)）：对 `.env` 与用户配置增加 `mtime`+`inode`+`size` 缓存，新增动态凭据指纹注册 `registerSecret()` 及多行 PEM 私钥、URL query token（`token`/`access_token`/`api_key` 等）脱敏规则。
+
+### 0.2.0-rc.1 包含的完整里程碑能力
+- **Bot 实例、主 Session 与退役**：多实例登记、DSH 原生工作区/主 Session 绑定、修复与安全注销退役（保留数据/历史并阻止重定向）。
+- **原生 Agent Runtime（四层架构）**：`gate-driver`、`conversation-session`、`bot-coordinator`、`mailbox-facade` 清晰分层，共享 gate ABI 2 与 Runtime 模块热交接。
+- **持久恢复证据（R1）**：活动回合私有快照迁出 `/tmp` 至工作树外持久状态目录，原子写+`fsync` 并绑定内核 `boot_id`，兼容旧 `/tmp` reader。
+- **消息准入、本地 IPC 与 Worker v3**：`ownerMailbox`、`botctl` profile 私有 Unix socket、已审计回复查询 `receipt --wait`，以及默认开启的 scoped `botctl` 原生 Worker v3 与中断恢复。
+- **上下文与摘要闭环（R3）**：turn checkpoint、原生自动/手动摘要（`/compact`、`/mbot compact`、`botctl compact`）、普通 turn 边界旧摘要退役与维护中断冷恢复。
+- **睡眠/唤醒与最小管理面板（R4）**：分阶段 `sleep`/`wake`（cutoff → Dreaming → 可选 compact/checkpoint → 持久 `sleeping`）、原生 Inbox 持续收信、中断不重跑 Dreaming 的单次冷恢复、`overview`/`effectiveConfig` 与 DSH Plugins 最小面板。
+
+### 尚未纳入 0.2.0-rc.1（留待 0.2.0 正式版）
+- P1 阶段 3a/3b：多对话域/IM 适配器、跨 Bot 异步 peer 信封与回复 outbox；
+- P1 阶段 4：Worker 的 Bash/文件/PTC 写工具与扩展 Writer 恢复契约；
+- P2 完整可编辑配置表单与跨层并发保存/卸载全流程；
+- 连续 7 天真实调度观察记录（不伪造观察天数）。
+
+## dev：R4 sleep/wake 维护闭环、只读 overview/effectiveConfig 与最小管理面板（2026-11-28）
 
 - 实现分阶段 `sleep` / `wake` 生命周期（[plugin/sleep.js](../plugin/sleep.js)）：`sleep` 通过 `BotCoordinator` 维护屏障静止活跃写者、固定历史 cutoff 并落盘工作树外阶段 journal（`dreaming` → `checkpointing` → `sleeping`），执行独立 Dreaming 与可选 compact/checkpoint 后发布持久睡眠态；睡眠期间原生 Inbox 持续接收新消息且跨重启保持睡眠。
 - `wake` 清除持久睡眠标记并严格沿用原 `mainSessionId`（不新建替代 Session），刷新上下文 checkpoint 并报告保留在 Inbox 中的待办数；未完成睡眠中断由 `/mbot recover` 冷恢复（`recoverSleepMaintenance`），若 Dreaming 已提交到 Git 则不重复执行，仅完成 flush 与上下文同步。

@@ -138,13 +138,20 @@ try {
     const actor = saved.actors.find(actor => actor.actorId === request.actorId)
     if (!actor || actor.kind !== 'native-worker' || actor.state !== 'active' || actor.native) fail('Worker native lifetime is not active')
     const file = `actor-${actor.actorId}.events.jsonl`
-    const events = (await safeFile(scratch, file, true)).split('\n').filter(Boolean).map(line => JSON.parse(line))
     if (request.kind === 'actor-event') {
-      if (request.event?.seq !== events.length || typeof request.event.type !== 'string') fail('Worker native event cut changed')
+      // Avoid O(E^2) JSON parse + double ledger rewrite on every sequential event:
+      // validate file safety and count existing newline-delimited frames directly,
+      // then append+fsync only the new event line. Full event verification runs on actor-seal.
+      const raw = await safeFile(scratch, file, true)
+      let existingCount = 0
+      for (let i = 0; i < raw.length; i++) if (raw.charCodeAt(i) === 10) existingCount++
+      if (request.event?.seq !== existingCount || typeof request.event.type !== 'string') fail('Worker native event cut changed')
       await writeFile(join(scratch, file), JSON.stringify(request.event) + '\n', { flag: 'a' })
       await syncFile(join(scratch, file))
-      response = { kind: 'recorded', requestId: request.requestId }
+      process.stdout.write(JSON.stringify({ kind: 'recorded', requestId: request.requestId }) + '\n')
+      process.exit(0)
     } else {
+      const events = (await safeFile(scratch, file, true)).split('\n').filter(Boolean).map(line => JSON.parse(line))
       const proof = JSON.parse(await safeFile(scratch, `actor-${actor.actorId}.json`, true))
       actor.native = workerProof(actor, proof.snapshot, events, { ...request.input, parentSessionId: saved.sessionId, runId: saved.runId }, saved.runtimeOwnership)
       await replace(join(scratch, `actor-${actor.actorId}.native.json`), { input: request.input, native: actor.native })

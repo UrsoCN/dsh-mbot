@@ -1,6 +1,6 @@
 {
   "name": "dsh-mbot",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.1",
   "description": "Markdown and Git bot workspaces, Chief/Worker orchestration and Dreaming for DeepSeek Harness",
   "type": "module",
   "main": "./plugin/index.js",
