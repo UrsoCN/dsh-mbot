@@ -1,6 +1,6 @@
 # 前台 Runtime 中断恢复（dev）
 
-本阶段为未发布的 dev，包仍为 0.1.1。恢复当前受管理的主 Session 与前台工具回合；Worker、PTC/后台或经 IPC 交接的写者、睡眠 checkpoint，以及原生日志缺失的恢复仍在 TODO。
+本阶段为未发布的 dev，包仍为 0.1.1。恢复当前受管理的主 Session 与前台工具回合；[scoped botctl Worker 的 v3 恢复](worker-recovery.md) 已扩展；Worker 其他工具、PTC/后台或经 IPC 交接的写者、睡眠 checkpoint，以及原生日志缺失的恢复仍在 TODO。
 
 ## 使用
 
@@ -22,7 +22,7 @@ botctl runtime --profile web --bot <稳定 bot-UUID>
 
 ## 写者与原生事件证明
 
-Runtime 的新 turn 保存 runtimeOwnership v1：foreground-only、workerDepth=0 和本轮固定工具名单。未声明前台生命周期、后加入本轮名单之外的工具，以及 run_code/spawn_agent/send_message 均不能作为该契约的写者。自定义前台工具仍是受信任 Host 的声明，必须实际等待所有写者，不把跨系统回执当作结束。现有同权限插件约束不是安全沙箱。
+Runtime 的前台 turn 保存 runtimeOwnership v1：foreground-only、workerDepth=0 和固定工具名单；支持 Worker 的 Chief turn 使用 runtimeOwnership v2/journal v3，须另核对 [子会话与派生许可](worker-recovery.md)。未声明前台生命周期、后加入本轮名单之外的工具，以及 run_code/spawn_agent/send_message 均不能作为该契约的写者。自定义前台工具仍是受信任 Host 的声明，必须实际等待所有写者，不把跨系统回执当作结束。现有同权限插件约束不是安全沙箱。
 
 恢复流程：
 

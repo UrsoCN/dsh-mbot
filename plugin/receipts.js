@@ -21,9 +21,11 @@ export async function messageReceipt(runtime, agent, botId, rpcId, binding, conf
   if (record.delivery === 'cancelled') return result('cancelled', confirmation === 'confirmed')
   const turn = index.turns.get(record.turn)
   if (!turn || turn.endSeq !== record.endSeq) return result('unverified')
+  const events = log.events.filter(event => event.seq >= turn.startSeq && event.seq <= turn.endSeq && !event.ignorable)
+  const workers = await runtime.workerLogs(events)
   const child = runtime.ctx.mbot.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/turn-receipt.mjs')],
     cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ workspace: bot.workspacePath, botId, sessionId: agent.id,
-      record, turn, confirmation, events: log.events.filter(event => event.seq >= turn.startSeq && event.seq <= turn.endSeq && !event.ignorable) }) },
+      record, turn, confirmation, events, workers }) },
       stdout: { maxBytes: 1600000 }, stderr: { maxBytes: 8000 } } })
   runtime.ctx.mbot.active.add(child)
   try {

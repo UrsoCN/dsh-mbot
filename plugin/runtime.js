@@ -3,7 +3,8 @@ import { registerBotctl } from './tools.js'
 import { WorkerManager, WorkerSession, workerTools } from './workers.js'
 import { Service } from '@deepseek-ai/cordis'
 import * as nativeBash from '@deepseek-ai/dsh-tool-bash'
-import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, interruptedTurnClosers } from '@deepseek-ai/dsh-session'
+import { workerRecoveryPrefix } from './worker-recovery-proof.js'
 import { botSections, reconcileContext, turnContext } from './context.js'
 import { redact } from './redact.js'
 import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSource, deliveryReceipt, operationalSource } from './messages.js'
@@ -13,7 +14,7 @@ import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
-export const Config = z.object({ workers: z.boolean().default(false).description('Enable native Worker execution while its extended recovery is being developed.') })
+export const Config = z.object({ workers: z.boolean().default(true).description('Allow Chief Sessions to delegate task data operations to fresh Workers.') })
 export const runtimeRecordType = 'plugin:mbot/runtime-turn'
 const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
 
@@ -374,7 +375,7 @@ export class MBotRuntime extends Service {
 
   constructor(ctx, config = {}) {
     super(ctx, 'mbotRuntime')
-    this.workersEnabled = config.workers === true
+    this.workersEnabled = config.workers !== false
     this.states = new Map()
     this.foreground = new Set(foregroundTools)
     this.foregroundOwners = new Map()
@@ -548,7 +549,7 @@ export class MBotRuntime extends Service {
   }
 
   async attachWorker(agent, member) {
-    if (member.done || !member.actor || agent.session.header.parentSession !== member.parent.agent.id || agent.session.header.origin !== 'subagent'
+    if (member.done || member.state || !member.actor || agent.session.header.parentSession !== member.parent.agent.id || agent.session.header.origin !== 'subagent'
       || agent.session.header.delegationDepth !== 1 || agent.session.header.isSeeded === true) throw new Error('Worker publication does not match its reserved native identity')
     const cell = { schemaVersion: gateSchemaVersion }
     if (cells.has(agent)) throw new Error('Worker already has a gate owner')
@@ -563,6 +564,41 @@ export class MBotRuntime extends Service {
   }
 
   worker(agent) { return this.states.get(agent)?.worker === true }
+  /** Restore only native closers, with no Actor permit or business execution. */
+  async acquireRecoveryWorker(journal, actor, signal) {
+    if (this.closed || !this.recoveries.has(journal.botId)
+      || this.ctx.agents.get(actor.sessionId)) throw new Error('Worker recovery writer is already owned or unavailable')
+    const persistence = this.ctx.get('sessionPersistence')
+    if (!persistence) throw new Error('Worker recovery requires native Session persistence')
+    const handle = await persistence.open(actor.sessionId, 'write', { signal })
+    try {
+      const header = handle.header
+      if (header.origin !== 'subagent' || header.parentSession !== journal.sessionId || header.cwd !== journal.workspace
+        || header.delegationDepth !== 1 || header.isSeeded === true || handle.inheritedEventCount !== 0) throw new Error('Worker recovery Session assignment changed')
+      const loaded = await handle.read(0, undefined, { signal })
+      await workerRecoveryPrefix(journal, actor, { session: header, events: loaded.events })
+      // This is the same public native repair function used by Agent.resume.
+      // Hold the exclusive writer throughout Git settlement, without creating
+      // an executable Agent or reactivating the old assignment/Inbox.
+      const closers = interruptedTurnClosers(loaded.events)
+      if (closers.length) await handle.append(closers)
+      const read = await handle.read(0, undefined, { signal })
+      return { log: { session: structuredClone(header), inheritedEventCount: handle.inheritedEventCount, events: read.events },
+        dispose: () => handle.close() }
+    } catch (error) {
+      await handle.close().catch(() => {})
+      throw error
+    }
+  }
+  async workerLogs(events) {
+    const ids = [...new Set(events.filter(event => event.type === 'subagent/catalog').map(event => event.data.childId))]
+    const logs = []
+    for (const id of ids) {
+      try { logs.push(await this.ctx.sessionQuery.readSession(id)) }
+      catch { /* A missing native log remains unverified by the audit reader. */ }
+    }
+    return logs
+  }
   async workerAction(agent, action, args, signal) {
     const state = this.states.get(agent)
     if (!state || state.worker || !state.current?.lease || state.current.ended || state.current.lease.snapshot.role !== 'chief') throw new Error('Only an active Chief turn can control its Workers')

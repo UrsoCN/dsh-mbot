@@ -11,9 +11,14 @@ mbot_turn_write_ledger() {
 }
 mbot_turn_finalize() {
   local events_file=${MBOT_RECOVERY_EVENTS:-$MBOT_SCRATCH/session-events.jsonl} finish_file=${MBOT_RECOVERY_FINISH:-$MBOT_SCRATCH/finish.json}
+  local turn_ledger=${MBOT_RECOVERY_LEDGER:-$MBOT_SCRATCH/ledger.json}
   flock 9
   if [[ $(jq -r .schemaVersion "$MBOT_SCRATCH/ledger.json") == 3 ]]; then
-    node "$MBOT_ROOT/bin/turn-actor.mjs" --prepare-finalization "$MBOT_SCRATCH" "$MBOT_WS"
+    if [[ ${MBOT_RECOVERING:-0} == 1 ]]; then
+      node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --validate "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS"
+    else
+      node "$MBOT_ROOT/bin/turn-actor.mjs" --prepare-finalization "$MBOT_SCRATCH" "$MBOT_WS"
+    fi
   fi
   [[ $(stat -c '%d:%i' "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_INODE" && $(realpath -e -- "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_DIR" ]] || { mbot_error 'Git directory replaced during managed turn'; exit 1; }
   mbot_guard_run
@@ -30,7 +35,7 @@ mbot_turn_finalize() {
   request=$(jq -r .request "$MBOT_SCRATCH/header.json")
   mbot_render "$request" "$elapsed" "$rc" "$role" ''
   node "$MBOT_ROOT/bin/turn-reply.mjs" "$MBOT_SCRATCH/header.json" "$events_file" "$finish_file" > "$MBOT_SCRATCH/reply.json"
-  jq -L "$MBOT_ROOT/lib" --slurpfile header "$MBOT_SCRATCH/header.json" --slurpfile journal "$MBOT_SCRATCH/ledger.json" --slurpfile session "$events_file" --slurpfile reply "$MBOT_SCRATCH/reply.json" '
+  jq -L "$MBOT_ROOT/lib" --slurpfile header "$MBOT_SCRATCH/header.json" --slurpfile journal "$turn_ledger" --slurpfile session "$events_file" --slurpfile reply "$MBOT_SCRATCH/reply.json" '
     include "turn-outcome";
     (mbot_execution_fault($session) or any($journal[0].actors[]?; .native.executionFault==true)) as $execution_fault |
     .success=(.success and ($execution_fault|not)) |

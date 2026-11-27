@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { setTimeout as delay, setImmediate } from 'node:timers/promises'
 
-export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents', 'commands', 'workspaceController']
+export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents', 'sessions', 'commands', 'workspaceController']
 if (process.env.MBOT_GUI_RUNTIME_ROOT) await writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-imported'), '')
 export function apply(ctx) {
   void writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-applied'), '')
@@ -84,6 +84,15 @@ async function setup(ctx) {
             || !JSON.stringify(request.messages).includes('gui-coder-private-memory-334411')) throw new Error('GUI Worker role snapshot missing')
           const n = (workerSteps.get(request.sessionId) ?? 0) + 1
           workerSteps.set(request.sessionId, n)
+          await appendFile(marker('worker-requests.jsonl'), JSON.stringify({ sessionId: request.sessionId, step: n })+'\n')
+          if (n === 4 && existsSync(marker('crash-worker-next'))) {
+            await unlink(marker('crash-worker-next'))
+            await ctx.sessions.flush(agent.session)
+            const parent = ctx.agents.get(lease.identity.parentSessionId)
+            await ctx.sessions.flush(parent.session)
+            await writeFile(marker('crash-worker-model-waiting'), '')
+            await wait('release-crash-worker-model')
+          }
           const args = n === 1 ? { action: 'boot', bot: 'coder', task_id: lease.identity.taskId }
             : n === 2 ? { action: 'task_result', task_id: lease.identity.taskId, text: 'GUI native Worker result' }
               : n === 3 ? { action: 'remember', text: 'GUI Worker candidate' } : undefined
@@ -95,10 +104,10 @@ async function setup(ctx) {
           return
         }
         const user = request.messages.filter(message => message.role === 'user' && message.content.some(block => block.type === 'text'
-          && /^(hold audit|slow writer|queued after writer|wake|fail audit|crash hold|resume after crash recovery|native worker)$/u.test(block.text))).at(-1)
+          && /^(hold audit|slow writer|queued after writer|wake|fail audit|crash hold|resume after crash recovery|native worker|crash worker)$/u.test(block.text))).at(-1)
         const text = user?.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
         await appendFile(marker('requests.jsonl'), JSON.stringify({ sessionId: request.sessionId, text }) + '\n')
-        if (text === 'native worker') {
+        if (text === 'native worker' || text === 'crash worker') {
           const n = (workerSteps.get(request.sessionId) ?? 0) + 1
           workerSteps.set(request.sessionId, n)
           const members = [...ctx.mbotRuntime.states.get(agent).current.workers ?? []]

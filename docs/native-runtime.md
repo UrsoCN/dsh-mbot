@@ -30,11 +30,11 @@ Runtime 在 tools/execute 记录前台调用，工具结果进入 Session 前脱
 
 turn/end 后等待调用及事件写入，再 guard、审计并提交；结束消息本身是同步事件，后续 prompt 用 pending barrier 等待完成。期限及 lease.cancel 先取消真实 Agent（keepInbox=true），等待本轮 end 与写者，再结算。管道读期限留出完成阶段的时间，避免正常取消收尾被过早视为 Host 失联。干净的用户停止保留原故障计数，越权/已有执行故障仍递增，见 [turn outcome](turn-outcomes.md)。
 
-[原生 Worker 最小执行](native-workers.md) 已接入固定角色快照、共享事务、scoped botctl 和结束审计，workers 默认关闭；原生 spawn_agent/send_message 仍拒绝，启用后通过 botctl worker_* 操作。后台能力的 run_code 不在默认前台白名单；其他未声明前台生命周期的工具也拒绝，不把一个 accepted/job 收据当作写者静止证明。Root 模型输出后，聊天区独立卡片展示 Host 验收/提交结果；runtime/stop 与原生停止的队列/收尾验收见 [Runtime 反馈](runtime-feedback.md)。
+[原生 Worker 最小执行](native-workers.md) 已接入固定角色快照、共享事务、scoped botctl 和结束审计，scoped botctl Worker 默认开启并支持 [v3 恢复](worker-recovery.md)；原生 spawn_agent/send_message 仍拒绝，通过 botctl worker_* 操作。后台能力的 run_code 不在默认前台白名单；其他未声明前台生命周期的工具也拒绝，不把一个 accepted/job 收据当作写者静止证明。Root 模型输出后，聊天区独立卡片展示 Host 验收/提交结果；runtime/stop 与原生停止的队列/收尾验收见 [Runtime 反馈](runtime-feedback.md)。
 
 ## 恢复与验证
 
-此 Runtime 的 journal 标为 writerScope=agent-runtime，新 turn 保存固定 foreground-only v1 契约。Host /mbot recover 与 botctl recover 已协调原生写者、Agent/工具、Git 和回执；独立 mbot recover 仍只处理 data-subprocesses。原生 resume 产生真实 closers，旧头须有原 Host 的捕获记录；不能改 scope、删 journal 或普通 resume 绕过。Worker、后台/IPC 写者、缺失日志/旧契约迁移及 checkpoint 继续在 P1，见 [Runtime 恢复](runtime-recovery.md)。
+此 Runtime 的 journal 标为 writerScope=agent-runtime，前台 turn 保存固定 foreground-only v1 契约；开启 Worker 的 Chief turn 使用 foreground-workers v2 和 journal v3，恢复见 [Worker 恢复](worker-recovery.md)。Host /mbot recover 与 botctl recover 已协调原生写者、Agent/工具、Git 和回执；独立 mbot recover 仍只处理 data-subprocesses。原生 resume 产生真实 closers，旧头须有原 Host 的捕获记录；不能改 scope、删 journal 或普通 resume 绕过。Worker 其他工具、后台/IPC 写者、缺失日志/旧契约迁移及 checkpoint 继续在 P1，见 [Runtime 恢复](runtime-recovery.md)。
 
 验证使用真实 AgentLoop、LLM service/本地 scripted adapter、原生工具执行器、Bash/subprocess 和 Git，没有调用 DeepSeek API：
 

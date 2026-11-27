@@ -59,6 +59,11 @@ try {
     const proof = runtimeProof = await validateRecoveryProof(process.argv[5], record)
     if (String(proof.ownerPid) !== process.argv[3] || proof.ownerStart !== process.argv[4]) throw new Error('Runtime recovery proof does not belong to the coordinating Host')
   } else if (record.writerScope !== 'data-subprocesses') throw new Error('Unsupported writer recovery scope')
+  const permits = new Set([record.token, ...(record.actors ?? []).map(actor => actor.token)])
+  const holdsPermit = env => env.some(value => {
+    const match = /^(?:MBOT_PERMIT_TOKEN|DSH_MBOT_PERMIT_TOKEN)=(.*)$/u.exec(value)
+    return match && permits.has(match[1])
+  })
   for (const [pid, expected, label] of [[record.pid, record.pidStart, 'turn writer'], [record.ownerPid, record.ownerStart, 'owning Host']]) {
     if (!Number.isSafeInteger(pid) || pid <= 0) continue
     const live = await start(pid)
@@ -97,14 +102,14 @@ try {
         catch (retry) { if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(retry.code)) throw retry }
       }
       if (env) {
-        if (env.some(value => value === `MBOT_PERMIT_TOKEN=${record.token}` || value === `DSH_MBOT_PERMIT_TOKEN=${record.token}`)) throw new Error(`A permit-bearing process is still present (pid ${name}); settle it before recovery`)
+        if (holdsPermit(env)) throw new Error(`A permit-bearing process is still present (pid ${name}); settle it before recovery`)
         continue
       }
       if (await start(Number(name)) !== birth) continue
       // A newly launched inaccessible process could still hold the permit.
       throw new Error(`Cannot inspect possible writer pid ${name}`)
     }
-    if (env.some(value => value === `MBOT_PERMIT_TOKEN=${record.token}` || value === `DSH_MBOT_PERMIT_TOKEN=${record.token}`)) {
+    if (holdsPermit(env)) {
       throw new Error(`A permit-bearing process is still present (pid ${name}); settle it before recovery`)
     }
   }

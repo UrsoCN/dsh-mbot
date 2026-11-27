@@ -4,12 +4,12 @@
 
 ## 启用与使用
 
-`dsh-mbot/runtime` 的 `workers` 默认 false。可在对应 profile 的插件配置中显式开启：
+`dsh-mbot/runtime` 的 `workers` 默认 true，当前只开放 scoped botctl。可在对应 profile 中设置 false 保持前台模式：
 
 ```yaml
 - id: mbot-runtime
   config:
-    workers: true
+    workers: false
 ```
 
 需要原生 `subagents` 服务和 `spawn` provider。Host 不另起模型进程，不安装自己的 Agent 工厂；provider 必须声明不继承父上下文，创建结果还须通过 origin、parentSession、depth、cwd、seed 和实际继承事件数的验证。
@@ -49,4 +49,4 @@ Runtime 持有每次 `startActivation` 返回的确切 activation/result/dispose
 
 真实 DSH Agent + 本地 scripted adapter 覆盖固定记忆/任务、原生 botctl、两任务并行/重复拒绝、等待取消、creator 纠偏、父取消后的晚到写者、一次审批及拒绝、boot 闸门、跨任务失败传播、创建中取消、旧子身份拒绝、显式 stop/fresh 替换、token 耗尽的部分输出和无效工具 JSON。实际安装后的 Chromium 流程检查主 Session 派活、任务结果/候选、一次父审计、私有角色记忆隔离及多窗口重放。
 
-Worker 契约使用 journal v3。完整 Worker/其他写者的冷恢复尚未实现，现有 recover 拒绝该契约并保留现场；即使本轮未实际派活，开启开关后的 Chief turn 也捕获 v3 契约；非 Chief 主 Session 仍使用前台 v2，不按角色名误判为 Worker。因此保持默认关闭，生产扩大使用前先完成恢复验收。Bash/文件/PTC、后台与跨系统写者、checkpoint/compact/sleep、IM/peer/outbox 和管理面板继续在 [TODO](../TODO.md)。
+Worker 契约使用 journal v3。[scoped botctl Worker 恢复与模块交接](worker-recovery.md) 已交付：原生 writer/closers、子事件/结果证明、派生恢复 ledger、单次 Git 结算及 v3 回复共同核验，当前能力已默认开启。即使本轮未实际派活，开启后的 Chief turn 也捕获 v3 契约；非 Chief 或关闭 workers 的主 Session 使用前台 v2。未知工具/旧契约、缺失或冲突的原生日志仍保留证据并拒绝。Bash/文件/PTC、后台与跨系统写者、checkpoint/compact/sleep、IM/peer/outbox 和管理面板继续在 [TODO](../TODO.md)。

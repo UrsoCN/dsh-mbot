@@ -70,7 +70,7 @@ mbot_turn_recover() {
   if [[ $scope == agent-runtime && -z ${MBOT_RUNTIME_RECOVERY_PROOF:-} ]]; then
     mbot_error 'Agent Runtime recovery needs the live Host and native Session/tool coordination; use /mbot recover or botctl recover'; return 1
   fi
-  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
+  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2 or (.schemaVersion==3 and .writerScope=="agent-runtime")) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))
     and (.scratch|type)=="string" and (.scratch|test("^/tmp/mbot-turn\\.[A-Za-z0-9]+$"))
@@ -158,6 +158,7 @@ mbot_turn_recover() {
     node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --materialize "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS"
     MBOT_RECOVERY_EVENTS=$scratch/runtime-recovery.events.jsonl
     MBOT_RECOVERY_FINISH=$scratch/runtime-recovery.finish.json
+    if [[ $(jq -r .schemaVersion "$ledger") == 3 ]]; then MBOT_RECOVERY_LEDGER=$scratch/runtime-recovery.ledger.json; fi
   fi
   if [[ ! -f $scratch/finish.json && $scope != agent-runtime ]]; then
     jq -n --slurpfile token "$scratch/token.json" '{kind:"finish",token:$token[0],reason:{kind:"aborted",message:"Recovered interrupted turn"},text:""}' > "$scratch/finish.json"

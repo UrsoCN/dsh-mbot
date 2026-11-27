@@ -4,6 +4,7 @@ import { journalDigest, readJournal, recoveryInput, validateOwnership } from './
 import { processStart } from './recovery.js'
 import { fileURLToPath } from 'node:url'
 import { readonlyLegacy } from './readonly-migration.js'
+import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 
 function awaited(signal, operation) {
@@ -31,10 +32,12 @@ export async function repairNativeReceipt(runtime, bot, options) {
       const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === record.turn)
       const end = log.events.find(event => event.type === 'turn/end' && event.data.turn === record.turn)
       if (!start || !end || log.session.id !== state.agent.id || log.session.cwd !== bot.workspacePath) throw new Error('Native receipt recovery identity changed')
+      const events = log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && !event.ignorable)
+      const workers = await runtime.workerLogs(events)
       const check = runtime.ctx.mbot.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/turn-runtime-recovery.mjs'), '--audit-input'],
         cwd: packageRoot, signal: options.signal, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ workspace: bot.workspacePath,
           header: { botId: bot.botId, sessionId: state.agent.id, turn: record.turn, writerScope: 'agent-runtime', messages: record.messages },
-          events: log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && !event.ignorable), result }) },
+          events, workers, result }) },
           stdout: { maxBytes: 8000 }, stderr: { maxBytes: 8000 } } })
       runtime.ctx.mbot.active.add(check)
       try {
@@ -62,6 +65,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
   // Publication is synchronous: all existing/new Agent gates now reject turns.
   runtime.recoveries.set(bot.botId, completion)
   let directory
+  const workerHandles = []
   try {
     options.signal?.throwIfAborted()
     await awaited(options.signal, Promise.allSettled(states.map(state => state.pending)))
@@ -85,20 +89,32 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     const ownerStart = await processStart()
     const captured = journal.ownerPid === process.pid && journal.ownerStart === ownerStart
       && states.some(state => state.current?.lease?.identity.runId === journal.runId || state.failedAuditRunId === journal.runId)
-    if (!captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership)
+    if (journal.schemaVersion === 3) workerRecoveryContract(journal)
+    if (!captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
     options.signal?.throwIfAborted()
     if (runtime.closed || runtime.ctx.mbot.closed) throw new Error('MBot Runtime closed during recovery')
     await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
     const log = await awaited(options.signal, runtime.ctx.sessionQuery.readSession(agent.id))
     const input = await recoveryInput(journal, log)
+    const workers = []
+    if (journal.schemaVersion === 3) {
+      for (const actor of journal.actors) {
+        // Native creation owns rollback on cancellation. Never abandon a
+        // resolving handle behind an observation-only Promise.race.
+        const handle = await runtime.acquireRecoveryWorker(journal, actor, options.signal)
+        workerHandles.push(handle)
+        workers.push(handle.log)
+      }
+      input.actors = await workerRecoveryInput(journal, workers)
+    }
     const legacyEvidence = !captured && journal.runtimeOwnership === undefined ? readonlyLegacy(journal, input) : undefined
     const start = input.events[0].seq, end = input.events.at(-1).seq
     directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
     const proofFile = join(directory, 'proof.json')
     await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart,
-      mode: captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
+      mode: journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
       ...(captured ? { capturedRunId: journal.runId } : {}), ...(legacyEvidence ? { evidence: legacyEvidence } : {}),
-      journalHash: journalDigest(journal), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,
+      journalHash: journalDigest(journal), ...(journal.schemaVersion === 3 ? { workers } : {}), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,
         events: log.events.filter(event => event.seq >= start && event.seq <= end) }, input }), { mode: 0o600, flag: 'wx' })
     const result = await runtime.ctx.mbot.execute('mbot', ['recover'], { workspace: bot.workspacePath, signal: options.signal,
       recoveryOwner: { pid: process.pid, start: ownerStart, runtimeProof: proofFile } })
@@ -128,9 +144,12 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     }
     return recovered
   } finally {
+    const released = await Promise.allSettled(workerHandles.map(handle => handle.dispose()))
     if (directory) await rm(directory, { recursive: true, force: true })
     runtime.recoveries.delete(bot.botId)
     completion.resolve()
+    const failure = released.find(item => item.status === 'rejected')
+    if (failure) throw failure.reason
   }
 }
 

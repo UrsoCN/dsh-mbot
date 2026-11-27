@@ -44,9 +44,9 @@ dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 sch
 |---|---|
 | plugin/index.js | mbot 服务、volatile workspace、受管理子进程、初始化与配置保存 |
 | plugin/client.js | DSH lazy-CJS 浏览器入口；命令活动贡献，复用原生卡片 |
-| plugin/turn.js、bin/mbot-turn、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与数据恢复：快照/锁/许可/审计、写者核实和准确 commit 识别；Worker/checkpoint 与 Runtime 恢复仍待完成 |
+| plugin/turn.js、bin/mbot-turn、lib/permit.sh、lib/turn*.sh | dev 的 Host turn 事务桥与数据恢复：快照/锁/许可/审计、写者核实和准确 commit 识别；前台/原生 Worker 恢复已接入，其他写者与 checkpoint 待完成 |
 | plugin/binding.js | dev 的官方实体创建/修复、持久预留与只读主会话打开 |
-| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体已接入，Worker、消息与生命周期恢复仍待完成 |
+| plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体已接入，scoped botctl Worker/恢复已接入，消息域与其他生命周期待完成 |
 | plugin/messages.js | dev 的所有者私聊信封与原生日志请求投影；模型消费仍归 DSH Inbox，不另建队列 |
 | plugin/ipc.js、ipc-protocol.js、bin/botctl-host.mjs | dev 的本地所有者 CLI/profile 私有 socket，端点归属/断连/关闭 drain；不复制模型队列 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
@@ -123,7 +123,7 @@ Web profile 的插件 /mbot init 已接入以下流程，详见 [主会话](main
 
 主 Session 的目标是受插件管理的真实交互会话：按版本组合 SOUL、MEMORY、近期摘要/原始尾部与本次请求，配合 compact 和睡眠。DSH 持有 Session 日志/Inbox/Agent，MBot Runtime 持有业务上下文、准入、来源和写事务；启用业务对话前接入每轮基准、锁、guard 与审计，不再以长期“只读入口”作为目标。0.1 headless 入口保留兼容，Worker/Dreaming 不复用主 Session。详见 [Session Runtime](session-runtime.md)。
 
-dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。规范化 [turn outcome](turn-outcomes.md) 区分用户取消与故障，并在 Git 结算/恢复时使用相同规则。dev 的 [所有者准入](message-admission.md) 已接入 Host 门面、原生 Web/steer 请求关联、来源与持久化闸门、日志去重及投递收据；[本地 CLI IPC](host-ipc.md) 将外部 botctl 接到同一 Runtime，提供 profile 私有端点、所有者身份、断连与重载去重。[请求结果](request-replies.md) 已核验原生事件/Git/journal 并查回固定回复信封；dev 已接入 [前台 Runtime/Agent 中断恢复](runtime-recovery.md)，复用原生 resume closers、独占 Session writer、Bot 闸门和 Git/原生审计证明；核心只读旧回合已接入 [迁移证明](legacy-migration.md)；Worker、后台/IPC 写者、非只读/未知旧契约与缺失原生日志的恢复，以及 IM/peer、outbox、compaction/sleep/checkpoint 仍待完成。
+dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。规范化 [turn outcome](turn-outcomes.md) 区分用户取消与故障，并在 Git 结算/恢复时使用相同规则。dev 的 [所有者准入](message-admission.md) 已接入 Host 门面、原生 Web/steer 请求关联、来源与持久化闸门、日志去重及投递收据；[本地 CLI IPC](host-ipc.md) 将外部 botctl 接到同一 Runtime，提供 profile 私有端点、所有者身份、断连与重载去重。[请求结果](request-replies.md) 已核验原生事件/Git/journal 并查回固定回复信封；dev 已接入 [前台 Runtime/Agent 中断恢复](runtime-recovery.md)，复用原生 resume closers、独占 Session writer、Bot 闸门和 Git/原生审计证明；核心只读旧回合已接入 [迁移证明](legacy-migration.md)；[scoped botctl Worker 恢复](worker-recovery.md) 已接入；Worker 其他工具、后台/IPC 写者、非只读/未知旧契约与缺失原生日志的恢复，以及 IM/peer、outbox、compaction/sleep/checkpoint 仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
@@ -131,7 +131,7 @@ dev 已支持 [显式注销与持久 Session 退役](bot-removal.md)：独立 Bo
 
 当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定已接入；对话域、迁移与完整生命周期仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
 
-dev 已交付 [Worker 数据许可](worker-leases.md)：父 turn 可预留角色/任务/子 Session 身份，派生数据许可和固定快照，共享一次 Git 结算。普通前台仍写 journal v2；委派契约使用 v3，其他 writer 的恢复不沿用原契约。[原生 Worker](native-workers.md) 已在该许可上接入 fresh Agent、固定角色上下文、scoped botctl、并发/取消和父审计，workers 默认关闭；Bash/文件/PTC、活跃重载与冷恢复继续在 P1。
+dev 已交付 [Worker 数据许可](worker-leases.md)：父 turn 可预留角色/任务/子 Session 身份，派生数据许可和固定快照，共享一次 Git 结算。普通前台仍写 journal v2；委派契约使用 v3，其他 writer 的恢复不沿用原契约。[原生 Worker](native-workers.md) 已在该许可上接入 fresh Agent、固定角色上下文、scoped botctl、并发/取消和父审计，scoped botctl 已支持 [v3 恢复、provider 替换与实际 Runtime 模块交接](worker-recovery.md)，默认开启。恢复保留原 journal/子事件，单独派生已核验的 Actor 结算输入，不创建子模型；Bash/文件/PTC、未知写者/缺失日志与其他生命周期继续在 P1。
 
 dev 已接齐 [Runtime 模块交接](runtime-handoff.md)：Agent 持有一次注册的闸门，版本化共享 cell 把执行交给当前模块；等待旧前台写者/审计/消息持久化，整组 attachment 成功后才 ready。失败审计与退役归属保留，原生 Inbox 和主 Session 稳定。共享 registry 之前旧闸门的支持迁移、其他插件/后台写者及真实旧 Host 续聊继续验收。
 

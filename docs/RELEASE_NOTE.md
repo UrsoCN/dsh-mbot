@@ -1,5 +1,15 @@
 # 发布说明
 
+## dev：Worker v3 恢复、交接与默认启用（未发布）
+
+- `/mbot recover`/`botctl recover` 接入 scoped botctl Worker 的 v3 契约：父/子原生 writer、公开 native closers、固定 Actor/快照、子事件/输出/用量和全部派生 permit 进程一起核验；不启动子模型或恢复旧 assignment。
+- 保留原 journal/子事件，私有恢复 ledger 派生已核验的 revoked Actor；原有 guard/Git/commit intent/计数/回执流程单次结算。恢复提交失败可重试，原生日志、快照或派生 ledger 冲突拒绝；Git 成功但回执失败只补确认。v3 receipt 按子原生证明验证整体失败与原路线回答。
+- 真实 Runtime 模块替换等待旧 Worker 写入和父审计，保留原主 Session；provider 替换保留已接受的 activation，新任务使用新 provider。子 Agent 释放但 seal 尚未完成时拒绝 creator message，禁止 cold-resume 旧 Actor。
+- 修复大段中文 JSON stdin 分块解码损坏事件 hash；支持原生 TOOL_NOT_STARTED 与 assistant 请求的闭合证明。修复开启 Worker 却未派活时，journal 序列化格式变化被 guard 错记为越权；保留已核验 ledger 的准确字节。
+- 当前 scoped botctl Worker 已满足执行/停止/恢复/交接条件，默认开启；`workers=false` 保持前台 v2。Worker Bash/文件/PTC、未知写者/缺失日志、checkpoint/compact/sleep、IM/peer/outbox 与管理面板仍在 TODO，包仍为 0.1.1，未新增 tag。
+
+类型、50 项 Host + 107 项 Runtime（157 项）、64 组 Bash 与 source/tarball/Git/Web 四类安装通过。Chromium 实际 Worker 执行中 SIGKILL Host，重启后保留结果/候选、主 Session、PAUSED、故障计数和固定失败回复，父回合只提交一次且子模型未重跑；见 [Worker 恢复](worker-recovery.md)。证据：`/tmp/mbot-worker-recovery-suite-final.log`、`/tmp/mbot-worker-recovery-install-final.log`、`/tmp/mbot-worker-recovery-gui-final.log`（浏览器产物 `/tmp/mbot-gui-runtime.WeVchI`）。没有调用真实 DeepSeek API。
+
 ## dev：原生 Worker 的任务执行与父审计（未发布）
 
 - 在已有 ActorLease 上接入 DSH fresh 子 Agent：固定角色/任务上下文，不继承主 Session 历史；通过原生 scoped botctl 写任务结果和记忆候选。Chief 的 botctl 增加 spawn/wait/message/stop，深度 1、最多两个并行 Worker；已结束任务需要新建 fresh 子 Session。

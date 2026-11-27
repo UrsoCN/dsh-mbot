@@ -35,7 +35,7 @@ Actor.close 立即拒绝新调用，等待已经执行的数据子进程，再�
 
 私有 ledger 和当前 journal 必须一致，Actor 的身份与快照须匹配原始描述。部分保存、降版本、改变身份或缺失文件均保留证据并拒绝继续。最终结算只在全部 Actor 已撤销且原始事务身份未变时，将 Host 自己的许可登记同步到 guard 的预期快照；其他 ignored 文件继续原有保护。最终 Git meta 保存不含 token 的 Actor 身份/任务/快照 hash，仍只由父回合生成一个提交。
 
-v3 保留规范化 completed/cancelled/failed 与故障计数规则；旧 reader 不能将委派回合当成普通 v2 恢复。当前恢复只核实既有前台契约，v3 的完整 Worker/原生 Session/其他写者证明尚待实现，独立恢复继续拒绝并保持现场，不删除 journal 或修改 writerScope。
+v3 保留规范化 completed/cancelled/failed 与故障计数规则；旧 reader 不能将委派回合当成普通 v2 恢复。[scoped botctl 的 v3 Worker 恢复](worker-recovery.md) 已核实原生子写句柄、连续事件与派生 Actor 结算；其他写者和缺失日志仍保留现场，独立数据恢复继续拒绝，不删除 journal 或修改 writerScope。
 
 ## 原生接入
 
@@ -43,7 +43,7 @@ v3 保留规范化 completed/cancelled/failed 与故障计数规则；旧 reader
 
 每个 turn 持有自己的 SubagentActivation/result/dispose，取消只处理该 turn 的子代理；`drainDescendants` 的 cutoff 持续到根 Agent 离开 registry，不能每轮都调用它来收尾持久主 Session。初次接入使用 caller delivery，并通过任务/显式结果交接；原生自动完成通知不直接注入主 Session。Chief 的树内纠偏只指向本轮仍活跃的 Worker，不能借 sendMessage 恢复旧 Actor 或跨 Bot 路由。
 
-真实 Agent、首个 boot、scoped botctl/任务范围、深度/并发、前台清理、子事件/用量审计和失败传播已在 [原生 Worker](native-workers.md) 阶段接入并验证；其他写者、活跃重载/崩溃恢复仍需专项验收。Worker/PTC、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍在完整目标中。
+真实 Agent、首个 boot、scoped botctl/任务范围、深度/并发、前台清理、子事件/用量审计和失败传播已在 [原生 Worker](native-workers.md) 阶段接入并验证；scoped botctl 的 provider/模块交接和崩溃恢复已在 [Worker 恢复](worker-recovery.md) 验收；其他写者仍需专项验证。Worker/PTC、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍在完整目标中。
 
 ## 验证范围
 

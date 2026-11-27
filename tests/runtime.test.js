@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, writeFile, mkdir, chmod, lstat, symlink, unlink } from 'node:fs/promises'
 import { execFileSync, spawn } from 'node:child_process'
@@ -9,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Sessions from '@deepseek-ai/dsh-session'
+import * as SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import Agents from '@deepseek-ai/dsh-agent'
 import Subagents from '@deepseek-ai/dsh-subagent'
@@ -33,7 +35,8 @@ import Commands from '@deepseek-ai/dsh-commands'
 import * as botCommands from '../plugin/commands.js'
 import { MessageIndex } from '../plugin/messages.js'
 import { runtimeCells } from '../plugin/runtime-cells.js'
-import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, interruptedTurnClosers } from '@deepseek-ai/dsh-session'
+import { workerProof, workerCompletion } from '../plugin/worker-proof.js'
 import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
 import { readonlyLegacy } from '../plugin/readonly-migration.js'
@@ -63,6 +66,7 @@ async function app(t, script, options = {}) {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   await ctx.plugin(Sessions)
+  if (options.persistence) await ctx.plugin(SessionPersistence, { root: join(root, `native-sessions-${++sequence}`), compression: 'none' })
   await ctx.plugin(Projections)
   await ctx.plugin(Agents)
   await ctx.plugin(Llm)
@@ -107,8 +111,9 @@ async function app(t, script, options = {}) {
   await ctx.plugin(botTools)
   await ctx.plugin(AgentLoop, { agents: [] })
   await options.beforeRuntime?.(ctx)
-  if (options.workers) { await ctx.plugin(Subagents); await ctx.plugin(SpawnProvider) }
-  const owner = ctx.plugin(runtime, { workers: options.workers === true })
+  let workerProvider
+  if (options.workers) { await ctx.plugin(Subagents); workerProvider = ctx.plugin(SpawnProvider); await workerProvider }
+  const owner = ctx.plugin(runtime, options.defaultWorkers ? {} : { workers: options.workers === true })
   await owner
   const requests = []
   const errors = []
@@ -127,7 +132,7 @@ async function app(t, script, options = {}) {
       ...item, workspaceId: `workspace-${sequence}`, mainSessionId: handle.agent.id,
       binding: { state: 'ready', pendingSessionId: null, error: null },
     }) } }))
-  return { ctx, ws, bot, agent: handle.agent, handle, requests, owner, errors }
+  return { ctx, ws, bot, agent: handle.agent, handle, requests, owner, errors, workerProvider }
 }
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
@@ -668,8 +673,9 @@ const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerI
 const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
 
 async function failedRuntime(t, options = {}) {
-  const fixture = await app(t, options.script ?? (() => response('recover this native answer')), { main: true })
+  const fixture = await app(t, options.script ?? (() => response('recover this native answer')), { ...options.fixture, main: true })
   await removalController(fixture.ctx, fixture.agent)
+  await options.prepare?.(fixture)
   const spawn = fixture.ctx.subprocess.spawn.bind(fixture.ctx.subprocess)
   const shim = join(root, `runtime-recovery-shim-${++sequence}`)
   await mkdir(shim)
@@ -692,6 +698,331 @@ async function failedRuntime(t, options = {}) {
   const journal = JSON.parse(await readFile(join(fixture.ws, '.mbot/runs/active-turn.json'), 'utf8'))
   return { ...fixture, journal, mailbox: mainMailbox(fixture.ctx, fixture.agent) }
 }
+
+function workerRecoveryScript({ fault = false } = {}) {
+  const steps = new Map()
+  return (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) return n === 1
+      ? response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'task_result', task_id: fault ? '002' : '001', text: 'recoverable native Worker result' } }) : response('Worker complete before audit')
+    return n === 1 ? response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+      : n === 2 ? response('', { name: 'botctl', args: { action: 'worker_wait', worker_id: membersOf(ctx, ctx.agents.get(request.sessionId))[0].id } }) : response('parent Worker audit answer')
+  }
+}
+
+test('Worker recovery verifies native child history and settles a failed parent commit once', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, journal, mailbox, requests } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const count = requests.length, base = git(ws, 'rev-parse', 'HEAD')
+  assert.equal(journal.schemaVersion, 3)
+  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(recovered.success, true)
+  assert.equal(recovered.outcome, 'completed')
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(requests.length, count, 'Native closers must not invoke a Worker model')
+  assert.equal(ctx.agents.get(journal.actors[0].sessionId), undefined)
+  const receipt = await mailbox.receipt('runtime-recover-request')
+  assert.equal(receipt.result.final, true)
+  assert.equal(receipt.result.reply.text, 'parent Worker audit answer')
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal(await accessPaused(ws), true)
+})
+
+async function accessPaused(ws) { return lstat(join(ws, '.mbot/PAUSED')).then(() => true, () => false) }
+
+test('Worker recovery refuses a competing native child writer and preserves its original journal', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, journal } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const before = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
+  const writer = await ctx.sessionPersistence.open(journal.actors[0].sessionId, 'write')
+  try {
+    await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /writer|owned|claim|locked/iu)
+    assert.equal(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'), before)
+    assert.equal(ctx.mbotRuntime.recoveries.size, 0)
+  } finally { await writer.close() }
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+})
+
+for (const crash of ['commit', 'settlement']) {
+  test(`Worker recovery settles the existing parent audit once after SIGKILL at ${crash}`, { timeout: 30000 }, async t => {
+    const { ctx, ws, bot, journal, mailbox, requests } = await failedRuntime(t, { crash, fixture: { workers: true, persistence: true },
+      script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+    const committed = git(ws, 'rev-parse', 'HEAD'), count = requests.length
+    assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, false)
+    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    assert.equal(recovered.alreadyCommitted, true)
+    assert.equal(recovered.runId, journal.runId)
+    assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
+    assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, true)
+    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+    assert.equal(requests.length, count)
+  })
+}
+
+test('Worker recovery rejects changed private child events before restoring Git data', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, journal } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const file = join(journal.scratch, `actor-${journal.actors[0].actorId}.events.jsonl`)
+  const original = await readFile(file, 'utf8'), base = git(ws, 'rev-parse', 'HEAD')
+  const rows = original.trim().split('\n').map(line => JSON.parse(line))
+  rows[0].type = 'plugin:tampered-worker'
+  await writeFile(file, rows.map(row => JSON.stringify(row)+'\n').join(''))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /Private Worker events contradict/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.equal(ctx.mbotRuntime.recoveries.size, 0)
+  await writeFile(file, original)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+})
+
+test('Worker recovery refuses a live process holding a derived Actor token', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, journal } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: { ...process.env, DSH_MBOT_PERMIT_TOKEN: journal.actors[0].token }, stdio: 'ignore' })
+  const exit = new Promise(resolve => child.once('exit', resolve))
+  t.after(() => child.kill('SIGKILL'))
+  const base = git(ws, 'rev-parse', 'HEAD')
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /permit-bearing process/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  child.kill('SIGKILL')
+  await exit
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+})
+
+test('Worker v3 receipt repair confirms child failure without repeating the committed audit', { timeout: 30000 }, async t => {
+  const script = workerRecoveryScript({ fault: true })
+  const { ctx, ws, bot, agent } = await app(t, script, { workers: true, main: true, persistence: true })
+  await workerTasks(ctx, 2)
+  await removalController(ctx, agent)
+  const mailbox = mainMailbox(ctx, agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let failed = false
+  ctx.sessions.flush = async session => {
+    const state = ctx.mbotRuntime.states.get(agent)
+    if (!failed && session === agent.session && state?.lastReceipt?.phase === 'rejected') { failed = true; throw new Error('Worker receipt flush failed') }
+    return flush(session)
+  }
+  await mailbox.send({ requestId: 'worker-flush', text: 'complete Worker work' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent), /receipt flush failed/u)
+  const committed = git(ws, 'rev-parse', 'HEAD')
+  ctx.sessions.flush = flush
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).receiptRepaired, true)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
+  const receipt = await mailbox.receipt('worker-flush')
+  assert.equal(receipt.result.final, true)
+  assert.equal(receipt.result.status, 'failed')
+})
+
+test('a different Runtime module recovers the original Worker audit and preserves the main Session', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, owner, requests } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const original = agent.id, count = requests.length, base = git(ws, 'rev-parse', 'HEAD')
+  await owner.dispose()
+  await ctx.plugin(await replacementRuntime(), { workers: true })
+  assert.equal(ctx.agents.get(original), agent)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal(requests.length, count)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+})
+
+test('Runtime module handoff waits for the owning Worker data writer and its parent audit', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), cancelled = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, ws, agent, owner } = await app(t, workerRecoveryScript(), { workers: true, main: true, persistence: true })
+  await workerTasks(ctx)
+  const execute = ctx.mbot.execute.bind(ctx.mbot)
+  ctx.mbot.execute = async (program, args, options) => {
+    if (args[0] === 'task' && args[1] === 'result' && options?.permit) {
+      entered.resolve()
+      await new Promise(resolve => options.signal.aborted ? resolve() : options.signal.addEventListener('abort', resolve, { once: true }))
+      cancelled.resolve()
+      await release.promise
+      return execute(program, args, { ...options, signal: undefined })
+    }
+    return execute(program, args, options)
+  }
+  const base = git(ws, 'rev-parse', 'HEAD')
+  agent.followup(message('replace Runtime while Worker writes'))
+  await entered.promise
+  const member = membersOf(ctx, agent)[0], old = ctx.mbotRuntime
+  agent.inbox.splice('next-turn', 0, 0, [message('preserve this pending turn')])
+  const replacement = await replacementRuntime()
+  const disposing = owner.dispose()
+  await cancelled.promise
+  let activated = false
+  const next = ctx.plugin(replacement, { workers: true })
+  const starting = Promise.resolve(next).then(() => { activated = true })
+  await delay(30)
+  assert.equal(activated, false)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  release.resolve()
+  await disposing
+  await starting
+  assert.notEqual(ctx.mbotRuntime, old)
+  assert.equal(ctx.agents.get(agent.id), agent)
+  assert.equal(ctx.agents.get(member.id), undefined)
+  assert.equal(member.actor.closed, true)
+  assert.equal(member.done, true, member.error?.stack)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'rejected')
+})
+
+test('a native Worker released before sealing cannot be cold-resumed by a creator correction', { timeout: 30000 }, async t => {
+  const modelEntered = Promise.withResolvers(), releaseModel = Promise.withResolvers(), sealEntered = Promise.withResolvers(), releaseSeal = Promise.withResolvers()
+  t.after(() => { releaseModel.resolve(); releaseSeal.resolve() })
+  const script = workerRecoveryScript()
+  const { ctx, agent, requests } = await app(t, async (request, n, ctx) => {
+    if (request.sessionId.startsWith('mbot-worker-') && requestsForWorker(ctx, request.sessionId)) {
+      modelEntered.resolve(); await releaseModel.promise
+    }
+    return script(request, n, ctx)
+  }, { workers: true, main: true, persistence: true })
+  function requestsForWorker(ctx, id) { return ctx.mbotRuntime.workerManager.members.get(id)?.state.booted === true }
+  await workerTasks(ctx)
+  agent.followup(message('correct a Worker at its release boundary'))
+  await modelEntered.promise
+  const member = membersOf(ctx, agent)[0], seal = member.actor.sealNative.bind(member.actor)
+  member.actor.sealNative = async input => { sealEntered.resolve(); await releaseSeal.promise; return seal(input) }
+  releaseModel.resolve()
+  await sealEntered.promise
+  assert.equal(ctx.agents.get(member.id), undefined)
+  assert.equal(member.done, false)
+  const before = requests.length
+  await assert.rejects(ctx.mbotRuntime.workerAction(agent, 'worker_message', { worker_id: member.id, text: 'late creator correction' }, new AbortController().signal), /already ended/u)
+  assert.equal(requests.length, before)
+  releaseSeal.resolve()
+  await settle(ctx, agent)
+  assert.equal(member.done, true)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+})
+
+test('replacing the fresh provider preserves an owned Worker and new admissions use the replacement', { timeout: 30000 }, async t => {
+  const parentEntered = Promise.withResolvers(), release = Promise.withResolvers(), children = new Set(), steps = new Map()
+  t.after(() => release.resolve())
+  const { ctx, agent, workerProvider } = await app(t, async (request, _n, ctx) => {
+    const n = (steps.get(request.sessionId) ?? 0) + 1
+    steps.set(request.sessionId, n)
+    if (request.sessionId.startsWith('mbot-worker-')) {
+      const task = ctx.mbotRuntime.workerManager.members.get(request.sessionId).actor.identity.taskId
+      if (n === 1) return response('', { name: 'botctl', args: { action: 'boot', bot: 'coder', task_id: task } })
+      children.add(request.sessionId)
+      await release.promise
+      return response(`provider Worker ${task} finished`)
+    }
+    if (n === 1) return response('', { name: 'botctl', args: { action: 'worker_spawn', bot: 'coder', task_id: '001' } })
+    parentEntered.resolve()
+    await release.promise
+    return response('both provider generations joined')
+  }, { workers: true, main: true, persistence: true })
+  await workerTasks(ctx, 2)
+  agent.followup(message('replace the Worker provider'))
+  await parentEntered.promise
+  const first = membersOf(ctx, agent)[0], old = ctx.subagents.getProvider('spawn')
+  while (!children.has(first.id)) await delay(10)
+  await workerProvider.dispose()
+  assert.equal(ctx.subagents.getProvider('spawn'), undefined)
+  assert.equal(first.controller.signal.aborted, false, 'Native provider removal does not dispose accepted activations')
+  await ctx.plugin(SpawnProvider)
+  assert.notEqual(ctx.subagents.getProvider('spawn'), old)
+  const second = await ctx.mbotRuntime.workerAction(agent, 'worker_spawn', { bot: 'coder', task_id: '002' }, new AbortController().signal)
+  while (!children.has(second.worker_id)) await delay(10)
+  release.resolve()
+  await settle(ctx, agent)
+  assert.equal(first.done, true)
+  assert.equal(ctx.agents.get(second.worker_id), undefined)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+})
+
+test('failed Worker recovery retries derived inputs and rejects edits to its recovery ledger', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, journal } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const shim = await mkdtemp(join(root, 'worker-recovery-commit.'))
+  await writeFile(join(shim, 'git'), '#!/bin/sh\nfor arg do\n  if [ "$arg" = commit ]; then exit 1; fi\ndone\nexec /usr/bin/git "$@"\n')
+  await chmod(join(shim, 'git'), 0o700)
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess), base = git(ws, 'rev-parse', 'HEAD')
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot') && spec.argv.at(-1) === 'recover'
+    ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /commit failed/u)
+  ctx.subprocess.spawn = spawn
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  const file = join(journal.scratch, 'runtime-recovery.ledger.json'), original = await readFile(file, 'utf8')
+  const changed = JSON.parse(original)
+  changed.actors[0].native.usage.total_tokens++
+  await writeFile(file, JSON.stringify(changed))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /Derived Worker recovery ledger changed/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  await writeFile(file, original)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+})
+
+test('Worker audit helpers preserve UTF-8 when stdin splits inside a Chinese context character', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent } = await app(t, workerRecoveryScript(), { workers: true, main: true, persistence: true })
+  await workerTasks(ctx)
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'worker-utf8', text: 'audit the Chinese Worker context' })
+  await settle(ctx, agent)
+  const log = await ctx.sessionQuery.readSession(agent.id), index = new MessageIndex()
+  for (const event of log.events) index.apply(event, log.inheritedEventCount)
+  const record = [...index.requests.values()].find(item => item.message.source.mbot?.requestId === 'worker-utf8')
+  const turn = index.turns.get(record.turn)
+  const events = log.events.filter(event => event.seq >= turn.startSeq && event.seq <= turn.endSeq && !event.ignorable)
+  const workers = await ctx.mbotRuntime.workerLogs(events), current = ctx.mbotRuntime.states.get(agent).current
+  const payload = Buffer.from(JSON.stringify({ workspace: ws, botId: bot.botId, sessionId: agent.id, record, turn, events, workers,
+    confirmation: 'confirmed', result: current.result, header: { botId: bot.botId, sessionId: agent.id, turn: current.turn,
+      writerScope: 'agent-runtime', messages: current.messages } }))
+  const cut = payload.lastIndexOf(Buffer.from('工作区协议')) + 1
+  assert.ok(cut > 1)
+  for (const args of [['bin/turn-receipt.mjs'], ['bin/turn-runtime-recovery.mjs', '--audit-input']]) {
+    const child = spawn(process.execPath, args, { cwd: fileURLToPath(new URL('../', import.meta.url)), stdio: 'pipe' })
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
+    let stdout = '', stderr = ''
+    child.stdout.on('data', text => { stdout += text }); child.stderr.on('data', text => { stderr += text })
+    const ended = new Promise(resolve => child.once('exit', resolve))
+    await new Promise((resolve, reject) => child.stdin.write(payload.subarray(0, cut), error => error ? reject(error) : resolve()))
+    await delay(100)
+    child.stdin.end(payload.subarray(cut))
+    assert.equal(await ended, 0, stderr)
+    if (args.length === 1) assert.equal(JSON.parse(stdout).final, true, stdout)
+  }
+})
+
+test('native Worker repair proves an assistant tool request interrupted before its dispatch', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, workerRecoveryScript(), { workers: true, main: true, persistence: true })
+  await workerTasks(ctx)
+  agent.followup(message('capture the native Worker tool request boundary'))
+  await settle(ctx, agent)
+  const member = membersOf(ctx, agent)[0], log = await ctx.sessionQuery.readSession(member.id)
+  const request = log.events.find(event => event.type === 'assistant/message' && event.data.message.content.some(block => block.type === 'tool-call'))
+  const prefix = log.events.filter(event => event.seq <= request.seq)
+  const repaired = [...prefix, ...interruptedTurnClosers(prefix)]
+  const actor = { ...member.actor.identity, snapshotHash: createHash('sha256').update(JSON.stringify(member.actor.snapshot)).digest('hex') }
+  const input = { quiescent: true, startupFailed: false, session: log.session, inheritedEventCount: 0,
+    initialMessageId: member.initialMessageId, parentSessionId: actor.parentSessionId, runId: actor.runId, result: workerCompletion(repaired) }
+  const proof = workerProof(actor, member.actor.snapshot, repaired, input, { workerTools: ['botctl'] })
+  assert.equal(proof.executionFault, true)
+  assert.equal(proof.stopReason, 'aborted')
+  const wrong = structuredClone(repaired)
+  wrong.find(event => event.type === 'tool/result').data.error.code = 'TOOL_OUTCOME_UNKNOWN'
+  assert.throws(() => workerProof(actor, member.actor.snapshot, wrong, input, { workerTools: ['botctl'] }), /no matching dispatch/u)
+})
+
+test('native task Workers are enabled by default and clean Chief turns can finish without delegation', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, request => {
+    assert.ok(JSON.stringify(request.tools).includes('worker_spawn'))
+    return response('default Worker contract is available')
+  }, { workers: true, main: true, persistence: true, defaultWorkers: true })
+  agent.followup(message('inspect the default Worker capability'))
+  await settle(ctx, agent)
+  assert.equal(ctx.mbotRuntime.workersEnabled, true)
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.lease.runtimeOwnership.schemaVersion, 2)
+  const log = await ctx.sessionQuery.readSession(agent.id)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed', JSON.stringify(log.events.filter(event => event.type === 'turn/end').map(event => event.data.reason)))
+})
 
 test('Runtime recovery joins the native owner, commits the saved answer once and preserves PAUSED and pending work', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent, requests, journal, mailbox } = await failedRuntime(t)

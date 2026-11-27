@@ -206,7 +206,8 @@ export class WorkerManager {
     if (action === 'worker_wait') return { worker_id: member.id, ...await awaited(member.completion, signal), native: member.native }
     if (action === 'worker_stop') { this.cancel(member); return { worker_id: member.id, ...await awaited(member.completion, signal) } }
     if (action === 'worker_message') {
-      if (member.done || member.controller.signal.aborted || !member.activation) throw new Error('Worker activation already ended; start a fresh Worker')
+      if (member.done || member.controller.signal.aborted || !member.activation || member.state?.closing
+        || this.ctx.agents.get(member.id) !== member.state?.agent) throw new Error('Worker activation already ended; start a fresh Worker')
       return this.ctx.subagents.sendMessage(parent.agent, member.id, [{ type: 'text', text: args.text }], { signal })
     }
     throw new Error('Unknown Worker action')

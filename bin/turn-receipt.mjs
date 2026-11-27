@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import { processStart } from '../plugin/recovery.js'
 import { applyRedactions } from '../plugin/reply-proof.js'
 import { isDeepStrictEqual } from 'node:util'
+import { verifyWorkerAudit } from '../plugin/worker-recovery-proof.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex')
@@ -27,7 +28,7 @@ async function prove(input) {
     const stat = await lstat(journalPath)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32768) throw new Error('Unsafe turn journal')
     journal = JSON.parse(await readFile(journalPath, 'utf8'))
-    if (![1, 2].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
+    if (![1, 2, 3].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
       || !/^\d{8}T\d{6}Z-turn-[a-f0-9]{16}$/u.test(journal.runId) || !Number.isSafeInteger(journal.turn) || journal.turn < 1
       || typeof journal.botId !== 'string' || typeof journal.sessionId !== 'string' || !['data-subprocesses', 'agent-runtime'].includes(journal.writerScope)
       || !Number.isSafeInteger(journal.pid) || journal.pid < 1 || !/^\d+$/u.test(journal.pidStart)
@@ -62,7 +63,7 @@ async function prove(input) {
       const nativeTarget = { rpcId: record.rpcId, messageId: record.message.id, ...record.message.source.mbot }
       const target = reply.targets?.find(target => target.rpcId === record.rpcId)
       if (meta.runtime.kind !== 'managed-turn' || meta.runtime.schemaVersion !== 1 || meta.runtime.writer_scope !== 'agent-runtime'
-        || meta.runtime.journal_schema_version !== 2 || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
+        || ![2, 3].includes(meta.runtime.journal_schema_version) || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
         || meta.mode !== 'run' || typeof meta.bot !== 'string' || meta.bot === 'human' || !/^[a-z][a-z0-9_-]{0,31}$/u.test(meta.bot)
         || typeof meta.summary !== 'string' || !hashPattern.test(meta.base_head)
         || git('show', '-s', '--format=%P', candidate.commit).trim() !== meta.base_head
@@ -71,7 +72,9 @@ async function prove(input) {
         || reply.nativeTextHash !== digest(text) || typeof reply.text !== 'string' || reply.textHash !== digest(reply.text)
         || applyRedactions(text, reply.redactions) !== reply.text || !isDeepStrictEqual(target, nativeTarget)
         || meta.reason?.kind !== turn.reason.kind || (meta.reason.kind === 'aborted' && meta.reason.reason?.kind !== turn.reason.reason?.kind)) throw new Error('Audit identity mismatch')
-      const outcome = execFileSync('jq', ['-L', join(root, 'lib'), '-er', 'include "turn-outcome"; . as $x | $x.meta | mbot_outcome(2) as $outcome | if .runtime.execution_fault != mbot_execution_fault($x.events) then error("native execution fault mismatch") else $outcome end'],
+      if (meta.runtime.journal_schema_version === 3) verifyWorkerAudit(meta.runtime.actors, input.workers, { workspace, sessionId, runId: meta.run_id, memoryCommit: meta.base_head })
+      else if (meta.runtime.actors !== undefined) throw new Error('Foreground audit unexpectedly contains Worker ownership')
+      const outcome = execFileSync('jq', ['-L', join(root, 'lib'), '-er', 'include "turn-outcome"; . as $x | $x.meta | mbot_outcome(.runtime.journal_schema_version) as $outcome | if .runtime.execution_fault != (mbot_execution_fault($x.events) or any($x.meta.runtime.actors[]?; .native.executionFault==true)) then error("native execution fault mismatch") else $outcome end'],
         { input: JSON.stringify({ meta, events }), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1024 * 1024 }).trim()
       found.push({ meta, candidate, outcome, target })
     } catch { invalid = true }
@@ -93,6 +96,7 @@ async function prove(input) {
 }
 
 let data = ''
+process.stdin.setEncoding('utf8')
 for await (const chunk of process.stdin) data += chunk
 try { process.stdout.write(JSON.stringify(await prove(JSON.parse(data))) + '\n') }
 catch { process.stdout.write(JSON.stringify(pending('unverified', 'Audit proof could not be validated')) + '\n') }

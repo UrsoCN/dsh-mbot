@@ -3,14 +3,16 @@ import type z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ActorIdentity, ActorLease, TurnLease } from './turn.js'
 import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 export declare const name: 'mbot-runtime'
 export declare const inject: string[]
-export interface Config { /** Experimental task-scoped native Workers; default false until recovery is supported. */ workers?: boolean }
+export interface Config { /** Task-scoped native Workers; default true. False keeps foreground-only turns. */ workers?: boolean }
 export declare const Config: z<Config>
 export type WorkerAction = 'worker_spawn' | 'worker_wait' | 'worker_message' | 'worker_stop'
 export interface WorkerRequest { bot?: string; task_id?: string; text?: string; worker_id?: string }
 export interface WorkerReceipt { worker_id: string; name?: string; role?: string; task_id?: string; stopReason?: SubagentResult['stopReason']; output?: SubagentResult['output']; native?: import('./turn.js').NativeWorkerProof }
 export interface WorkerAssignment extends ActorIdentity { schemaVersion: 1; memoryCommit: string; snapshotHash: string }
+export interface WorkerNativeLog { session: Agent['session']['header']; inheritedEventCount: number; events: readonly SessionEvent[] }
 export declare const runtimeRecordType: 'plugin:mbot/runtime-turn'
 export interface RuntimeTurnReceipt {
   schemaVersion: 1; botId: string; sessionId: string; turn: number
@@ -67,6 +69,10 @@ export declare class MBotRuntime extends Service {
   attach(agent: Agent, options: { botId: string }): Promise<void>
   managed(agent: Agent): boolean
   worker(agent: Agent): boolean
+  /** Recovery-only native write handle; never activates an Agent or an Actor permit. */
+  acquireRecoveryWorker(journal: Record<string, unknown>, actor: Record<string, unknown>, signal?: AbortSignal): Promise<{ log: WorkerNativeLog; dispose(): Promise<void> }>
+  /** Read native child logs referenced by this parent's captured catalog. */
+  workerLogs(events: readonly SessionEvent[]): Promise<WorkerNativeLog[]>
   /** Scoped to this active Chief turn; a wait signal cancels observation only. */
   workerAction(agent: Agent, action: WorkerAction, args: WorkerRequest, signal: AbortSignal): Promise<WorkerReceipt | string>
   /** Trusted Host coordinator; retains the Runtime's Cordis dependency scope. */

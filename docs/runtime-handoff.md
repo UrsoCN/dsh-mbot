@@ -35,4 +35,4 @@
 
 `npm run test:gui-handoff` 使用实际 `dsh plugin add` 安装的隔离 Web profile，保留安装所得 SDK 身份，另取可修改的临时包树并启用官方 HMR。Chromium 经原生聊天及命令触发真实模块替换，验证晚到写者、保留待办、SOUL/MEMORY 刷新、失败后修正/重组和无关 Session 的继续使用；不会修改生产 profile 或调用外部模型。所有产物在 `/tmp/mbot-gui-handoff.*`。
 
-Worker/PTC/后台写者、跨 Host 交接、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍需各自的生命周期证明，本阶段不扩大前台契约。
+[scoped botctl Worker 的实际模块交接与恢复](worker-recovery.md) 已验收；Worker 其他工具、PTC/后台写者、跨 Host 交接、compact/sleep/checkpoint、IM/peer/outbox 和管理面板仍需各自的生命周期证明。

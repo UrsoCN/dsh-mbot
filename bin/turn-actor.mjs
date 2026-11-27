@@ -29,9 +29,9 @@ async function safeFile(base, relative, privateMode = false) {
   }
   return readFile(path, 'utf8')
 }
-async function replace(file, data) {
+async function replace(file, data, raw = false) {
   const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`
-  await writeFile(temp, JSON.stringify(data), { mode: 0o600, flag: 'wx' })
+  await writeFile(temp, raw ? data : JSON.stringify(data), { mode: 0o600, flag: 'wx' })
   await rename(temp, file)
 }
 try {
@@ -39,7 +39,8 @@ try {
   if (!/^\/tmp\/mbot-turn\.[A-Za-z0-9]+$/u.test(scratch ?? '') || await realpath(workspace) !== workspace) fail('Invalid actor transaction location')
   const directory = await lstat(scratch)
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid() || (directory.mode & 0o777) !== 0o700) fail('Unsafe actor transaction snapshot')
-  const saved = JSON.parse(await safeFile(scratch, 'ledger.json', true))
+  const ledgerBytes = await safeFile(scratch, 'ledger.json', true)
+  const saved = JSON.parse(ledgerBytes)
   const active = JSON.parse(await safeFile(workspace, '.mbot/runs/active-turn.json', true))
   const header = JSON.parse(await safeFile(scratch, 'header.json', true))
   const token = JSON.parse(await safeFile(scratch, 'token.json', true))
@@ -86,7 +87,10 @@ try {
   }
   if (verify) {
     if (saved.actors.some(actor => actor.state !== 'revoked')) fail('Delegated actors must drain and close before turn settlement')
-    if (prepare) await replace(join(scratch, 'ignored/.mbot/runs/active-turn.json'), saved)
+    // With no delegations the original journal is jq-formatted; controls use
+    // compact JSON. Preserve the proven ledger bytes so representation alone
+    // cannot turn a clean foreground-only execution into a guard violation.
+    if (prepare) await replace(join(scratch, 'ignored/.mbot/runs/active-turn.json'), ledgerBytes, true)
     process.exit(0)
   }
   if (typeof request.requestId !== 'string' || !/^[a-f0-9-]{36}$/u.test(request.requestId) || request.token !== token) fail('Invalid actor control permission')

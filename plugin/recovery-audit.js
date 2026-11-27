@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = text => createHash('sha256').update(text).digest('hex')
 
 /** Git/turn proof independent of display cards, for recovery acknowledgement. */
-export function verifyRecoveryAudit(workspace, header, events, result) {
+export function verifyRecoveryAudit(workspace, header, events, result, actors) {
   const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', workspace, ...args],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 })
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(result.head ?? '')
@@ -33,7 +33,9 @@ export function verifyRecoveryAudit(workspace, header, events, result) {
       || applyRedactions(text, reply.redactions) !== reply.text || reply.textHash !== digest(reply.text)) throw new Error('Recovered audit reply does not match native evidence')
   }
   const version = meta.runtime.journal_schema_version ?? 2
-  const outcome = execFileSync('jq', ['-L', join(root, 'lib'), '-er', 'include "turn-outcome"; . as $x | $x.meta | mbot_outcome($x.version) as $outcome | if .runtime.execution_fault != mbot_execution_fault($x.events) then error("native execution fault mismatch") else $outcome end'],
+  if (version !== 3 && meta.runtime.actors !== undefined) throw new Error('Foreground audit unexpectedly contains Worker ownership')
+  if (version === 3 && !isDeepStrictEqual(meta.runtime.actors, actors)) throw new Error('Recovered Worker audit lacks matching child proof')
+  const outcome = execFileSync('jq', ['-L', join(root, 'lib'), '-er', 'include "turn-outcome"; . as $x | $x.meta | mbot_outcome($x.version) as $outcome | if .runtime.execution_fault != (mbot_execution_fault($x.events) or any($x.meta.runtime.actors[]?; .native.executionFault==true)) then error("native execution fault mismatch") else $outcome end'],
     { input: JSON.stringify({ meta, events, version }), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 }).trim()
   if (result.outcome !== outcome || result.failureCountEffect !== meta.failure_count_effect) throw new Error('Recovered outcome does not match its Git audit')
   return meta

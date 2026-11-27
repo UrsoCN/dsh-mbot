@@ -55,7 +55,7 @@ try {
   await run('dsh', ['plugin', '--profile', 'web', 'add', join(root, packed.filename), '--store-dir', join(root, 'pnpm-store'), '--ignore-scripts'])
   await mkdir(join(root, 'documents'))
   const patch = join(env.DSH_HOME, 'profiles/web/cordis.patch.yml')
-  await writeFile(patch, `- id: workspace-controller\n  config:\n    documentsDirectory: ${join(root, 'documents')}\n- id: agent-default-model\n  config:\n    provider: mbot-ui-fixture\n    model: scripted\n- insert:\n    - id: mbot-runtime-fixture\n      name: ${join(repo, 'tests/gui-runtime-fixture.mjs')}\n`)
+  await writeFile(patch, `- id: workspace-controller\n  config:\n    documentsDirectory: ${join(root, 'documents')}\n- id: mbot-runtime\n  config:\n    workers: false\n- id: agent-default-model\n  config:\n    provider: mbot-ui-fixture\n    model: scripted\n- insert:\n    - id: mbot-runtime-fixture\n      name: ${join(repo, 'tests/gui-runtime-fixture.mjs')}\n`)
   async function host() {
     const child = start('dsh', ['--profile', 'web', '--no-open', '--host', '127.0.0.1', '--port', '0'])
     const url = await until(() => /dsh web: (http:\/\/\S+)/u.exec(child.output)?.[1])
@@ -288,8 +288,7 @@ try {
   await send('resume after crash recovery')
   await until(async () => await audit(2).getAttribute('data-phase') === 'committed')
   await page.screenshot({ path: join(root, 'runtime-recovered-after-crash.png'), fullPage: true })
-  // Enable only after the foreground recovery matrix: Worker journals retain
-  // their distinct, currently unsupported cold recovery contract.
+  // Exercise foreground v2 first, then the distinct Worker v3 recovery contract.
   server.child.kill('SIGTERM')
   await server.child.finished
   await rm(join(root, 'fixture-ready'))
@@ -326,8 +325,46 @@ try {
   await observer.getByText('GUI Chief audited Worker result', { exact: true }).waitFor()
   await page.screenshot({ path: join(root, 'native-worker-audit.png'), fullPage: true })
   await observer.close()
+  const workerCrashWs = join(root, 'Worker Crash GUI Bot')
+  await command(`/mbot init ${workerCrashWs}`)
+  const workerCrashBot = (await hostCall(['bots'])).value.bots.find(bot => bot.workspacePath === workerCrashWs)
+  await run(ctl, ['-C', workerCrashWs, 'board', 'add', 'Crash a native Worker', '--owner', 'coder'])
+  await run(ctl, ['-C', workerCrashWs, 'board', 'set', '001', 'doing'])
+  const crashMemory = join(workerCrashWs, 'bots/coder/MEMORY.md')
+  await writeFile(crashMemory, (await readFile(crashMemory, 'utf8'))+'\ngui-coder-private-memory-334411\n')
+  const workerCrashGit = (...args) => execFileSync('git', ['-C', workerCrashWs, ...args], { encoding: 'utf8', env }).trim()
+  workerCrashGit('add', 'bots/coder/MEMORY.md')
+  workerCrashGit('commit', '-m', 'fixture: Worker crash memory')
+  const workerCrashBase = workerCrashGit('rev-parse', 'HEAD')
+  await writeFile(join(root, 'crash-worker-next'), '')
+  await hostCall(['talk', '--bot', workerCrashBot.botId, '--request-id', 'worker-crash-1', '--text', 'crash worker'])
+  await until(() => exists('crash-worker-model-waiting'))
+  const workerRequests = (await readFile(join(root, 'worker-requests.jsonl'), 'utf8')).trim().split('\n').length
+  const workerCrashJournal = JSON.parse(await readFile(join(workerCrashWs, '.mbot/runs/active-turn.json'), 'utf8'))
+  assert.equal(workerCrashJournal.schemaVersion, 3)
+  assert.equal(workerCrashJournal.actors[0].state, 'active')
+  server.child.kill('SIGKILL')
+  await server.child.finished
+  await rm(join(root, 'fixture-ready'))
+  server = await host()
+  const workerRecovered = await recoverHost(workerCrashBot.botId)
+  assert.equal(workerRecovered.value.outcome, 'failed')
+  assert.equal(workerCrashGit('rev-list', '--count', `${workerCrashBase}..HEAD`), '1')
+  assert.equal((await hostCall(['recover', '--bot', workerCrashBot.botId])).value.needed, false)
+  assert.equal((await readFile(join(root, 'worker-requests.jsonl'), 'utf8')).trim().split('\n').length, workerRequests)
+  assert.equal(await readFile(join(workerCrashWs, '.mbot/failures'), 'utf8'), '1\n')
+  await access(join(workerCrashWs, '.mbot/PAUSED'))
+  assert.match(await readFile(join(workerCrashWs, 'tasks/001.md'), 'utf8'), /GUI native Worker result/u)
+  const crashedReply = await hostCall(['receipt', '--bot', workerCrashBot.botId, '--request-id', 'worker-crash-1'])
+  assert.equal(crashedReply.value.result.final, true)
+  assert.equal(crashedReply.value.result.status, 'failed')
+  assert.equal(crashedReply.value.result.reply.text, '')
+  await page.goto(`${server.url}#mbot-session=${workerCrashBot.mainSessionId}`)
+  await audit(1).waitFor()
+  assert.equal(await audit(1).getAttribute('data-phase'), 'rejected')
+  await page.screenshot({ path: join(root, 'native-worker-crash-recovered.png'), fullPage: true })
   assert.deepEqual(errors, [])
-  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/recovery/shared-replay/external-cli/cli-stop/crash-restart-dedup/native-workspace-delete/removal/restart-retirement/reimport-new-main/active-crash/native-closers/runtime-recovery/verified-interrupted-reply/resume/native-worker/worker-context-isolation/worker-single-audit/multi-window/no-external-model')
+  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/recovery/shared-replay/external-cli/cli-stop/crash-restart-dedup/native-workspace-delete/removal/restart-retirement/reimport-new-main/active-crash/native-closers/runtime-recovery/verified-interrupted-reply/resume/native-worker/worker-context-isolation/worker-single-audit/multi-window/worker-crash/native-worker-closers/worker-recovered-once/worker-reply/no-external-model')
 } catch (error) {
   if (page) { await page.screenshot({ path: join(root, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(root, 'failure.txt'), await page.locator('body').innerText()).catch(() => {}) }
   throw error
