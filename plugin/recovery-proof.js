@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { readFile, lstat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { processStart } from './recovery.js'
+import { readonlyLegacy, readonlyDataCut } from './readonly-migration.js'
 
 export const journalDigest = journal => {
   const { phase, ...identity } = journal
@@ -34,7 +35,7 @@ export async function recoveryInput(journal, log) {
   if (![1, 2].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
     || !/^\/tmp\/mbot-turn\.[A-Za-z0-9]+$/u.test(journal.scratch ?? '')
     || !Number.isSafeInteger(journal.turn) || journal.turn < 1 || typeof journal.sessionId !== 'string'
-    || log.session.id !== journal.sessionId || log.session.cwd !== journal.workspace) throw new Error('Runtime recovery identity does not match its native Session')
+    || log.session.id !== journal.sessionId || log.session.cwd !== journal.workspace || log.session.origin === 'subagent') throw new Error('Runtime recovery identity does not match its native Session')
   const info = await lstat(journal.scratch)
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o700) throw new Error('Unsafe Runtime recovery snapshot')
   const saved = JSON.parse(await privateFile(join(journal.scratch, 'ledger.json')))
@@ -86,8 +87,13 @@ export async function validateRecoveryProof(path, journal) {
   if (proof.mode === 'captured-runtime') {
     if (journal.ownerPid !== proof.ownerPid || journal.ownerStart !== proof.ownerStart || proof.capturedRunId !== journal.runId) throw new Error('Legacy Runtime recovery needs its original live owner')
   } else if (proof.mode === 'recorded-foreground-v1') validateOwnership(journal.runtimeOwnership)
+  else if (proof.mode === 'legacy-readonly' && journal.runtimeOwnership === undefined) { /* checked against native facts below */ }
   else throw new Error('Unsupported Runtime recovery ownership proof')
   const input = await recoveryInput(journal, proof.log)
   if (!isDeepStrictEqual(input, proof.input)) throw new Error('Runtime recovery proof inputs changed')
+  if (proof.mode === 'legacy-readonly') {
+    if (!isDeepStrictEqual(proof.evidence, readonlyLegacy(journal, input))) throw new Error('Readonly migration evidence does not match the native turn')
+    readonlyDataCut(journal)
+  }
   return proof
 }

@@ -61,7 +61,8 @@
     "test:install": "bash tests/install-plugin.sh",
     "test:real-plugin": "bash tests/real-plugin.sh",
     "test:runtime": "node --test tests/runtime.test.js",
-    "test:gui-runtime": "node tests/gui-runtime.mjs"
+    "test:gui-runtime": "node tests/gui-runtime.mjs",
+    "test:gui-migration": "node tests/gui-migration.mjs"
   },
   "engines": {
     "node": ">=22",

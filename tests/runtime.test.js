@@ -31,6 +31,8 @@ import { MessageIndex } from '../plugin/messages.js'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
+import { readonlyLegacy } from '../plugin/readonly-migration.js'
+import { recoveryInput } from '../plugin/recovery-proof.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -247,7 +249,7 @@ const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerI
 const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
 
 async function failedRuntime(t, options = {}) {
-  const fixture = await app(t, () => response('recover this native answer'), { main: true })
+  const fixture = await app(t, options.script ?? (() => response('recover this native answer')), { main: true })
   await removalController(fixture.ctx, fixture.agent)
   const spawn = fixture.ctx.subprocess.spawn.bind(fixture.ctx.subprocess)
   const shim = join(root, `runtime-recovery-shim-${++sequence}`)
@@ -490,6 +492,39 @@ test('Runtime recovery refuses an executing Agent without cancelling it', { time
   assert.equal(ctx.mbotRuntime.states.get(agent).current.signal.aborted, false)
   release.resolve()
   await settle(ctx, agent)
+})
+
+test('cold legacy readonly recovery proves the native tool contract and refuses incomplete or unknown dispatches', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, journal, owner } = await failedRuntime(t, { script: (_options, n) => n === 1
+    ? response('', { name: 'botctl', args: { action: 'boot', bot: 'chief' } })
+    : n === 2 ? response('', { name: 'botctl', args: { action: 'board_show' } }) : response('legacy readonly response') })
+  const headerFile = join(journal.scratch, 'header.json')
+  const header = JSON.parse(await readFile(headerFile, 'utf8'))
+  delete header.messages
+  delete header.runtimeOwnership
+  delete journal.runtimeOwnership
+  await writeFile(headerFile, JSON.stringify(header))
+  await writeFile(join(journal.scratch, 'ledger.json'), JSON.stringify(journal))
+  await writeFile(join(ws, '.mbot/runs/active-turn.json'), JSON.stringify(journal))
+  const input = await recoveryInput(journal, await ctx.sessionQuery.readSession(agent.id))
+  assert.deepEqual(readonlyLegacy(journal, input).tools.map(tool => tool.action), ['boot', 'board_show'])
+  for (const mutate of [
+    value => { value.events.find(event => event.type === 'tool/call').data.arguments = JSON.stringify({ action: 'remember', text: 'writer' }) },
+    value => { value.events = value.events.filter(event => event.type !== 'tool/result') },
+    value => { value.events = value.events.filter(event => event.type !== 'request/header') },
+    value => { value.events.find(event => event.type === 'tool/call').data.name = 'bash' },
+    value => { value.events.find(event => event.type === 'tool/result').data.message.isError = true },
+    value => { value.events.find(event => event.type === 'tool/call').data.turn = journal.turn + 1 },
+  ]) {
+    const changed = structuredClone(input); mutate(changed)
+    assert.throws(() => readonlyLegacy(journal, changed), /readonly|writer|unknown|contract|boundary/u)
+  }
+  await owner.dispose(); await ctx.plugin(runtime)
+  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(recovered.success, true)
+  const meta = JSON.parse(await readFile(join(ws, recovered.meta), 'utf8'))
+  assert.equal(meta.runtime.recovery_proof.mode, 'legacy-readonly')
+  assert.equal(meta.runtime.reply, undefined)
 })
 
 async function ipcApp(t, script = () => response('IPC reply')) {

@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：旧只读回合迁移与升级（未发布）
+
+- 新增 botctl migrate-readonly/--check，通过官方 DSH 只读 handle 核对旧回合；不执行生产 profile、创建第二个 Agent 或改写原生日志。完整核心只读调用/结束事实、工具定义、Git 基准和两把数据锁支持原 Host 仍存活时恢复旧审计；写操作/Bash/未知工具继续拒绝，scope 不改变。
+- cold Host recover 支持相同旧只读证明。迁移记录原生 cut/hash 和调用指纹，保持 PAUSED；独立迁移不修改旧 Runtime 的内存错误，加载新版本后使用同一 Session 继续对话，无 messages 的旧头不生成新回复证明。
+- 43 项 Host、70 项 Runtime、类型、64 组 Bash、四类安装及两套 Chromium 验收通过；旧版实际包验证受保护独立进程排除、Host 后代拒绝、只提交一次、拒绝写者、升级及对话。没有调用真实 DeepSeek API。详见 [旧回合迁移](legacy-migration.md)。
+
+非只读旧契约、缺失日志/其他写者、Worker、compact/睡眠、IM/peer/outbox 和管理面板继续在 TODO；包仍为 0.1.1，未打新 tag。
+
 ## dev：前台 Runtime/Agent 中断恢复（未发布）
 
 - /mbot recover 与 botctl recover 已协调原生 Session writer、Agent/前台工具和数据事务；保留 Bot ID、主 Session、Inbox、PAUSED 与单次 Git/故障计数结算。DSH 原生 resume 补齐崩溃回合，MBot 核对私有桥事件及真实结束事件，恢复不调用模型或自动 resume。

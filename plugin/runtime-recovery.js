@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { journalDigest, readJournal, recoveryInput, validateOwnership } from './recovery-proof.js'
 import { processStart } from './recovery.js'
 import { fileURLToPath } from 'node:url'
+import { readonlyLegacy } from './readonly-migration.js'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 
 function awaited(signal, operation) {
@@ -84,17 +85,19 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     const ownerStart = await processStart()
     const captured = journal.ownerPid === process.pid && journal.ownerStart === ownerStart
       && states.some(state => state.current?.lease?.identity.runId === journal.runId || state.failedAuditRunId === journal.runId)
-    if (!captured) validateOwnership(journal.runtimeOwnership)
+    if (!captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership)
     options.signal?.throwIfAborted()
     if (runtime.closed || runtime.ctx.mbot.closed) throw new Error('MBot Runtime closed during recovery')
     await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
     const log = await awaited(options.signal, runtime.ctx.sessionQuery.readSession(agent.id))
     const input = await recoveryInput(journal, log)
+    const legacyEvidence = !captured && journal.runtimeOwnership === undefined ? readonlyLegacy(journal, input) : undefined
     const start = input.events[0].seq, end = input.events.at(-1).seq
     directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
     const proofFile = join(directory, 'proof.json')
     await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart,
-      mode: captured ? 'captured-runtime' : 'recorded-foreground-v1', ...(captured ? { capturedRunId: journal.runId } : {}),
+      mode: captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
+      ...(captured ? { capturedRunId: journal.runId } : {}), ...(legacyEvidence ? { evidence: legacyEvidence } : {}),
       journalHash: journalDigest(journal), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,
         events: log.events.filter(event => event.seq >= start && event.seq <= end) }, input }), { mode: 0o600, flag: 'wx' })
     const result = await runtime.ctx.mbot.execute('mbot', ['recover'], { workspace: bot.workspacePath, signal: options.signal,

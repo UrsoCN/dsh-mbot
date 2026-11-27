@@ -28,6 +28,36 @@ mbot_turn_retry_artifacts() {
   done < <(printf '%s\n' "$meta" meta.json "$transcript" transcript.md ".mbot/runs/$MBOT_RUN_ID.jsonl" raw.jsonl ".mbot/runs/$MBOT_RUN_ID.session.jsonl" session-events.jsonl)
 }
 
+# Read-only validation shared by dry run and final settlement.
+mbot_turn_saved_commit() {
+  MBOT_RECOVERY_COMMIT= MBOT_RECOVERY_META=
+  if [[ $(jq -r .phase "$ledger") == committed && ( ! -f $MBOT_SCRATCH/commit-intent.json || $(mbot_git rev-parse HEAD) == "$MBOT_BASE" ) ]]; then
+    mbot_error 'committed turn HEAD or commit intent changed; review manually'; return 1
+  fi
+  if [[ -f $MBOT_SCRATCH/commit-intent.json && $(mbot_git rev-parse HEAD) != "$MBOT_BASE" ]]; then
+    local commit meta intent=$MBOT_SCRATCH/commit-intent.json
+    commit=$(mbot_git rev-parse HEAD); meta=$(jq -er .meta "$intent")
+    jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" '
+      .parent==$base and .ref==$ref and (.tree|test("^([a-f0-9]{40}|[a-f0-9]{64})$"))
+      and (.meta|test("^transcripts/[0-9]{4}-[0-9]{2}-[0-9]{2}/"+$id+"\\.meta\\.json$"))
+      and .transcript==(.meta|sub("\\.meta\\.json$";".md")) and (.message|type)=="string"' "$intent" >/dev/null 2>&1 \
+      || { mbot_error 'invalid saved commit intent'; return 1; }
+    [[ $(mbot_git show -s --format=%P HEAD) == "$MBOT_BASE" && $(mbot_git rev-parse 'HEAD^{tree}') == "$(jq -r .tree "$intent")" \
+      && $(mbot_git show -s --format=%B HEAD) == "$(jq -r .message "$intent")" \
+      && $(mbot_git symbolic-ref -q HEAD || true) == "$MBOT_BASE_REF" && -z $(mbot_git status --porcelain) ]] \
+      || { mbot_error 'HEAD does not match the saved turn commit; review manually'; return 1; }
+    mbot_path "$meta" >/dev/null
+    mbot_git show "$commit:$meta" | jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --slurpfile header "$MBOT_SCRATCH/header.json" '
+      .run_id==$id and .base_head==$base and (.success|type)=="boolean" and .runtime.kind=="managed-turn"
+      and .runtime.bot_id==$header[0].botId and .runtime.session_id==$header[0].sessionId and .runtime.turn==$header[0].turn' >/dev/null
+    if [[ $scope == agent-runtime ]]; then
+      node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --audit-existing "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS" "$commit"
+    fi
+    MBOT_RECOVERY_COMMIT=$commit
+    MBOT_RECOVERY_META=$meta
+  fi
+}
+
 mbot_turn_recover() {
   local ledger scratch actual key value role base_failures start settled=0 scope
   local -A limits=()
@@ -95,34 +125,21 @@ mbot_turn_recover() {
     printf -v "$key" '%s' "$value"
   done < "$scratch/settings"
   ((${#limits[@]}==6)) || { mbot_error 'missing saved turn limit'; return 1; }
+  if [[ ${MBOT_RECOVERY_CHECK:-0} == 1 ]]; then
+    mbot_turn_saved_commit
+    if [[ -n $MBOT_RECOVERY_META ]]; then mbot_turn_outcome "$MBOT_WS/$MBOT_RECOVERY_META"; fi
+    jq -cn --arg id "$MBOT_RUN_ID" --arg scope "$scope" '{kind:"recovery-check",ready:true,runId:$id,writerScope:$scope}'
+    return
+  fi
   # SIGKILL may leave an unexpired active permit. Fence it while holding both
   # locks, before restoring data; retries after a failed recovery stay fenced.
   if [[ $(jq -r .phase "$ledger") == active ]]; then mbot_turn_write_ledger abandoned; fi
   mbot_mark_paused 'Recovered managed turn; review status and audit before explicit resume.'
   # Keep evidence and pause on a second interruption, including after Git commit.
   trap 'mbot_mark_paused "Turn recovery interrupted; review and retry recovery." || true' EXIT
-  if [[ $(jq -r .phase "$ledger") == committed && ( ! -f $scratch/commit-intent.json || $(mbot_git rev-parse HEAD) == "$MBOT_BASE" ) ]]; then
-    mbot_error 'committed turn HEAD or commit intent changed; review manually'; return 1
-  fi
-  if [[ -f $scratch/commit-intent.json && $(mbot_git rev-parse HEAD) != "$MBOT_BASE" ]]; then
-    local commit meta intent=$scratch/commit-intent.json
-    commit=$(mbot_git rev-parse HEAD); meta=$(jq -er .meta "$intent")
-    jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" '
-      .parent==$base and .ref==$ref and (.tree|test("^([a-f0-9]{40}|[a-f0-9]{64})$"))
-      and (.meta|test("^transcripts/[0-9]{4}-[0-9]{2}-[0-9]{2}/"+$id+"\\.meta\\.json$"))
-      and .transcript==(.meta|sub("\\.meta\\.json$";".md")) and (.message|type)=="string"' "$intent" >/dev/null 2>&1 \
-      || { mbot_error 'invalid saved commit intent'; return 1; }
-    [[ $(mbot_git show -s --format=%P HEAD) == "$MBOT_BASE" && $(mbot_git rev-parse 'HEAD^{tree}') == "$(jq -r .tree "$intent")" \
-      && $(mbot_git show -s --format=%B HEAD) == "$(jq -r .message "$intent")" \
-      && $(mbot_git symbolic-ref -q HEAD || true) == "$MBOT_BASE_REF" && -z $(mbot_git status --porcelain) ]] \
-      || { mbot_error 'HEAD does not match the saved turn commit; review manually'; return 1; }
-    mbot_path "$meta" >/dev/null
-    mbot_git show "$commit:$meta" | jq -e --arg id "$MBOT_RUN_ID" --arg base "$MBOT_BASE" --slurpfile header "$scratch/header.json" '
-      .run_id==$id and .base_head==$base and (.success|type)=="boolean" and .runtime.kind=="managed-turn"
-      and .runtime.bot_id==$header[0].botId and .runtime.session_id==$header[0].sessionId and .runtime.turn==$header[0].turn' >/dev/null
-    if [[ $scope == agent-runtime ]]; then
-      node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --audit-existing "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS" "$commit"
-    fi
+  mbot_turn_saved_commit
+  if [[ -n $MBOT_RECOVERY_COMMIT ]]; then
+    local commit=$MBOT_RECOVERY_COMMIT meta=$MBOT_RECOVERY_META
     mbot_turn_settle "$meta"
     settled=1
     rm -rf -- "$scratch"

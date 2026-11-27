@@ -118,6 +118,8 @@ dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，�
 
 dev 支持显式注销 Bot：`/mbot remove <Bot ID 或完整名称>`，终端使用 `botctl remove --profile web --bot <稳定 Bot ID>`；`/mbot removed` 或 `botctl removed --profile web` 查询退役记录。删除 DSH 工作区只改变原生实体，独立 Bot 仍可修复或注销。注销保留 Git 数据、历史和待办，持久保存旧 Session 的执行闸门；执行或审计中需先 stop 并等待收尾。重新 import 同一目录获得新 Bot 身份和新主 Session，详见 [注销与退役](docs/bot-removal.md)。
 
+旧 Host 无法调用新 recover 时，已结束且仅使用核心只读工具的旧回合可用 `botctl -C <数据目录> migrate-readonly --check` 检查，再去掉 --check 迁移审计。迁移保留原生日志、Session ID 和 PAUSED，之后加载新 Runtime；写操作/未知工具不能套用。见 [旧只读回合迁移](docs/legacy-migration.md)。
+
 ## Dreaming 记忆闭环
 
 ```bash
@@ -147,10 +149,12 @@ npm run test:install
 npm run test:real-plugin
 ```
 
-dev 当前有公开类型、43 项 Cordis/Host、69 项真实 Agent Runtime 和 64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+dev 当前有公开类型、43 项 Cordis/Host、70 项真实 Agent Runtime 和 64 组 Bash 检查；安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
 
 `npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。`npm run test:gui-runtime` 使用本地 adapter 另验主 Session 的审计卡片、原生停止、晚到写者、队列及失败重放。dev 的主 Session/导航已另行验收，设置页仍需实现。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
 
 ## 许可证
 
 [MIT](LICENSE)
+
+`npm run test:gui-migration` 使用隔离的实际旧版安装包，验证只读旧回合迁移、拒绝路径、升级和同一 Session 的后续对话。

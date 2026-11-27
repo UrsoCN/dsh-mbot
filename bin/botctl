@@ -25,6 +25,10 @@ for arg in "$@"; do
   if [[ $arg == --help || $arg == -h ]]; then set -- --help; break; fi
 done
 case ${1:---help} in
+  migrate-readonly)
+    shift
+    [[ -n ${MBOT_CLI_WS:-} ]] || { mbot_error 'migrate-readonly requires an explicit -C data directory'; exit 2; }
+    exec node "$MBOT_ROOT/bin/botctl-migrate.mjs" --workspace "$MBOT_CLI_WS" "$@" ;;
   -h|--help)
     printf '%s\n' 'Usage: botctl [-C dir] boot <bot> [--task id]' \
       '       botctl [-C dir] board show|add|set ...' \
@@ -32,6 +36,7 @@ case ${1:---help} in
       '       botctl [-C dir] remember "fact" [--as bot] [--task id]' \
       '       botctl [-C dir] lint' \
       '       botctl talk|receipt|runtime|stop|bots|remove|removed|recover --profile NAME ...' \
+      '       botctl -C dir migrate-readonly [--session-root dir] [--check]' \
       '       botctl talk --help'
     exit 0 ;;
 esac

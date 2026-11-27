@@ -36,7 +36,7 @@ Runtime 的新 turn 保存 runtimeOwnership v1：foreground-only、workerDepth=0
 
 已有 Host 审计文件在提交失败后可能仍位于数据工作树。重试仅清理与准确 commit intent 和私有副本匹配、且基准 HEAD 中不存在的 Host 产物，再运行 guard；修改过的副本按正常越权规则处理，不把恢复新增审计误记成模型越权。
 
-旧的无 runtimeOwnership 请求头，只能由仍持有该回合 lease/失败审计记录的原 Host 作静止确认。缺少新 messages 的旧头可继续旧格式审计，不能生成 sealed reply 或虚构已核验回答。原 Host 已丢失且没有契约时保留 journal，继续走后续迁移/人工核实设计，不通过修改 writerScope 或删除证据放行。
+旧的无 runtimeOwnership 请求头，只能由仍持有该回合 lease/失败审计记录的原 Host 作静止确认。缺少新 messages 的旧头可继续旧格式审计，不能生成 sealed reply 或虚构已核验回答。没有原 Host 的捕获记录时，已结束且全为核心只读调用的旧回合可用 [只读迁移证明](legacy-migration.md) 恢复；其他旧契约保留 journal，继续走后续迁移/人工核实设计，不通过修改 writerScope 或删除证据放行。
 
 ## 结果与边界
 
@@ -49,3 +49,5 @@ Runtime 的新 turn 保存 runtimeOwnership v1：foreground-only、workerDepth=0
 使用真实 AgentLoop、前台工具、原生 Session/Workspace Controller、实际 Git 和本地 scripted adapter；没有调用 DeepSeek API。专项覆盖提交失败、两处提交崩溃边界、Runtime 重载、并发原生输入、存活许可进程/执行中 Agent/writer-held 拒绝、旧头兼容、退役身份及回执失败的两次重试。
 
 浏览器使用实际 tarball：主 Session 提交失败后 /mbot recover；模型正在运行时 SIGKILL Host，重启后 DSH 原生 closers 与 botctl recover 结算，receipt 查回同一请求的失败结果，PAUSED 保留，显式 resume 后新对话成功。完整回归与安装证据见 RELEASE_NOTE。
+
+只读旧契约的 cold Host recover 与独立 migrate-readonly 共用原生/核心工具/Git 证明；独立工具只读原生日志，保留运行中旧 Host 的内存状态，需加载新 Runtime 后继续业务。

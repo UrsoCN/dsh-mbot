@@ -47,6 +47,11 @@ mbot_turn_finalize() {
   if [[ ${MBOT_RECOVERING:-0} == 1 ]]; then
     jq '.runtime.recovered=true' "$MBOT_SCRATCH/meta.json" > "$MBOT_SCRATCH/recovered-meta.json"
     mv -- "$MBOT_SCRATCH/recovered-meta.json" "$MBOT_SCRATCH/meta.json"
+    if [[ -n ${MBOT_RUNTIME_RECOVERY_PROOF:-} ]]; then
+      jq --slurpfile proof "$MBOT_RUNTIME_RECOVERY_PROOF" 'if $proof[0].mode=="legacy-readonly" then .runtime.recovery_proof=$proof[0].evidence else . end' \
+        "$MBOT_SCRATCH/meta.json" > "$MBOT_SCRATCH/recovered-proof-meta.json"
+      mv -- "$MBOT_SCRATCH/recovered-proof-meta.json" "$MBOT_SCRATCH/meta.json"
+    fi
   fi
   printf '\n## Managed turn\n\n' >> "$MBOT_SCRATCH/transcript.md"
   jq -r '{runtime, outcome, failure_count_effect} | tojson | "    " + .' "$MBOT_SCRATCH/meta.json" >> "$MBOT_SCRATCH/transcript.md"
