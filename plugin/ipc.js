@@ -190,6 +190,7 @@ export class MBotIpc extends Service {
         if (!agent) throw new Error('Bot main Agent is unavailable')
         if (input.action === 'runtime') response.value = await this.ctx.mbotRuntime.status(agent)
         else if (input.action === 'stop') response.value = await this.ctx.mbotRuntime.stop(agent)
+        else if (input.action === 'compact') response.value = await this.ctx.mbotRuntime.compact(agent)
         else {
           const mailbox = this.ctx.mbotRuntime.ownerMailbox(agent, { visibility: 'owner-private', adapterId: 'botctl-local-v1',
             ownerId: `local-uid:${process.getuid()}`, conversationKey: 'main', replyRoute: 'botctl-local' })

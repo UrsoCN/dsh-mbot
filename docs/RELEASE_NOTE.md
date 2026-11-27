@@ -1,5 +1,11 @@
 # 发布说明
 
+## dev：R3 compact 维护闭环与普通 turn 边界旧摘要退役（2026-11-28，未发布）
+
+- 在普通 turn 边界（`reconcileContext`）核对 surface 上已有 `compact-checkpoint` 摘要与当前 Git `knowledgeVersion`；人格/记忆更新后立即通过受记录的 `surfaceOp: replace` 退役旧摘要，防止旧规则在下次压力压缩前持续误导模型；下次压缩遇到已退役摘要时展开 `shadowedSeqs` 原始来源重派生。
+- 接通手动 `/compact`、`/mbot compact`、`botctl compact` 与 `ctx.mbotRuntime.compact(agent)`：全部经过 `BotCoordinator` 维护屏障、Bot 数据锁（`.mbot/lock`）与工作树外持久维护 journal（[plugin/maintenance-journal.js](../plugin/maintenance-journal.js)），裸 `compactNow` 仍被维护闸门拒绝。
+- 在 `/mbot recover` 恢复链路补齐独立维护 compaction 中断冷恢复（`recoverMaintenanceCompaction`）：闭合未完成的 `compaction/start`，重验已落地摘要的来源证明并清理 journal；对有 summary 无 replacement 的损坏现场保守拒绝。详见 [受管理摘要](managed-compaction.md)。包版本保持 0.1.1，未新增发布标签。
+
 ## dev：R2 Runtime 四层解耦、性能基线与 CI（2026-11-28，未发布）
 
 - 将原单文件 `plugin/runtime.js` 拆分为 `gate-driver.js`、`conversation-session.js`、`bot-coordinator.js` 与 `mailbox-facade.js` 四层，`runtime.js` 收敛为 Cordis 服务协调门面；保留全部公开 API、共享 cell/ABI 2、单所有者私人对话准入边界与恢复证明等价性。

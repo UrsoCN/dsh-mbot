@@ -45,6 +45,8 @@ void removalVerification
 void removalRelease
 const contextCheckpoint: Promise<runtime.ContextCheckpoint | null> = ctx.mbotRuntime.checkpoint(managedAgent)
 void contextCheckpoint
+const compactedResult = ctx.mbotRuntime.compact(managedAgent)
+void compactedResult
 const workerResult: Promise<runtime.WorkerReceipt | string> = ctx.mbotRuntime.workerAction(managedAgent, 'worker_spawn', { bot: 'coder', task_id: '001' }, new AbortController().signal)
 void workerResult
 const runtimeStatus: Promise<runtime.RuntimeStatus> = ctx.mbotRuntime.status(managedAgent)

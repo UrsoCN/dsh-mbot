@@ -3,13 +3,13 @@ import { appendPluginRecord, foldSurface } from '@deepseek-ai/dsh-session'
 import { packageRoot } from './index.js'
 import { contextSnapshotType, contextHash, contextReferences, verifyContextCut, validateKnowledge } from './context-state.js'
 import { verifyWorkerAudit } from './worker-recovery-proof.js'
-import { verifyCompactionSources } from './compaction-data.js'
+import { verifyCompactionSources, sealCompactionAudit, compactInputType, compactOutputType } from './compaction-data.js'
 class ContextObservationChanged extends Error {
   name = 'ContextObservationChanged'
   code = 'MBOT_CONTEXT_OBSERVATION_CHANGED'
 }
 
-function contextEvidence(restored, log) {
+function contextEvidence(restored, log, botId) {
   for (const reference of restored.snapshots) {
     const event = log.events.find(event => event.seq === reference.seq && event.type === contextSnapshotType)
     if (!event || contextHash(event.data) !== reference.hash) throw new Error('Restored context snapshot identity changed')
@@ -20,6 +20,36 @@ function contextEvidence(restored, log) {
   for (const proof of restored.compactions ?? []) {
     verifyCompactionSources(proof, log.events, compactions)
     compactions.set(proof.compactionId, proof)
+  }
+  // Also restore verified standalone maintenance compactions (turn === null) from native log.
+  // Rejected unmanaged compactNow attempts produce a compaction/start+end(error) with no
+  // summary and no MBot compact-input; skip those failed non-replacement attempts while
+  // still validating every standalone compaction that produced MBot input or a summary.
+  if (botId) {
+    const standaloneStarts = log.events.filter(event => event.type === 'compaction/start' && event.data.turn === null)
+    const ownedIds = new Set(standaloneStarts
+      .filter(start => {
+        const id = start.data.compactionId
+        const hasInput = log.events.some(event => event.type === compactInputType && event.data.compactionId === id)
+        const hasSummary = log.events.some(event => event.type === 'compaction/summary' && event.data.compactionId === id)
+        const end = log.events.find(event => event.type === 'compaction/end' && event.data.compactionId === id)
+        return hasInput || hasSummary || !end?.data.error
+      })
+      .map(start => start.data.compactionId))
+    if (ownedIds.size) {
+      const standaloneEvents = log.events.filter(event =>
+        (event.type === 'compaction/start' && ownedIds.has(event.data.compactionId))
+        || (event.type === 'compaction/end' && ownedIds.has(event.data.compactionId))
+        || (event.type === 'compaction/summary' && ownedIds.has(event.data.compactionId))
+        || (event.type === 'user/message' && event.data.source?.kind === 'compact-checkpoint' && ownedIds.has(event.data.source.compactionId))
+        || ([compactInputType, compactOutputType].includes(event.type) && ownedIds.has(event.data.compactionId)))
+      const standaloneMeta = { run_id: 'maintenance', base_head: '', runtime: { bot_id: botId, session_id: log.session.id, turn: null } }
+      const standaloneProofs = sealCompactionAudit(standaloneMeta, standaloneEvents, { standalone: true }) ?? []
+      for (const proof of standaloneProofs) {
+        verifyCompactionSources(proof, log.events, compactions)
+        compactions.set(proof.compactionId, proof)
+      }
+    }
   }
   return compactions
 }
@@ -34,7 +64,7 @@ export async function recoverCompactionCatalog(runtime, bot, agent, log) {
   try {
     const result = await child.done, output = child.collected.stdout.readFrom(0)
     if (result.exitCode !== 0 || output.lossy) throw new Error('Detached compaction catalog does not match native/Git evidence')
-    const restored = JSON.parse(output.text), catalog = contextEvidence(restored, log)
+    const restored = JSON.parse(output.text), catalog = contextEvidence(restored, log, bot.botId)
     if (restored.checkpoint?.actors) {
       const checkpoint = restored.checkpoint
       const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === checkpoint.turn)
@@ -100,7 +130,7 @@ async function restoreContextNow(state, { update = true } = {}, attempt = 0) {
     }
     if (result.exitCode !== 0 || output.lossy) throw new Error('Context checkpoint does not match native/Git evidence; preserve it for recovery')
     const restored = JSON.parse(output.text), checkpoint = restored.checkpoint
-    const compactions = contextEvidence(restored, log)
+    const compactions = contextEvidence(restored, log, botId)
     if (checkpoint) {
       if (checkpoint.actors) {
         const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === checkpoint.turn)

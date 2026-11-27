@@ -6,7 +6,7 @@ import { createConnection } from 'node:net'
 
 export const ipcVersion = 1
 export const maxFrameBytes = 1600000
-export const hostActions = ['talk', 'receipt', 'runtime', 'stop', 'bots', 'remove', 'removed', 'recover']
+export const hostActions = ['talk', 'receipt', 'runtime', 'stop', 'compact', 'bots', 'remove', 'removed', 'recover']
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 24)
 
 export async function ipcLocation(options) {

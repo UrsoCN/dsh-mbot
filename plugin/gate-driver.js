@@ -12,13 +12,13 @@ export function createGateCell() {
   return { schemaVersion: gateSchemaVersion }
 }
 
-export function requireState(cell) {
+export function requireState(cell, { allowMaintenance = false } = {}) {
   if (cell.retired) throw new Error('This Bot was removed; its old managed Session is retired')
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
   if (!cell.state.runtime.ready || cell.state.initializing) throw new Error('MBot Runtime attachment is initializing; accepted input stays in the native Inbox')
   if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
   if (cell.state.runtime.recoveries.has(cell.state.botId)) throw new Error('Bot recovery is in progress; accepted input stays in the native Inbox')
-  if (cell.state.runtime.coordinator?.isBlocked(cell.state.botId)) throw new Error('Bot maintenance is in progress; accepted input stays in the native Inbox')
+  if (!allowMaintenance && cell.state.runtime.coordinator?.isBlocked(cell.state.botId)) throw new Error('Bot maintenance is in progress; accepted input stays in the native Inbox')
   if (cell.state.runtime.ctx.mbot.registry().retiredBots.some(entry => entry.bot.botId === cell.state.botId)) throw new Error('This Bot was removed; its old managed Session is retired')
   return cell.state
 }
@@ -53,7 +53,10 @@ export function installGates(agent, cell) {
   on('llm/stream', (options, next) => {
     if (options.sessionId !== agent.id) return next()
     const state = cell.state
-    if (options.purpose === 'compaction' || options.purpose === 'mbot-compaction') return managedCompaction(requireState(cell), cell, options, next)
+    if (options.purpose === 'compaction' || options.purpose === 'mbot-compaction') {
+      const allowMaintenance = Boolean(cell.activeMaintenanceCompaction)
+      return managedCompaction(requireState(cell, { allowMaintenance }), cell, options, next)
+    }
     return state ? managedCompaction(state, cell, options, next) : next()
   }, { prepend: true })
   const layout = botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' })

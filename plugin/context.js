@@ -1,4 +1,5 @@
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { parseManagedSummaryMessage } from './compaction-data.js'
 
 export function botSections(snapshot, { worker = false } = {}) {
   return [
@@ -65,6 +66,34 @@ export async function reconcileContext(ctx, agent, assembly, record, signal) {
         content: [{ type: 'text', text: kept.length ? `<system-reminder>\n${kept.map(section => section.text).join('\n\n')}\n</system-reminder>` : 'Earlier MBot context retired; current context is provided by the managed runtime.' }],
         source: { kind: 'runtime-context', form: 'snapshot', sections: kept },
       }), { surfaceOp: { op: 'replace', startSeq: event.seq, endSeq: event.seq }, sourceEventSeqs: [event.seq] }])
+    }
+    // Retire stale managed compaction summaries on ordinary turn boundaries
+    // when Git knowledgeVersion has advanced, so outdated rules/facts in an
+    // older summary cannot silently override updated SOUL/MEMORY before the
+    // next pressure compaction. Raw history stays intact in the append-only log.
+    const currentKnowledgeVersion = record.lease.snapshot.knowledge?.version
+    if (currentKnowledgeVersion) {
+      for (const event of surface.events) {
+        const parsed = parseManagedSummaryMessage(event)
+        if (!parsed || parsed.knowledgeVersion === currentKnowledgeVersion || parsed.retired === true) continue
+        const retiredPayload = {
+          schemaVersion: 1,
+          visibility: parsed.visibility ?? 'owner-private',
+          botId: parsed.botId,
+          sessionId: parsed.sessionId,
+          knowledgeVersion: currentKnowledgeVersion,
+          retired: true,
+          supersededKnowledgeVersion: parsed.knowledgeVersion,
+          supersededCompactionId: event.data.source.compactionId,
+          items: [],
+        }
+        const notice = 'Earlier MBot conversation summary retired because persona/memory knowledge updated; current SOUL and MEMORY apply. Re-derive from raw history on next compaction.\n'
+          + JSON.stringify(retiredPayload)
+        updates.push(['user/message', createUserMessage({
+          content: [{ type: 'text', text: notice }],
+          source: event.data.source,
+        }), { surfaceOp: { op: 'replace', startSeq: event.seq, endSeq: event.seq }, sourceEventSeqs: [event.seq] }])
+      }
     }
     if (updates.length) agent.session.append(updates)
     return updates.length > 0

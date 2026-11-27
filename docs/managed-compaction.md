@@ -36,12 +36,16 @@ Web profile 可能关闭根层 compaction 后端。受管理 Agent 没有继承�
 
 Agent 的共享 gate ABI 升为 2。已关闭且带共享 registry 的 ABI 1 Runtime 可以在原 Agent 上安装一次新的 LLM 闸门；首次/升级注册失败只回滚自己的 effects。没有共享 marker 的旧闸门仍不在支持范围内。
 
+## R3：手动维护闭环与普通 turn 边界旧摘要退役（dev）
+
+- **普通 turn 边界旧摘要退役**：在 `reconcileContext` 中比对当前 surface 上已存在的 `compact-checkpoint` 摘要与本轮 Git `knowledgeVersion`；一旦人格/记忆更新，即使未达到压力阈值也会在普通 turn 边界通过日志记录的 `surfaceOp: replace` 退役旧摘要并声明以当前 SOUL/MEMORY 为准。后续 compaction 遇到已退役摘要时按 `shadowedSeqs` 展开原始来源重派生，不会复用过期结论。
+- **手动 `/compact`、`/mbot compact` 与 `botctl compact`**：均收口至 `ctx.mbotRuntime.compact(agent)`，串行经过 `BotCoordinator.acquireBarrier(botId, 'compact')`、Bot 数据锁（`.mbot/lock`）与持久维护 journal（`<stateRoot>/maintenance/<workspaceHash>/current.json`，原子写+`fsync`+`bootId`）。未走维护屏障的裸 `compactNow` 仍被闸门拒绝。
+- **部分替换/中断冷恢复**：`recoverMaintenanceCompaction` 在 `/mbot recover` 路径上检查未结算的 `compact` 维护 journal；若发现未闭合的 `compaction/start` 且无 `summary` 残缺，自动补齐错误 `compaction/end`、重新核验来源并清理 journal；若发现有 `summary` 却缺失原生 replacement，保守拒绝并保留现场供人工复核。
+
 ## 尚未完成
 
-- 手动 `/compact`、`compactNow` 与 botctl 生命周期入口需要独立维护 journal、Bot 锁和准入屏障。当前受管理 Session 的 standalone compact 会明确拒绝；普通 DSH Session 保留原生行为，自动 compact 在当前 turn 内运行。
-- 普通知识更新后的下一轮仍会刷新 SOUL/MEMORY，但旧摘要在下一次 compact 之前仍作为带版本的历史材料可见。尚未交付在普通 turn 边界自动退役/重派生旧摘要的完整机制。
-- Worker 自动摘要、替换过程中原生括号未闭合的冷恢复、原生日志丢失及其他 Writer 契约未接齐；不能凭展示记录推定它们已静止或已完成。
-- sleep/wake 与 Dreaming → 各 conversation compact/checkpoint 的维护事务继续在下一阶段实现。
+- Worker 自动摘要、原生日志丢失及其他 Writer 契约未接齐；不能凭展示记录推定它们已静止或已完成。
+- sleep/wake 与 Dreaming → 各 conversation compact/checkpoint 的维护事务继续在 R4 实现。
 
 ## 验证
 

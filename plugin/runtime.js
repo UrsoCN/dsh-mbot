@@ -15,6 +15,7 @@ import { foregroundTools, installGates, createGateCell } from './gate-driver.js'
 import { ConversationSession, runtimeRecordType, validReceipt } from './conversation-session.js'
 import { BotCoordinator } from './bot-coordinator.js'
 import { createOwnerMailbox } from './mailbox-facade.js'
+import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess', 'llm']
@@ -201,6 +202,26 @@ export class MBotRuntime extends Service {
         cell.compactionFiber = await composition.plugin(BasicCompaction)
         if (agent.ctx.get('commands')) cell.compactionCommandFiber = await composition.plugin(CompactCommand)
       }
+      if (!cell.compactCommandGate && agent.ctx.get('commands')) {
+        // Route native `/compact` on managed main Sessions through MBot's
+        // audited maintenance barrier/lock/journal lifecycle instead of raw compactNow.
+        cell.compactCommandGate = agent.ctx.inject(['commands'], child => {
+          child.commands.register({
+            name: 'compact',
+            description: 'Compact older conversation history through the MBot maintenance lifecycle.',
+            handler: async invocation => {
+              if (invocation.rawInput.trim().length > 0) return { kind: 'error', text: 'Usage: /compact (no arguments)' }
+              try {
+                const res = await this.compact(agent, { signal: invocation.signal, sourceCommandId: invocation.commandId })
+                if (!res.compacted) return { kind: 'success', text: 'No compactable history yet.' }
+                return { kind: 'success', text: `Compacted ${res.shadowedCount} history items (~${res.shadowedTokenCount} tokens).`, sourceEventSeq: res.summarySeq }
+              } catch (error) {
+                return { kind: 'error', text: await redact(invocation.signal?.aborted ? 'Compaction cancelled.' : error.message ?? String(error), bot.workspacePath) }
+              }
+            },
+          })
+        })
+      }
       if (this.closed) throw new Error('MBot Runtime disposed during attachment')
       const workerControls = this.workersEnabled && this.workerManager && this.ctx.mbot.bot({ botId: state.botId }).defaultRole === 'chief'
       if (workerControls && !cell.controlTool) cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerBotctl(child, { workers: true }))
@@ -283,9 +304,19 @@ export class MBotRuntime extends Service {
   managed(agent) { return this.states.has(agent) }
 
   /** Enter through the service method so Cordis retains Runtime dependency scope. */
-  coordinateRecovery(bot, journal, options = {}) {
+  async coordinateRecovery(bot, journal, options = {}) {
     if (this.closed || !this.ready) throw new Error('MBot Runtime is not ready for recovery')
-    return journal ? recoverRuntime(this, bot, journal, options) : repairNativeReceipt(this, bot, options)
+    if (journal) return recoverRuntime(this, bot, journal, options)
+    const repaired = await repairNativeReceipt(this, bot, options)
+    if (repaired) return repaired
+    return recoverMaintenanceCompaction(this, bot, options)
+  }
+
+  /** Managed manual compaction through BotCoordinator barrier, lock & maintenance journal. */
+  async compact(agent, options = {}) {
+    const cell = cells.get(agent)
+    if (!cell) throw new Error('Session is not managed by the active MBot Runtime')
+    return runManualCompaction(this, agent, cell, options)
   }
 
   async attachRetired(agent, retired) {

@@ -3,7 +3,7 @@ import { nativeBindingAvailable, sessionResult } from './binding.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover [Bot ID or name] | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | compact [botId or name] | recover [Bot ID or name] | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -15,7 +15,7 @@ export function commandArgs(raw) {
   if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
   if (action === 'removed' && !rest) return { program: 'host', argv: ['removed'] }
   if (action === 'recover') return { program: 'host', argv: ['recover', ...(rest ? [rest] : [])] }
-  if (['open', 'repair', 'runtime', 'stop'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
+  if (['open', 'repair', 'runtime', 'stop', 'compact'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
   if (['import', 'select', 'remove'].includes(action)) {
     if (!rest) throw new Error(usage)
     return { program: 'host', argv: [action, rest] }
@@ -39,7 +39,7 @@ export function apply(ctx) {
         if (!command) return { kind: 'success', text: usage }
         const options = { signal: invocation.signal, sessionId: invocation.agent?.id ?? invocation.agent?.session?.id }
         if (command.program === 'host') {
-          if (['runtime', 'stop'].includes(command.argv[0])) {
+          if (['runtime', 'stop', 'compact'].includes(command.argv[0])) {
             const runtime = ctx.get('mbotRuntime')
             if (!runtime) throw new Error('MBot Runtime is unavailable')
             let agent = invocation.agent
@@ -52,6 +52,12 @@ export function apply(ctx) {
               const resolved = await controller.resolveAgent(bot.mainSessionId)
               if ('error' in resolved) throw resolved.error
               agent = resolved.agent
+            }
+            if (command.argv[0] === 'compact') {
+              const compacted = await runtime.compact(agent, { signal: options.signal, sourceCommandId: invocation.commandId })
+              return { kind: 'success', text: await redact(compacted.compacted
+                ? `Compacted ${compacted.shadowedCount} history items (~${compacted.shadowedTokenCount} tokens).\nCompaction ID: ${compacted.compactionId}\nKnowledge version: ${compacted.knowledgeVersion.slice(0, 12)}\n`
+                : 'No compactable history yet.\n') }
             }
             const status = command.argv[0] === 'stop' ? await runtime.stop(agent, options) : await runtime.status(agent)
             const receipt = command.argv[0] === 'stop' ? status.receipt ?? status.lastReceipt : status.lastReceipt
@@ -69,6 +75,7 @@ export function apply(ctx) {
           if (command.argv[0] === 'recover') {
             const result = await ctx.mbot.recoverTurn({ ...options, ...(command.argv[1] ? { botId: command.argv[1] } : {}) })
             return { kind: 'success', text: result.receiptRepaired ? 'Native audit receipt repaired; no new Git commit. Review /mbot runtime.'
+              : result.maintenanceRecovered ? 'Interrupted maintenance compaction recovered and verified. Review /mbot runtime.'
               : result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
           }
           if (command.argv[0] === 'import') {

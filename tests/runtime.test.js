@@ -3849,3 +3849,98 @@ test('BotCoordinator maintenance barrier blocks new turns while preserving nativ
   assert.equal(requests.length, 2, 'Both the parked maintenance message and the wake message must execute in order')
   assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
 })
+
+test('ordinary turn boundary retires stale compaction summaries when Git knowledge updates', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      return response(JSON.stringify({ items: [{ text: 'Old summary noting legacy rule ALPHA.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+    }
+    return response('reference report '.repeat(1500))
+  }, { main: true, compaction: true })
+  agent.followup(message('seed history '.repeat(1500)))
+  await settle(ctx, agent)
+  agent.followup(message('compact: first summary under knowledge v1'))
+  await settle(ctx, agent)
+  const firstProof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(firstProof.status, 'completed')
+  // Update MEMORY.md on Git (advancing knowledgeVersion without triggering compaction yet).
+  await writeFile(join(ws, 'MEMORY.md'), (await readFile(join(ws, 'MEMORY.md'), 'utf8')) + '\nRule BETA supersedes ALPHA.\n')
+  git(ws, 'add', 'MEMORY.md')
+  git(ws, 'commit', '-m', 'human: supersede rule ALPHA with BETA')
+  // Next ordinary turn (not a pressure compaction turn) must retire the stale summary on the surface.
+  const beforeCalls = requests.length
+  agent.followup(message('ordinary question after memory update'))
+  await settle(ctx, agent)
+  const sentMessages = JSON.stringify(requests[beforeCalls].messages)
+  assert.ok(sentMessages.includes('Rule BETA supersedes ALPHA.'), 'Fresh MEMORY must be in system prompt')
+  assert.ok(!sentMessages.includes('Old summary noting legacy rule ALPHA.'), 'Stale summary text must be retired on ordinary turn boundary')
+  assert.ok(sentMessages.includes('Earlier MBot conversation summary retired'), 'Surface replacement marker must explain retirement')
+  // And subsequent compaction must still be able to re-derive from original raw sources cleanly.
+  agent.followup(message('compact: re-derive after stale summary retirement'))
+  await settle(ctx, agent)
+  const secondProof = (await ctx.mbotRuntime.checkpoint(agent)).compactions[0]
+  assert.equal(secondProof.status, 'completed')
+  assert.deepEqual(secondProof.input.reusedSummaries, [], 'Retired summary must not be reused verbatim; must expand raw sources')
+})
+
+test('managed manual compact runs under barrier, lock and durable maintenance journal, and cold-recovers interruptions', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await app(t, options => {
+    if (options.purpose === summaryPurpose) {
+      const sources = JSON.parse(options.messages.at(-1).content[0].text)
+      return response(JSON.stringify({ items: [{ text: 'Manual maintenance summary item.', sourceEventSeqs: sources[0].sourceEventSeqs }] }))
+    }
+    return response('manual compact history '.repeat(600))
+  }, { main: true, compaction: true, persistence: true })
+  agent.followup(message('first message for manual compact '.repeat(400)))
+  await settle(ctx, agent)
+  agent.followup(message('second message for manual compact '.repeat(400)))
+  await settle(ctx, agent)
+  const beforeSummaries = requests.filter(request => request.purpose === summaryPurpose).length
+  // Direct unmanaged compactNow remains blocked by the maintenance gate.
+  await assert.rejects(ctx.compaction.compactNow(agent, new AbortController().signal), /summary/u)
+  // Managed manual compact via runtime.compact succeeds and records verified standalone proof.
+  const compacted = await ctx.mbotRuntime.compact(agent)
+  assert.equal(compacted.kind, 'compacted')
+  assert.equal(compacted.compacted, true)
+  assert.ok(compacted.compactionId)
+  assert.equal(compacted.proofs.length, 1)
+  assert.equal(compacted.proofs[0].status, 'completed')
+  assert.equal(requests.filter(request => request.purpose === summaryPurpose).length, beforeSummaries + 1)
+  // Subsequent normal turn continues cleanly and uses the compacted surface.
+  agent.followup(message('follow-up after manual compact'))
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  // Simulate an interrupted manual compaction (unclosed compaction/start + durable maintenance journal from dead PID).
+  const { writeMaintenanceJournal, readMaintenanceJournal } = await import('../plugin/maintenance-journal.js')
+  const preCheckpoint = await ctx.mbotRuntime.checkpoint(agent)
+  const preLog = await ctx.sessionQuery.readSession(agent.id)
+  const baselineSeq = preLog.events.at(-1).seq
+  const interruptedId = 'compaction-interrupted-test-1'
+  const startEvent = agent.session.append('compaction/start', { compactionId: interruptedId, turn: null })
+  appendPluginRecord(agent.session, compactInputType, {
+    schemaVersion: 1, mode: 'rejected', policyHash: contextHash((await import('../plugin/compaction-data.js')).summaryPolicy),
+    botId: bot.botId, sessionId: agent.id, turn: null, maintenance: true, runId: 'compact-interrupted-1',
+    memoryCommit: git(ws, 'rev-parse', 'HEAD'), knowledgeVersion: preCheckpoint.snapshot.knowledge.version,
+    compactionId: interruptedId, nativeStartSeq: startEvent.seq,
+  })
+  await ctx.sessions.flush(agent.session)
+  await writeMaintenanceJournal(ws, {
+    kind: 'compact', phase: 'running', maintenanceId: 'compact-interrupted-1', botId: bot.botId, sessionId: agent.id,
+    memoryCommit: git(ws, 'rev-parse', 'HEAD'), knowledgeVersion: preCheckpoint.snapshot.knowledge.version,
+    baselineSeq,
+  })
+  // Override ownerPid/bootId in the journal to simulate a crashed owner from a prior boot.
+  const existing = await readMaintenanceJournal(ws)
+  await writeFile(existing.file, JSON.stringify({ ...existing.record, ownerPid: 999999, bootId: '00000000-0000-4000-8000-000000000009' }))
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.maintenanceRecovered, true)
+  assert.equal(await readMaintenanceJournal(ws), null)
+  const postLog = await ctx.sessionQuery.readSession(agent.id)
+  assert.ok(postLog.events.some(event => event.type === 'compaction/end' && event.data.compactionId === interruptedId && event.data.error))
+  // Conversation remains healthy after maintenance cold recovery.
+  agent.followup(message('healthy after maintenance recovery'))
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+})

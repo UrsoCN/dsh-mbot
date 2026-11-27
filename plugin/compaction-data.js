@@ -16,6 +16,24 @@ export const summaryPolicy = [
 ].join('\n')
 export const nativeSummaryPrefix = 'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.\n\n<compacted-summary>'
 
+/**
+ * Extract the embedded MBot summary envelope from a native compact-checkpoint
+ * user message when present; returns null for legacy/unrecognized summaries.
+ */
+export function parseManagedSummaryMessage(event) {
+  if (event?.type !== 'user/message' || event.data?.source?.kind !== 'compact-checkpoint') return null
+  const textBlocks = (event.data.content ?? []).filter(block => block.type === 'text').map(block => block.text)
+  const body = textBlocks.find(text => text.startsWith('MBot conversation summary (') || text.startsWith('Earlier MBot conversation summary retired'))
+  if (!body) return null
+  const idx = body.indexOf('\n')
+  if (idx < 0) return null
+  try {
+    const parsed = JSON.parse(body.slice(idx + 1))
+    if (parsed?.schemaVersion === 1 && typeof parsed.knowledgeVersion === 'string') return parsed
+  } catch {}
+  return null
+}
+
 function eventMessage(event) {
   return event.type === 'user/message' ? event.data : event.data?.message
 }
@@ -53,10 +71,13 @@ export function summarySources(events, shadowedSeqs, trusted, knowledgeVersion) 
     if (event.type === 'user/message' && message.source?.kind === 'compact-checkpoint') {
       const id = message.source.compactionId
       const summary = events.find(item => item.type === 'compaction/summary' && item.data.compactionId === id)
-      if (!summary || event.seq !== summary.seq + 1 || event.surfaceOp?.op !== 'replace'
-        || !Array.isArray(summary.data.shadowedSeqs)) throw new Error('Prior summary lacks native source evidence')
+      if (!summary || !Array.isArray(summary.data.shadowedSeqs)) throw new Error('Prior summary lacks native source evidence')
+      const isDirectReplacement = event.seq === summary.seq + 1 && event.surfaceOp?.op === 'replace'
+      const isRetiredReplacement = !isDirectReplacement && event.surfaceOp?.op === 'replace'
+        && parseManagedSummaryMessage(event)?.retired === true
+      if (!isDirectReplacement && !isRetiredReplacement) throw new Error('Prior summary lacks native source evidence')
       const proof = trusted.get(id)
-      if (proof?.input?.knowledgeVersion === knowledgeVersion && proof.native.replacementSeq === event.seq && proof.output?.mode === 'completed') {
+      if (isDirectReplacement && proof?.input?.knowledgeVersion === knowledgeVersion && proof.native.replacementSeq === event.seq && proof.output?.mode === 'completed') {
         reused.add(id)
         for (const item of proof.output.items) {
           for (const source of item.sourceEventSeqs) ref(source)
@@ -104,12 +125,13 @@ export function renderSummary(input, items, events) {
   })
 }
 
-/** Validate one turn's native brackets and owned input/output against the audit. */
-export function sealCompactionAudit(meta, events) {
-  const starts = events.filter(event => event.type === 'compaction/start' && event.data.turn === meta.runtime.turn)
+/** Validate one turn's (or standalone maintenance compaction's) native brackets and owned input/output. */
+export function sealCompactionAudit(meta, events, { standalone = false } = {}) {
+  const turn = standalone ? null : meta.runtime.turn
+  const starts = events.filter(event => event.type === 'compaction/start' && event.data.turn === turn)
   const inputs = events.filter(event => event.type === compactInputType), outputs = events.filter(event => event.type === compactOutputType)
   if (!starts.length && !inputs.length && !outputs.length) return undefined
-  const parentEnd = events.findLast(event => event.type === 'turn/end' && event.data.turn === meta.runtime.turn)
+  const parentEnd = standalone ? null : events.findLast(event => event.type === 'turn/end' && event.data.turn === meta.runtime.turn)
   const result = starts.map(start => {
     const id = start.data.compactionId, inputEvents = inputs.filter(event => event.data.compactionId === id)
     const outputEvents = outputs.filter(event => event.data.compactionId === id)
@@ -118,12 +140,14 @@ export function sealCompactionAudit(meta, events) {
     if (inputEvents.length !== 1 || outputEvents.length > 1 || summaries.length > 1) throw new Error('Compaction lacks unique managed input/output evidence')
     const inputEvent = inputEvents[0], input = inputEvent.data, outputEvent = outputEvents[0], output = outputEvent?.data
     if (inputEvent.ignorable !== true || input.schemaVersion !== 1 || input.policyHash !== contextHash(summaryPolicy)
-      || input.botId !== meta.runtime.bot_id || input.sessionId !== meta.runtime.session_id || input.runId !== meta.run_id
-      || input.turn !== meta.runtime.turn || input.memoryCommit !== meta.base_head || input.nativeStartSeq !== start.seq
-      || input.knowledgeVersion !== meta.runtime.context?.snapshot.knowledge.version
+      || input.botId !== meta.runtime.bot_id || input.sessionId !== meta.runtime.session_id
+      || (!standalone && (input.runId !== meta.run_id || input.turn !== meta.runtime.turn || input.memoryCommit !== meta.base_head
+        || input.knowledgeVersion !== meta.runtime.context?.snapshot.knowledge.version))
+      || (standalone && (input.turn !== null || input.maintenance !== true || !/^[a-f0-9]{64}$/u.test(input.knowledgeVersion ?? '')))
+      || input.nativeStartSeq !== start.seq
       || inputEvent.seq <= start.seq || (outputEvent && (outputEvent.ignorable !== true || outputEvent.seq <= inputEvent.seq))
-      || (end && (end.data.turn !== meta.runtime.turn || end.seq <= (outputEvent?.seq ?? inputEvent.seq)))
-      || (!end && parentEnd?.data.reason.kind !== 'interrupted')) throw new Error('Compaction ownership or native lifetime changed')
+      || (end && (end.data.turn !== turn || end.seq <= (outputEvent?.seq ?? inputEvent.seq)))
+      || (!end && !standalone && parentEnd?.data.reason.kind !== 'interrupted')) throw new Error('Compaction ownership or native lifetime changed')
     if (!['accepted', 'rejected'].includes(input.mode) || input.mode === 'accepted' && (!Array.isArray(input.sourceSpan)
       || !input.sourceSpan.length || new Set(input.sourceSpan).size !== input.sourceSpan.length
       || input.sourceSpan.some(seq => !Number.isSafeInteger(seq) || seq < 0 || seq >= start.seq)

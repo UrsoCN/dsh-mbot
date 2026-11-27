@@ -103,6 +103,8 @@ export declare class MBotRuntime extends Service {
   foregroundTool(name: string): () => void
   dataLease(agent: Agent): TurnLease | ActorLease
   settled(agent: Agent): Promise<void>
+  /** Run audited manual compaction under BotCoordinator barrier, Bot data lock & maintenance journal. */
+  compact(agent: Agent, options?: { signal?: AbortSignal; sourceCommandId?: string }): Promise<{ kind: 'compacted'; maintenanceId: string; compacted: boolean; memoryCommit: string; knowledgeVersion: string; compactionId?: string; shadowedCount?: number; shadowedTokenCount?: number; summarySeq?: number; proofs: CompactionProof[] }>
   /** Flushed native context sealed by reachable Git audit; null before the first audited snapshot. */
   checkpoint(agent: Agent): Promise<ContextCheckpoint | null>
   status(agent: Agent): Promise<RuntimeStatus>
