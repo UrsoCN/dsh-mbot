@@ -16,6 +16,8 @@ import { ConversationSession, runtimeRecordType, validReceipt } from './conversa
 import { BotCoordinator } from './bot-coordinator.js'
 import { createOwnerMailbox } from './mailbox-facade.js'
 import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
+import { sleepBot, wakeBot, recoverSleepMaintenance, botOverview } from './sleep.js'
+import { readMaintenanceJournal } from './maintenance-journal.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess', 'llm']
@@ -185,6 +187,13 @@ export class MBotRuntime extends Service {
     this.coordinator.registerConversation(botId, state.conversation.conversationKey, agent.id)
     try {
       await state.initialize()
+      // Restore persisted sleeping state across Host restart / Runtime reload.
+      try {
+        const maint = await readMaintenanceJournal(bot.workspacePath)
+        if (maint?.record.kind === 'sleep' && maint.record.phase === 'sleeping') {
+          this.coordinator.setSleeping(botId, maint.record)
+        }
+      } catch {}
       if (cell.handoff) for (const key of ['lastReceipt', 'error', 'failedAuditRunId', 'failedAuditRecord']) state[key] = cell.handoff[key]
       if (!cell.bashInstalled && this.ctx.tools.get('bash', agent)) {
         // The official foreground-only composition kills and joins commands
@@ -309,7 +318,9 @@ export class MBotRuntime extends Service {
     if (journal) return recoverRuntime(this, bot, journal, options)
     const repaired = await repairNativeReceipt(this, bot, options)
     if (repaired) return repaired
-    return recoverMaintenanceCompaction(this, bot, options)
+    const compactRecovered = await recoverMaintenanceCompaction(this, bot, options)
+    if (compactRecovered) return compactRecovered
+    return recoverSleepMaintenance(this, bot, options)
   }
 
   /** Managed manual compaction through BotCoordinator barrier, lock & maintenance journal. */
@@ -317,6 +328,31 @@ export class MBotRuntime extends Service {
     const cell = cells.get(agent)
     if (!cell) throw new Error('Session is not managed by the active MBot Runtime')
     return runManualCompaction(this, agent, cell, options)
+  }
+
+  /** Staged sleep: barrier -> cutoff -> Dreaming -> optional compact -> durable sleeping state. */
+  async sleep(botId, options = {}) {
+    if (this.closed || !this.ready) throw new Error('MBot Runtime is not ready for sleep')
+    return sleepBot(this, botId, options)
+  }
+
+  /** Wake a sleeping Bot, retaining its original main Session ID and refreshing context. */
+  async wake(botId, options = {}) {
+    if (this.closed || !this.ready) throw new Error('MBot Runtime is not ready for wake')
+    return wakeBot(this, botId, options)
+  }
+
+  /** Read-only overview of all registered Bots for CLI/commands/management panel. */
+  async overview() {
+    const registry = this.ctx.mbot.registry()
+    const bots = await Promise.all(registry.bots.map(bot => botOverview(this, bot)))
+    return {
+      schemaVersion: 1,
+      revision: registry.revision,
+      selectedBotId: registry.selectedBotId,
+      bots,
+      retiredBots: registry.retiredBots,
+    }
   }
 
   async attachRetired(agent, retired) {
@@ -412,7 +448,7 @@ export class MBotRuntime extends Service {
       : await redact(state.error.message ?? String(state.error), this.ctx.mbot.bot({ botId: state.botId }).workspacePath) : undefined
     const maintenance = this.coordinator.maintenanceState(state.botId)
     return structuredClone({ botId: state.botId, sessionId: agent.id,
-      state: this.closed || !this.ready || state.closing || state.initializing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : maintenance ? 'maintaining' : error ? 'failed'
+      state: this.closed || !this.ready || state.closing || state.initializing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : maintenance === 'sleeping' ? 'sleeping' : maintenance ? 'maintaining' : error ? 'failed'
         : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
       queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
       ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })

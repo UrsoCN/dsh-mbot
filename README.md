@@ -97,7 +97,7 @@ Host 字段为 volatile，后续操作读取新值，在途操作保留原目录
 
 模型的原生 botctl 操作包括 boot、status、lint、board_show/add/set、task_show/result、remember。它管理 Host 配置的数据仓库，需要完整权限或一次 DSH 审批；不能写 MEMORY 或启动另一个模型。受控 Chief/Worker 继续使用 Bash botctl 与运行 guard。
 
-人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help；dev 另有 list/import/select/open/repair/remove/removed/runtime/stop/recover。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
+人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help；dev 另有 list/overview/import/select/open/repair/remove/removed/runtime/stop/compact/sleep/wake/recover。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
 
 ## 单次运行与恢复
 
@@ -116,7 +116,7 @@ dev 的 managed turn 若中断，journal 和持久私有快照（默认位于工
 
 dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，支持直接对话和受控前台工具；聊天区显示 [Host 审计卡片](docs/runtime-feedback.md)，`/mbot runtime` 查执行/验收/队列状态，`/mbot stop` 保留待办并等待本轮收尾；干净的用户停止保留故障计数，越权/已记录故障仍计失败，详见 [停止语义](docs/turn-outcomes.md)。dev 已提供 [所有者消息准入](docs/message-admission.md)：可信 Host 可取得 ownerMailbox，共用原生 Inbox，并按请求 ID 去重/查询持久化收据。[本地 botctl 宿主入口](docs/host-ipc.md) 已接入 talk/receipt/runtime/stop/bots/recover，需明确 --profile 和 Bot 身份；remove/removed 支持注销与查询退役身份；[receipt --wait](docs/request-replies.md) 可按请求查回已审计回答；真实 IM/peer、回复投递、隔离域、手动 compact 与睡眠仍待实现；botctl 的完整门面按阶段接入，DSH 负责日志/执行。设计见 [Session Runtime](docs/session-runtime.md)。基础 headless profile 没有工作区/Session Controller，仍只登记数据身份；CLI init 始终只初始化 Git 数据。
 
-主 Session 是 Bot 的默认私人对话，多窗口共用；规划中的所有者 TG 私聊可接同一 Session，群聊/其他用户/独立 Bot 使用隔离 conversation。上下文与生命周期统一归 MBot Runtime，botctl 提供工具/CLI 门面，适配器通过服务接口调用。dev 已接入带来源的原生自动摘要；手动 compact、普通 turn 的旧摘要退役与 sleep/wake 尚未交付。
+主 Session 是 Bot 的默认私人对话，多窗口共用；规划中的所有者 TG 私聊可接同一 Session，群聊/其他用户/独立 Bot 使用隔离 conversation。上下文与生命周期统一归 MBot Runtime，botctl 提供工具/CLI 门面，适配器通过服务接口调用。dev 已接入带来源的原生自动/手动摘要（含普通 turn 旧摘要退役与冷恢复）、分阶段 sleep/wake 维护与只读 overview/最小 Plugins 管理面板；多对话域 IM/peer、Worker 写工具与 P2 完整配置编辑仍在 TODO。
 
 dev 已接入 [turn 上下文 checkpoint 基础](docs/context-checkpoints.md)：按知识内容维护版本/epoch，原生历史和 Inbox 输入来源由同一次 Git 审计封存，原生 flush 与恢复后才发布。可信 Host 可调用 `ctx.mbotRuntime.checkpoint(agent)` 查询；后续 [受管理自动摘要](docs/managed-compaction.md) 已封存原生 compaction ID、来源、知识版本、摘要 hash 与单次恢复证明；手动 `/compact` 暂由维护闸门拒绝，sleep/wake 仍待完成。
 

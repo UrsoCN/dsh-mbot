@@ -108,6 +108,7 @@ export class ConversationSession {
         await this.pending
         signal.throwIfAborted()
         if (this.closing || this.retiring || this.runtime.closed) throw new Error('MBot Runtime is unavailable')
+        if (this.runtime.coordinator?.isSleeping(this.botId)) throw new Error('Bot is sleeping; accepted input stays in the native Inbox until /mbot wake')
         if (this.runtime.coordinator?.isBlocked(this.botId)) throw new Error('Bot maintenance is in progress; accepted input stays in the native Inbox')
         if (this.error) throw this.error
         const bot = this.runtime.ctx.mbot.bot({ botId: this.botId })

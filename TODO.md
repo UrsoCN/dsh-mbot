@@ -13,8 +13,8 @@ P0 命令反馈与目录选择已完成，归入 [0.1.1 发布说明](docs/RELEA
 | R1 · 已完成（dev） | 持久恢复证据与跨重启进程身份；见 [持久恢复证据](docs/durable-recovery.md) | 持久私有状态目录、原子写+fsync、boot_id 绑定与旧 `/tmp` reader 已交付并通过全套/安装回归 |
 | R2 · 已完成（dev） | 围绕维护流程拆分 Runtime，并建立性能/回归基线；见 [Runtime 架构与基线](docs/runtime-architecture-r2.md) | gate-driver、conversation-session、bot-coordinator、mailbox-facade 四层拆分完成，公开 API/ABI/恢复证明等价；100/300/1000 轮基准与 CI 模板已落地 |
 | R3 · 已完成（dev） | compact 维护闭环；对应 P1 阶段 1，见 [自动与手动摘要](docs/managed-compaction.md) | 普通 turn 边界旧摘要退役、手动 `/compact`/`/mbot compact`/`botctl compact` 经同一维护屏障/锁/持久 journal，以及未闭合维护中断冷恢复已交付 |
-| R4 · 当前 | sleep/wake 与最小管理面板；对应 P1 阶段 2、P2 的观察/控制入口 | 睡眠继续收信，Dreaming/checkpoint 分阶段结算，wake 沿用原 Session；界面能看 Bot、队列、知识版本、预算、故障与修复状态 |
-| R5 | 单实例长期观察、按基准优化热点，再扩展对话域/IM/peer/Worker 写工具 | 有实际观察记录与规模增长数据；来源/可见域、outbox、写工具及恢复契约逐项接齐，随后完成 P2 配置编辑与整体 0.2.0 发布验收 |
+| R4 · 已完成（dev） | sleep/wake 与最小管理面板；对应 P1 阶段 2、P2 的观察/控制入口，见 [睡眠与管理面板](docs/sleep-wake.md) | 睡眠继续收信、分阶段维护 journal 与中断单次恢复、wake 沿用原 Session，以及 overview/effectiveConfig 与 DSH Plugins 最小面板已交付 |
+| R5 · 当前 | 单实例长期观察、按基准优化热点，再扩展对话域/IM/peer/Worker 写工具 | 有实际观察记录与规模增长数据；热点优化、来源/可见域、outbox、写工具及恢复契约逐项接齐，随后完成 P2 配置编辑与整体 0.2.0 发布验收 |
 
 **R1 的实施边界**：优先选择 Bot 数据工作树之外的 Host 持久私有状态目录，并定义 Host/CLI 共用的定位规则。保存路径、run/Bot 身份、UID、目录/文件权限、链接拒绝与格式版本一起校验；若采用数据仓库内目录，须先解决 guard 自我复制及当前 run 的精确归属，不能笼统豁免整个 `.mbot`。定义创建、原子替换、文件/目录同步、journal 发布、提交确认与清理的顺序。保留旧 `/tmp` journal 的 reader，不搬迁活跃快照，不靠补写缺失证明恢复旧回合；重审 PID 出生身份与 boot identity 的绑定，避免跨重启 PID/出生计数复用。验收涵盖前台与已支持 scoped Worker、提交前/后中断、重复恢复、部分写盘、路径替换，以及未知写者/缺失原生日志仍拒绝。
 
@@ -37,7 +37,7 @@ Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实�
 已交付 [turn checkpoint](docs/context-checkpoints.md) 与 [受管理自动摘要](docs/managed-compaction.md)，包括原生 compaction 证明、来源/知识版本、空摘要及提交/flush 后单次恢复。按 [Session Runtime](docs/session-runtime.md#8-实施与验收) 的阶段顺序继续完成上下文闭环，再扩展来源和写工具：
 
 - [x] **阶段 1 · compact 维护闭环（dev 已交付）**：已接通普通 turn 边界的旧摘要退役/后续重派生、手动 `/compact`/`/mbot compact`/`botctl compact` 统一维护屏障/Bot 锁/持久维护 journal，以及未闭合 standalone compaction 中断冷恢复；裸 `compactNow` 仍由闸门保护，未知 Writer/缺失日志/半成品替换继续拒绝，见 [受管理摘要](docs/managed-compaction.md)
-- [ ] **阶段 2 · sleep/wake**：Bot 维护屏障与 Writer 静止，Dreaming → 各 conversation compact/checkpoint 的阶段 journal；睡眠继续接收原生 Inbox 消息，固定执行 cutoff，Git 成功后失败只补未完成阶段，epoch 不提前发布。wake 保留主 Session ID，衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；验收多窗口发送/编辑/停止、睡眠公平性和中断单次结算
+- [x] **阶段 2 · sleep/wake（dev 已交付）**：已接通 `BotCoordinator` 维护屏障与 Writer 静止、Dreaming → 可选 compact/checkpoint → 持久 `sleeping` 阶段 journal；睡眠期间继续接收原生 Inbox 消息，固定历史 cutoff，Git 成功后失败只补未完成阶段不重跑 Dreaming，wake 沿用原 `mainSessionId`；并提供 `runtime.overview()`、只读 `effectiveConfig`（凭据引用/掩码）与 `/mbot sleep|wake|overview`、`botctl sleep|wake|overview` 及最小 Plugins 管理面板，见 [睡眠与管理面板](docs/sleep-wake.md)
 - [ ] **阶段 3a · 对话域/入口**：在 ownerMailbox/CLI IPC 基础上实现持久 conversation 绑定、来源/可见域权限及真实适配器；所有者专用私聊可连主 Session，群/其他用户/peer 默认隔离，未实现记忆过滤前不开放。适配器通过 Cordis Runtime 门面，Web 保留原生提交闸门；附件/路由恢复复用 DSH Inbox，不另造消费状态，继续验收跨 Host 原生 writer-held 与端点交接
 - [ ] **阶段 3b · 回复/peer**：按已核验 replyRoute 实现 outbox、外部 ack/不确定状态；独立 Bot 异步信封带来源、correlation/causation、目标权限与 hops/TTL，不能复用所有者身份或树内 send_message。验收 A/B 互相请求不持锁等待、断连/崩溃转交、IM 重试、@alias、编辑冲突与回复不串域，不把 confirmed/ended 或展示记录当事务证明
 - [ ] **阶段 4 · Worker 写工具**：在 [原生 Worker](docs/native-workers.md) 上补结构化目录 grants、Bash/文件/PTC 原生权限与生命周期、并发写入/取消及扩展版本的 Writer 恢复契约；真实 PTC/run_code 的保留名称不能用自定义工具覆盖，不用全局 process.env 保存多 Bot 身份，不沿用仅 scoped botctl 的 v3 恢复证明

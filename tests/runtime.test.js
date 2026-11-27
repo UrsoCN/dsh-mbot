@@ -3944,3 +3944,85 @@ test('managed manual compact runs under barrier, lock and durable maintenance jo
   await settle(ctx, agent)
   assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
 })
+
+test('sleep/wake blocks turns while retaining native Inbox, persists across journal, recovers interrupted Dreaming, and reports overview', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await app(t, () => response('awake reply'), { main: true, persistence: true })
+  const originalSessionId = agent.id
+  agent.followup(message('before sleep'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+
+  // Enter sleep (skipDream for keyless offline test; compact false).
+  const slept = await ctx.mbotRuntime.sleep(bot.botId, { skipDream: true })
+  assert.equal(slept.kind, 'slept')
+  assert.equal(slept.alreadySleeping, false)
+  assert.equal(slept.sessionId, originalSessionId)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'sleeping')
+
+  // Repeated sleep is idempotent.
+  const sleptAgain = await ctx.mbotRuntime.sleep(bot.botId, { skipDream: true })
+  assert.equal(sleptAgain.alreadySleeping, true)
+  assert.equal(sleptAgain.maintenanceId, slept.maintenanceId)
+
+  // Messages arriving while sleeping stay in native Inbox and never run the model.
+  agent.followup(message('queued while sleeping'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1, 'Model must not run while Bot is sleeping')
+  assert.equal(agent.inbox.nextTurn.length, 1, 'Native Inbox must preserve queued input during sleep')
+
+  // Overview exposes sleeping state, queues, knowledge version, budgets, and masked effectiveConfig.
+  const over = await ctx.mbotRuntime.overview()
+  assert.equal(over.schemaVersion, 1)
+  assert.equal(over.bots.length, 1)
+  const item = over.bots[0]
+  assert.equal(item.botId, bot.botId)
+  assert.equal(item.runtimeState, 'sleeping')
+  assert.equal(item.queued.nextTurn, 1)
+  assert.ok(item.knowledgeVersion)
+  assert.equal(item.budgets.memoryLines.limit, 150)
+  assert.equal(item.effectiveConfig.workspace.MBOT_TIMEOUT.value, 300)
+  assert.ok(item.effectiveConfig.credentialRefs.every(ref => ref.masked === null || ref.masked === '[REDACTED]'))
+
+  // Wake retains the exact same main Session ID and executes queued input cleanly.
+  const woken = await ctx.mbotRuntime.wake(bot.botId)
+  assert.equal(woken.kind, 'woken')
+  assert.equal(woken.wasSleeping, true)
+  assert.equal(woken.sessionId, originalSessionId)
+  assert.equal(woken.queued.nextTurn, 1)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+
+  // Trigger turn processing for the queued message + follow-up.
+  agent.followup(message('after wake'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3, 'Queued sleep message and post-wake message must both execute')
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+
+  // Simulate an interrupted sleep maintenance journal after Dreaming already committed on Git.
+  const { writeMaintenanceJournal, readMaintenanceJournal } = await import('../plugin/maintenance-journal.js')
+  const cutoffHead = git(ws, 'rev-parse', 'HEAD')
+  await writeFile(join(ws, 'MEMORY.md'), (await readFile(join(ws, 'MEMORY.md'), 'utf8')) + '\nDreaming landed before crash.\n')
+  git(ws, 'add', 'MEMORY.md')
+  git(ws, 'commit', '-m', 'dream: simulated consolidated memory')
+  const dreamCommit = git(ws, 'rev-parse', 'HEAD')
+  await writeMaintenanceJournal(ws, {
+    kind: 'sleep', phase: 'checkpointing', maintenanceId: 'sleep-interrupted-1',
+    botId: bot.botId, sessionId: originalSessionId, cutoffHead, dreamCommit, dreamSkipped: false, compacted: false,
+  })
+  const saved = await readMaintenanceJournal(ws)
+  await writeFile(saved.file, JSON.stringify({ ...saved.record, ownerPid: 999999, bootId: '00000000-0000-4000-8000-000000000009' }))
+
+  // Wake rejects while unfinished non-sleeping sleep journal exists; recover settles without re-running Dreaming.
+  await assert.rejects(ctx.mbotRuntime.wake(bot.botId), /unfinished sleep maintenance journal/u)
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.sleepRecovered, true)
+  assert.equal(recovered.dreamAlreadyCommitted, true)
+  assert.equal(recovered.head, dreamCommit, 'Recovery must not re-run Dreaming or alter committed HEAD')
+  assert.equal(await readMaintenanceJournal(ws), null)
+
+  // Normal turn after sleep-recovery picks up fresh Dreaming memory immediately.
+  const beforeCalls = requests.length
+  agent.followup(message('verify dreaming memory after sleep recovery'))
+  await settle(ctx, agent)
+  assert.ok(JSON.stringify(requests[beforeCalls].messages).includes('Dreaming landed before crash.'))
+})

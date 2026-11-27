@@ -1,5 +1,11 @@
 # 发布说明
 
+## dev：R4 sleep/wake 维护闭环、只读 overview/effectiveConfig 与最小管理面板（2026-11-28，未发布）
+
+- 实现分阶段 `sleep` / `wake` 生命周期（[plugin/sleep.js](../plugin/sleep.js)）：`sleep` 通过 `BotCoordinator` 维护屏障静止活跃写者、固定历史 cutoff 并落盘工作树外阶段 journal（`dreaming` → `checkpointing` → `sleeping`），执行独立 Dreaming 与可选 compact/checkpoint 后发布持久睡眠态；睡眠期间原生 Inbox 持续接收新消息且跨重启保持睡眠。
+- `wake` 清除持久睡眠标记并严格沿用原 `mainSessionId`（不新建替代 Session），刷新上下文 checkpoint 并报告保留在 Inbox 中的待办数；未完成睡眠中断由 `/mbot recover` 冷恢复（`recoverSleepMaintenance`），若 Dreaming 已提交到 Git 则不重复执行，仅完成 flush 与上下文同步。
+- 接通 `/mbot sleep`、`/mbot wake`、`/mbot overview`、`botctl sleep|wake|overview` 与 `ctx.mbotRuntime.sleep/wake/overview`；提供按来源标注的只读 `effectiveConfig`（凭据仅返回引用与 `[REDACTED]` 掩码），并在 `plugin/client.js` 通过官方 `plugins.bundle.config` 槽位与 `configForms` 提供最小只读管理面板（活跃/退役 Bot 列表、目录/角色/绑定状态、Runtime 参数与一键打开主 Session）。详见 [睡眠与管理面板](sleep-wake.md)。
+
 ## dev：R3 compact 维护闭环与普通 turn 边界旧摘要退役（2026-11-28，未发布）
 
 - 在普通 turn 边界（`reconcileContext`）核对 surface 上已有 `compact-checkpoint` 摘要与当前 Git `knowledgeVersion`；人格/记忆更新后立即通过受记录的 `surfaceOp: replace` 退役旧摘要，防止旧规则在下次压力压缩前持续误导模型；下次压缩遇到已退役摘要时展开 `shadowedSeqs` 原始来源重派生。

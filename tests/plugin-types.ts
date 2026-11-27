@@ -47,6 +47,12 @@ const contextCheckpoint: Promise<runtime.ContextCheckpoint | null> = ctx.mbotRun
 void contextCheckpoint
 const compactedResult = ctx.mbotRuntime.compact(managedAgent)
 void compactedResult
+const sleptResult = ctx.mbotRuntime.sleep('example', { skipDream: true, compact: false })
+const wokenResult = ctx.mbotRuntime.wake('example')
+const overviewResult = ctx.mbotRuntime.overview()
+void sleptResult
+void wokenResult
+void overviewResult
 const workerResult: Promise<runtime.WorkerReceipt | string> = ctx.mbotRuntime.workerAction(managedAgent, 'worker_spawn', { bot: 'coder', task_id: '001' }, new AbortController().signal)
 void workerResult
 const runtimeStatus: Promise<runtime.RuntimeStatus> = ctx.mbotRuntime.status(managedAgent)

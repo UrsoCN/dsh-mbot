@@ -22,7 +22,7 @@ export interface RuntimeTurnReceipt {
 }
 export interface RuntimeStatus {
   botId: string; sessionId: string
-  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing' | 'recovering' | 'maintaining'
+  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing' | 'recovering' | 'maintaining' | 'sleeping'
   queued: { nextTurn: number; nextStep: number }
   lastReceipt?: RuntimeTurnReceipt & { seq: number }; error?: string
 }
@@ -105,6 +105,12 @@ export declare class MBotRuntime extends Service {
   settled(agent: Agent): Promise<void>
   /** Run audited manual compaction under BotCoordinator barrier, Bot data lock & maintenance journal. */
   compact(agent: Agent, options?: { signal?: AbortSignal; sourceCommandId?: string }): Promise<{ kind: 'compacted'; maintenanceId: string; compacted: boolean; memoryCommit: string; knowledgeVersion: string; compactionId?: string; shadowedCount?: number; shadowedTokenCount?: number; summarySeq?: number; proofs: CompactionProof[] }>
+  /** Staged sleep: barrier -> cutoff -> Dreaming -> optional compact -> durable sleeping state. */
+  sleep(botId: string, options?: { signal?: AbortSignal; skipDream?: boolean; compact?: boolean }): Promise<{ kind: 'slept'; alreadySleeping: boolean; botId: string; maintenanceId: string; sessionId: string | null; cutoffHead: string; dreamCommit: string | null; dreamSkipped: boolean; compacted: boolean; knowledgeVersion: string }>
+  /** Wake a sleeping Bot while retaining its original main Session ID. */
+  wake(botId: string, options?: { signal?: AbortSignal }): Promise<{ kind: 'woken'; wasSleeping: boolean; botId: string; sessionId: string | null; head: string; knowledgeVersion: string; queued: { nextTurn: number; nextStep: number } }>
+  /** Read-only overview of all registered Bots (queues, knowledge version, budgets, faults, repair state). */
+  overview(): Promise<{ schemaVersion: 1; revision: number; selectedBotId: string | null; bots: Record<string, unknown>[]; retiredBots: import('./instances.js').RetiredBot[] }>
   /** Flushed native context sealed by reachable Git audit; null before the first audited snapshot. */
   checkpoint(agent: Agent): Promise<ContextCheckpoint | null>
   status(agent: Agent): Promise<RuntimeStatus>

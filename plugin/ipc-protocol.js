@@ -6,7 +6,7 @@ import { createConnection } from 'node:net'
 
 export const ipcVersion = 1
 export const maxFrameBytes = 1600000
-export const hostActions = ['talk', 'receipt', 'runtime', 'stop', 'compact', 'bots', 'remove', 'removed', 'recover']
+export const hostActions = ['talk', 'receipt', 'runtime', 'stop', 'compact', 'sleep', 'wake', 'overview', 'bots', 'remove', 'removed', 'recover']
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 24)
 
 export async function ipcLocation(options) {
@@ -68,7 +68,7 @@ export async function requestHost(location, input, options = {}) {
       options.signal?.removeEventListener('abort', cancel)
       socket.destroy()
       if (error) {
-        const uncertain = sent && ['talk', 'stop', 'remove', 'recover'].includes(request.action)
+        const uncertain = sent && ['talk', 'stop', 'remove', 'recover', 'sleep', 'wake', 'compact'].includes(request.action)
         const failure = new Error(uncertain ? request.action === 'remove'
           ? 'Host acknowledgement is unconfirmed; inspect removed Bots before retrying with the same stable Bot ID'
           : request.action === 'recover' ? 'Host acknowledgement is unconfirmed; inspect Bot status and retry recovery with the same stable Bot ID'

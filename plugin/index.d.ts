@@ -18,6 +18,8 @@ export interface ImportOptions extends ManagementOptions { name?: string; defaul
 export type RemoveBotResult = RetiredBot & { alreadyRemoved: boolean }
 export interface ExecuteResult { exitCode: number; stdout: string; stderr: string; truncated: boolean; workspace?: string }
 export type RecoverTurnResult = { kind: 'recovered'; needed: false; receiptRepaired?: true } | {
+  kind: 'recovered'; needed: true; maintenanceRecovered: true; sleepRecovered?: true; maintenanceId: string; head?: string; dreamAlreadyCommitted?: boolean
+} | {
   kind: 'recovered'; needed: true; alreadyCommitted: boolean; runId: string; head: string; meta: string; transcript?: string; success: boolean
   outcome: import('./turn.js').ManagedOutcome; failureCountEffect: import('./turn.js').FailureCountEffect
 }

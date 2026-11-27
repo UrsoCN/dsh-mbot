@@ -7,7 +7,24 @@ export class BotCoordinator {
   constructor(runtime) {
     this.runtime = runtime
     this.maintenance = new Map() // botId -> { kind, promise, resolve }
+    this.sleeping = new Map() // botId -> sleep metadata
     this.conversations = new Map() // botId -> Map(conversationKey -> sessionId)
+  }
+
+  setSleeping(botId, info) {
+    this.sleeping.set(botId, Object.freeze({ ...info }))
+  }
+
+  clearSleeping(botId) {
+    this.sleeping.delete(botId)
+  }
+
+  isSleeping(botId) {
+    return this.sleeping.has(botId)
+  }
+
+  sleepInfo(botId) {
+    return this.sleeping.get(botId)
   }
 
   registerConversation(botId, conversationKey, sessionId) {
@@ -31,11 +48,11 @@ export class BotCoordinator {
   }
 
   isBlocked(botId) {
-    return this.maintenance.has(botId)
+    return this.maintenance.has(botId) || this.sleeping.has(botId)
   }
 
   maintenanceState(botId) {
-    return this.maintenance.get(botId)?.kind
+    return this.maintenance.get(botId)?.kind ?? (this.sleeping.has(botId) ? 'sleeping' : undefined)
   }
 
   statesForBot(botId) {

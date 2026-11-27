@@ -10,11 +10,11 @@
 
 | 已实现（含 dev） | 尚未实现/待修复 |
 |---|---|
-| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema | 自有设置面板、完整上下文与睡眠生命周期 |
+| 可安装 Cordis bundle、原生 botctl、聊天区 /mbot 卡片、Config schema、最小 Plugins 管理面板 | 完整 P2 可编辑配置面板与跨层并发保存 |
 | 独立 Markdown/Git 数据仓库、Bash 事务与护栏、init 后持久选目录 | 缺失实体主动诊断与跨版本迁移 |
-| 独立 headless Chief/Worker/Dreaming、Bot 登记与主 Session；所有者准入、CLI IPC、已审计回复查询；原生 scoped botctl Worker/恢复 | IM/peer、隔离对话域、外部回复投递、手动 compact/睡眠维护；Worker Bash/文件/PTC |
-| turn checkpoint、受管理原生自动摘要及来源/Git/flush 单次恢复 | 手动 compact、旧摘要在普通 turn 边界退役、sleep/wake |
-| volatile workspace 的 Host 校验与更新、最小浏览器入口 | 自有设置/管理面板 |
+| 独立 headless Chief/Worker/Dreaming、Bot 登记与主 Session；所有者准入、CLI IPC、已审计回复查询；原生 scoped botctl Worker/恢复 | IM/peer、隔离对话域、外部回复投递；Worker Bash/文件/PTC |
+| turn checkpoint、受管理原生自动/手动摘要、普通 turn 旧摘要退役与分阶段 sleep/wake 及冷恢复 | Worker compaction、多 conversation 并发睡眠扩展 |
+| volatile workspace 的 Host 校验与更新、最小浏览器入口、只读 overview/effectiveConfig | 完整 P2 配置编辑与卸载全流程验收 |
 | cron、备份、恢复、人工观察工具 | 连续 7 天调度验收 |
 
 DSH CommandResult 支持将结果保存在 command/run、command/done，客户端可在模型历史之外展示。0.1.1 的浏览器入口贡献 MBot 命令活动，让只执行命令的新会话展开原生聊天视图。schema 能导出也不代表面板已注册。

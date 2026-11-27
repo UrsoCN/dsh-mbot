@@ -4,10 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const usage = `Usage: botctl talk --profile NAME --bot ID --request-id ID --text TEXT|--stdin
        botctl receipt --profile NAME --bot ID --request-id ID [--wait --timeout-ms 60000]
-       botctl runtime|stop|compact|recover --profile NAME --bot ID
-       botctl bots --profile NAME
+       botctl runtime|stop|compact|wake|recover --profile NAME --bot ID
+       botctl sleep --profile NAME --bot ID [--skip-dream] [--compact]
+       botctl overview|bots|removed --profile NAME
        botctl remove --profile NAME --bot ID [--revision NUMBER]
-       botctl removed --profile NAME
 Use --endpoint-dir DIR instead of --profile for an explicitly configured Host.
 All commands print JSON; talk returns admission, not a completed model response.
 Exit 3 means unconfirmed delivery; exit 4 means waiting expired. Do not resubmit with a new ID.\n`
@@ -32,20 +32,21 @@ async function main() {
   const values = {}
   while (args.length) {
     const name = args.shift()
-    if (!['--profile', '--endpoint-dir', '--bot', '--request-id', '--text', '--stdin', '--correlation-id', '--wait', '--timeout-ms', '--revision'].includes(name) || name in values) throw new Error('Unknown or duplicate Host option')
-    if (['--stdin', '--wait'].includes(name)) values[name] = true
+    if (!['--profile', '--endpoint-dir', '--bot', '--request-id', '--text', '--stdin', '--correlation-id', '--wait', '--timeout-ms', '--revision', '--skip-dream', '--compact'].includes(name) || name in values) throw new Error('Unknown or duplicate Host option')
+    if (['--stdin', '--wait', '--skip-dream', '--compact'].includes(name)) values[name] = true
     else {
       if (!args.length) throw new Error('Host option requires a value')
       values[name] = args.shift()
     }
   }
   if (Boolean(values['--profile']) === Boolean(values['--endpoint-dir'])) throw new Error('Choose exactly one of --profile or --endpoint-dir')
-  if (!['bots', 'removed'].includes(action) && !values['--bot']) throw new Error('--bot is required')
+  if (!['bots', 'removed', 'overview'].includes(action) && !values['--bot']) throw new Error('--bot is required')
   if (['talk', 'receipt'].includes(action) && !values['--request-id']) throw new Error('--request-id is required')
   if (action === 'talk' && (('--text' in values) === Boolean(values['--stdin']))) throw new Error('talk requires exactly one of --text or --stdin')
-  const allowed = ['--profile', '--endpoint-dir', ...(['bots', 'removed'].includes(action) ? [] : ['--bot']),
+  const allowed = ['--profile', '--endpoint-dir', ...(['bots', 'removed', 'overview'].includes(action) ? [] : ['--bot']),
     ...(['talk', 'receipt'].includes(action) ? ['--request-id'] : []), ...(action === 'talk' ? ['--text', '--stdin', '--correlation-id'] : []),
-    ...(action === 'receipt' ? ['--wait', '--timeout-ms'] : []), ...(action === 'remove' ? ['--revision'] : [])]
+    ...(action === 'receipt' ? ['--wait', '--timeout-ms'] : []), ...(action === 'remove' ? ['--revision'] : []),
+    ...(action === 'sleep' ? ['--skip-dream', '--compact'] : [])]
   if (Object.keys(values).some(name => !allowed.includes(name))) throw new Error('Option does not apply to this Host command')
   const waitMs = values['--timeout-ms'] === undefined ? 60000 : Number(values['--timeout-ms'])
   if (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 3600000 || ('--timeout-ms' in values && !values['--wait'])) throw new Error('--timeout-ms requires --wait and 1–3600000 milliseconds')
@@ -53,6 +54,7 @@ async function main() {
   const input = { action, ...(values['--bot'] ? { botId: values['--bot'] } : {}),
     ...(values['--request-id'] ? { requestId: values['--request-id'] } : {}),
     ...(values['--revision'] === undefined ? {} : { revision: Number(values['--revision']) }),
+    ...(action === 'sleep' ? { ...(values['--skip-dream'] ? { skipDream: true } : {}), ...(values['--compact'] ? { compact: true } : {}) } : {}),
     ...(action === 'talk' ? { text: values['--stdin'] ? await stdinText() : values['--text'],
       ...(values['--correlation-id'] ? { correlationId: values['--correlation-id'] } : {}) } : {}) }
   try {

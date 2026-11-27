@@ -3,7 +3,7 @@ import { nativeBindingAvailable, sessionResult } from './binding.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | compact [botId or name] | recover [Bot ID or name] | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | overview | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | compact [botId or name] | sleep [botId or name] | wake [botId or name] | recover [Bot ID or name] | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -12,10 +12,9 @@ export function commandArgs(raw) {
   const action = match?.[1] ?? 'status'
   const rest = match?.[2] ?? ''
   if (action === 'help') return null
-  if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
-  if (action === 'removed' && !rest) return { program: 'host', argv: ['removed'] }
+  if (['list', 'removed', 'overview'].includes(action) && !rest) return { program: 'host', argv: [action] }
   if (action === 'recover') return { program: 'host', argv: ['recover', ...(rest ? [rest] : [])] }
-  if (['open', 'repair', 'runtime', 'stop', 'compact'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
+  if (['open', 'repair', 'runtime', 'stop', 'compact', 'sleep', 'wake'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
   if (['import', 'select', 'remove'].includes(action)) {
     if (!rest) throw new Error(usage)
     return { program: 'host', argv: [action, rest] }
@@ -66,6 +65,38 @@ export function apply(ctx) {
               + (receipt ? `Last audit: turn ${receipt.turn}, ${receipt.outcome ?? receipt.phase}${receipt.head ? `, commit ${receipt.head}` : ''}\n` : 'No managed audit yet.\n')
               + (status.error ? `${status.error}\n` : '')) }
           }
+          if (command.argv[0] === 'overview') {
+            const runtime = ctx.get('mbotRuntime')
+            if (!runtime) throw new Error('MBot Runtime is unavailable')
+            const snap = await runtime.overview()
+            if (!snap.bots.length && !snap.retiredBots.length) return { kind: 'success', text: 'No registered Bots. Use /mbot init <directory> or /mbot import <directory>.\n' }
+            const lines = [`MBot overview (revision ${snap.revision}, active ${snap.bots.length}, retired ${snap.retiredBots.length})`]
+            for (const item of snap.bots) {
+              const mark = item.botId === snap.selectedBotId ? '* ' : '  '
+              lines.push(`${mark}${item.name} (${item.botId}) [${item.runtimeState}]`)
+              lines.push(`    Workspace: ${item.workspacePath}${item.workspaceExists ? '' : ' (MISSING)'}`)
+              lines.push(`    Main Session: ${item.mainSessionId ?? 'not bound'} · Binding: ${item.bindingState}${item.bindingError ? ` (${item.bindingError})` : ''}`)
+              lines.push(`    Queued: ${item.queued.nextTurn} next-turn, ${item.queued.nextStep} next-step · Failures: ${item.failures}${item.paused ? ` · PAUSED: ${item.paused}` : ''}`)
+              lines.push(`    Knowledge: ${item.knowledgeVersion ? item.knowledgeVersion.slice(0, 12) : 'n/a'} · HEAD: ${item.head ? item.head.slice(0, 12) : 'n/a'}${item.maintenancePhase ? ` · Maintenance: ${item.maintenancePhase}` : ''}`)
+              lines.push(`    Board: todo=${item.board.todo} doing=${item.board.doing} blocked=${item.board.blocked} done=${item.board.done} · Memory: ${item.memory.lines}/${item.budgets?.memoryLines.limit ?? '?'} lines, ${item.memory.chars}/${item.budgets?.memoryChars.limit ?? '?'} chars`)
+              if (item.hasTurnJournal || item.needsRepair) lines.push(`    Attention: ${item.hasTurnJournal ? 'pending turn journal (run /mbot recover)' : 'needs repair/resume'}`)
+            }
+            return { kind: 'success', text: await redact(lines.join('\n') + '\n') }
+          }
+          if (['sleep', 'wake'].includes(command.argv[0])) {
+            const runtime = ctx.get('mbotRuntime')
+            if (!runtime) throw new Error('MBot Runtime is unavailable')
+            const bot = command.argv[1] ? ctx.mbot.bot({ botId: command.argv[1] }) : ctx.mbot.bot(options)
+            if (!bot) throw new Error('No Bot selected. Use /mbot list.')
+            if (command.argv[0] === 'sleep') {
+              const slept = await runtime.sleep(bot.botId, { signal: options.signal })
+              return { kind: 'success', text: await redact(
+                `${slept.alreadySleeping ? 'Bot is already sleeping.' : 'Bot entered sleep.'}\nBot: ${bot.name} (${bot.botId})\nSession: ${slept.sessionId ?? 'not bound'}\nKnowledge version: ${slept.knowledgeVersion.slice(0, 12)}\nDreaming commit: ${slept.dreamCommit ? slept.dreamCommit.slice(0, 12) : 'none'}\nNative Inbox stays open; use /mbot wake ${bot.botId} to resume.\n`, bot.workspacePath) }
+            }
+            const woken = await runtime.wake(bot.botId, { signal: options.signal })
+            return { kind: 'success', text: await redact(
+              `${woken.wasSleeping ? 'Bot woke up.' : 'Bot was already awake.'}\nBot: ${bot.name} (${bot.botId})\nSession: ${woken.sessionId ?? 'not bound'}\nKnowledge version: ${woken.knowledgeVersion.slice(0, 12)}\nQueued: ${woken.queued.nextTurn} next-turn, ${woken.queued.nextStep} next-step\n`, bot.workspacePath) }
+          }
           if (command.argv[0] === 'list') return { kind: 'success', text: await ctx.mbot.describeBots() }
           if (command.argv[0] === 'removed') return { kind: 'success', text: await ctx.mbot.describeRemovedBots() }
           if (command.argv[0] === 'remove') {
@@ -75,6 +106,7 @@ export function apply(ctx) {
           if (command.argv[0] === 'recover') {
             const result = await ctx.mbot.recoverTurn({ ...options, ...(command.argv[1] ? { botId: command.argv[1] } : {}) })
             return { kind: 'success', text: result.receiptRepaired ? 'Native audit receipt repaired; no new Git commit. Review /mbot runtime.'
+              : result.sleepRecovered ? 'Interrupted sleep maintenance recovered and verified. Review /mbot runtime.'
               : result.maintenanceRecovered ? 'Interrupted maintenance compaction recovered and verified. Review /mbot runtime.'
               : result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
           }

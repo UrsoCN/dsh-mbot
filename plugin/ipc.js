@@ -19,12 +19,17 @@ export const Config = z.object({
 
 function validateRequest(input, profileId) {
   const common = ['schemaVersion', 'transportId', 'profileId', 'action']
-  const fields = input?.action === 'talk' ? ['botId', 'requestId', 'text', 'correlationId'] : input?.action === 'receipt' ? ['botId', 'requestId']
-    : ['bots', 'removed'].includes(input?.action) ? [] : input?.action === 'remove' ? ['botId', 'revision'] : ['botId']
+  const fields = input?.action === 'talk' ? ['botId', 'requestId', 'text', 'correlationId']
+    : input?.action === 'receipt' ? ['botId', 'requestId']
+    : ['bots', 'removed', 'overview'].includes(input?.action) ? []
+    : input?.action === 'remove' ? ['botId', 'revision']
+    : input?.action === 'sleep' ? ['botId', 'skipDream', 'compact']
+    : ['botId']
   if (!input || Array.isArray(input) || input.schemaVersion !== ipcVersion || input.profileId !== profileId
     || !hostActions.includes(input.action) || typeof input.transportId !== 'string' || !/^[0-9a-f-]{36}$/u.test(input.transportId)
     || Object.keys(input).some(key => ![...common, ...fields].includes(key))) throw new Error('Invalid IPC request version, profile, action or fields')
-  if (!['bots', 'removed'].includes(input.action) && (typeof input.botId !== 'string' || !input.botId || input.botId.length > 1024 || /[\0\r\n]/u.test(input.botId))) throw new Error('IPC operation requires a Bot identity')
+  if (!['bots', 'removed', 'overview'].includes(input.action) && (typeof input.botId !== 'string' || !input.botId || input.botId.length > 1024 || /[\0\r\n]/u.test(input.botId))) throw new Error('IPC operation requires a Bot identity')
+  if (input.action === 'sleep' && ((input.skipDream !== undefined && typeof input.skipDream !== 'boolean') || (input.compact !== undefined && typeof input.compact !== 'boolean'))) throw new Error('Invalid sleep options')
   if (['remove', 'recover'].includes(input.action) && (!/^bot-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(input.botId)
     || input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0))) throw new Error('IPC removal/recovery requires a stable Bot ID and valid optional revision')
   return input
@@ -177,6 +182,16 @@ export class MBotIpc extends Service {
       } else if (input.action === 'removed') {
         const registry = this.ctx.mbot.registry()
         response.value = { schemaVersion: registry.schemaVersion, revision: registry.revision, retiredBots: registry.retiredBots }
+      } else if (input.action === 'overview') {
+        response.value = await this.ctx.mbotRuntime.overview()
+      } else if (input.action === 'sleep') {
+        const bot = this.ctx.mbot.bot({ botId: input.botId })
+        workspace = bot.workspacePath
+        response.value = await this.ctx.mbotRuntime.sleep(bot.botId, { skipDream: input.skipDream === true, compact: input.compact === true })
+      } else if (input.action === 'wake') {
+        const bot = this.ctx.mbot.bot({ botId: input.botId })
+        workspace = bot.workspacePath
+        response.value = await this.ctx.mbotRuntime.wake(bot.botId)
       } else if (input.action === 'recover') response.value = await this.ctx.mbot.recoverTurn({ botId: input.botId })
       else if (input.action === 'remove') response.value = await this.ctx.mbot.removeBot(input.botId, { revision: input.revision })
       else {
