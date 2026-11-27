@@ -206,7 +206,42 @@ try {
   await page.locator('[data-mbot-audit="4"][data-phase="committed"]').waitFor()
   assert.equal(await page.locator('[data-mbot-audit]').count(), 4)
   assert.equal((await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length, callsBeforeRestart)
-  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/external-cli/cli-stop/crash-restart-dedup/no-external-model')
+  // A native workspace deletion does not silently unregister the independent
+  // Bot. Explicit removal also gates archived old windows after a real restart.
+  assert.match(await command('/mbot_fixture_delete'), /Native workspace deleted/u)
+  assert.ok((await hostCall(['bots'])).value.bots.some(bot => bot.botId === cliBot.botId))
+  assert.match(await command(`/mbot remove ${cliBot.botId}`), /Data preserved:/u)
+  assert.ok(!(await hostCall(['bots'])).value.bots.some(bot => bot.botId === cliBot.botId))
+  assert.ok((await hostCall(['removed'])).value.retiredBots.some(item => item.bot.botId === cliBot.botId))
+  assert.match(await command('/mbot removed'), new RegExp(cliBot.mainSessionId))
+  assert.match(await command('/mbot runtime'), /MBot Runtime: retired/u)
+  const retiredHead = cliGit('rev-parse', 'HEAD')
+  await send('blocked old Bot after removal')
+  await until(async () => (await events()).some(row => row.sessionId === cliBot.mainSessionId
+    && row.event.type === 'turn/end' && row.event.data.turn === 5))
+  assert.equal(cliGit('rev-parse', 'HEAD'), retiredHead)
+  assert.equal((await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length, callsBeforeRestart)
+  await page.screenshot({ path: join(root, 'bot-removed.png'), fullPage: true })
+  server.child.kill('SIGKILL')
+  await server.child.finished
+  await rm(join(root, 'fixture-ready'))
+  server = await host()
+  await page.goto(`${server.url}#mbot-session=${cliBot.mainSessionId}`)
+  await page.locator('[contenteditable=true]').waitFor()
+  assert.match(await command('/mbot runtime'), /MBot Runtime: retired/u)
+  await send('blocked retired Bot after restart')
+  await until(async () => (await events()).some(row => row.sessionId === cliBot.mainSessionId
+    && row.event.type === 'turn/end' && row.event.data.turn === 6))
+  assert.equal((await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length, callsBeforeRestart)
+  assert.equal(cliGit('rev-parse', 'HEAD'), retiredHead)
+  assert.equal((await hostCall(['remove', '--bot', cliBot.botId, '--revision', '0'])).value.alreadyRemoved, true)
+  const imported = await command(`/mbot import ${cliWs}`)
+  const newId = /^Imported Bot: .*\((bot-[0-9a-f-]+)\)$/mu.exec(imported)[1]
+  assert.notEqual(newId, cliBot.botId)
+  const replacement = (await hostCall(['bots'])).value.bots.find(bot => bot.botId === newId)
+  assert.notEqual(replacement.mainSessionId, cliBot.mainSessionId)
+  assert.equal(cliGit('rev-parse', 'HEAD'), retiredHead)
+  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/external-cli/cli-stop/crash-restart-dedup/native-workspace-delete/removal/restart-retirement/reimport-new-main/no-external-model')
 } catch (error) {
   if (page) { await page.screenshot({ path: join(root, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(root, 'failure.txt'), await page.locator('body').innerText()).catch(() => {}) }
   throw error

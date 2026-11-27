@@ -113,6 +113,22 @@ async function probe(ctx) {
     evidence.success = true
     evidence.bot = ctx.mbot.bot({ botId: a.botId })
     evidence.checks = ['partial-native-create', 'reserved-agent-managed', 'failed-binding-gate', 'concurrent-repair', 'title-preserved', 'cross-process-lock', 'archive-restore', 'injected-writer-held-refusal', 'selection-CAS', 'data-unchanged', 'no-model-init']
+    // Deleting a native workspace leaves its Bot identity explicit. Retirement
+    // uses the real Controller, retaining the old Agent gate and data history.
+    await ctx.workspaceController.delete({ workspaceId: a.workspaceId })
+    assert.ok(ctx.mbot.registry().bots.some(bot => bot.botId === a.botId))
+    const retired = await ctx.mbot.removeBot(a.botId)
+    assert.ok(retired.sessionIds.includes(pendingId))
+    assert.ok(!ctx.mbot.registry().bots.some(bot => bot.botId === a.botId))
+    assert.equal((await ctx.mbotRuntime.status(resolved.agent)).state, 'retired')
+    assert.equal(execFileSync('git', ['-C', path, 'rev-parse', 'HEAD'], { encoding: 'utf8' }), before)
+    assert.ok((await ctx.sessionQuery.readSession(pendingId)).events.length > 0)
+    const imported = await ctx.mbot.importBot(path)
+    assert.notEqual(imported.botId, a.botId)
+    const newMain = await ctx.mbot.ensureBinding(imported.botId)
+    assert.notEqual(newMain.mainSessionId, pendingId)
+    evidence.retired = retired
+    evidence.checks.push('native-workspace-delete', 'persistent-retirement', 'data-and-history-retained', 'reimport-new-main')
   } catch (error) { evidence.error = error.stack ?? String(error) }
   finally {
     if (lock) { lock.stdin.end(); lock.kill('SIGTERM'); await lock.finished }

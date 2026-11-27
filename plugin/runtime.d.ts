@@ -12,7 +12,7 @@ export interface RuntimeTurnReceipt {
 }
 export interface RuntimeStatus {
   botId: string; sessionId: string
-  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable'
+  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing'
   queued: { nextTurn: number; nextStep: number }
   lastReceipt?: RuntimeTurnReceipt & { seq: number }; error?: string
 }
@@ -57,6 +57,8 @@ export declare class MBotRuntime extends Service {
   /** Trusted Host attachment; use before the Agent starts work. */
   attach(agent: Agent, options: { botId: string }): Promise<void>
   managed(agent: Agent): boolean
+  /** Trusted removal coordinator: hold before ConfigEditor save, commit only its saved retirement. */
+  prepareRemoval(botId: string): { sessionIds: string[]; commit(retired: import('./instances.js').RetiredBot): void; release(): void }
   /** Trusted Host capability: caller verifies the owner and binds a private main route. */
   ownerMailbox(agent: Agent, binding: OwnerMailboxBinding): OwnerMailbox
   /** Trusted Host contract: the tool joins all writers before returning. */

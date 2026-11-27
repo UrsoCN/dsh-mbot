@@ -24,6 +24,7 @@
 - turn 桥见 docs/turn-transactions.md：组装系统提示前取得 lease；只跟踪经桥发起的数据调用不等于所有写者静止。Runtime 必须协调 Agent/Worker/全部工具及期限；遗留 journal 不能靠删除或普通 resume 掩盖，许可 token 不入 prompt/审计。
 - 数据 turn 恢复已有 recoverTurn / mbot recover：验证私有快照、PID 出生身份、Git/锁和 commit intent；journal 的 writerScope=data-subprocesses 仅覆盖 fresh 数据子进程。增加 Agent/Worker/IPC 写者前扩展静止协议，不能沿用该 scope 的范围假设；已提交但未回执的 turn 只能结算一次。
 - 原生 Runtime 见 docs/native-runtime.md：Agent-owned 闸门在 Runtime 不可用时保留并拒绝模型执行，重载接管同一 cell；自定义工具必须声明/清理前台生命周期，不能把收据当静止。agent-runtime journal 当前不由数据 recover 处理；主 Session 实体见 docs/main-session.md；预留/失败状态禁止业务执行，已开始 Session 先 resolve，不用 create 替代 resume。审计回执见 docs/runtime-feedback.md，ignorable plugin record 仅作展示，不能替代 journal/Git；stop 等待捕获回合，不扩大为取消后续回合。计数规则见 docs/turn-outcomes.md；干净 user 取消 preserve 基准故障，不重置故障链，越权/已记录执行错误仍 increment；journal 新写 v2，reader/permit 兼容完整 v1；v2 必须有完整 outcome，不能降版本/删字段绕过。恢复按持久版本校验，不能从错误文案推断。完整 Worker/恢复/compact 仍在 P1。
+- Bot 注销见 docs/bot-removal.md：活动登记与不可变退役快照分开，保留全部旧主/预留/附着 Session 归属；原生工作区删除不自动注销独立身份。ConfigEditor 保存前先持有可回退 Runtime 闸门，忙/写者不明拒绝；旧 Agent 闸门跨 Runtime 重载/Host 重启，禁止向新 Bot 重定向。数据/历史/Inbox/journal 保留，注销不替代 agent-runtime 恢复。登记 v2 兼容 v1，配置 reset/downgrade 不能丢弃归属。
 - 升级不覆盖用户角色/记忆/任务；新持久配置带版本/迁移，验收旧仓库导入与部分失败修复。
 - key/.env 不打印、不提交、不入包；真实 API 可用已授权 key，隔离 DSH_HOME/XDG/数据并清理临时凭据。
 

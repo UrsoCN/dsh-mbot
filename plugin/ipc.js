@@ -20,11 +20,13 @@ export const Config = z.object({
 function validateRequest(input, profileId) {
   const common = ['schemaVersion', 'transportId', 'profileId', 'action']
   const fields = input?.action === 'talk' ? ['botId', 'requestId', 'text', 'correlationId'] : input?.action === 'receipt' ? ['botId', 'requestId']
-    : input?.action === 'bots' ? [] : ['botId']
+    : ['bots', 'removed'].includes(input?.action) ? [] : input?.action === 'remove' ? ['botId', 'revision'] : ['botId']
   if (!input || Array.isArray(input) || input.schemaVersion !== ipcVersion || input.profileId !== profileId
     || !hostActions.includes(input.action) || typeof input.transportId !== 'string' || !/^[0-9a-f-]{36}$/u.test(input.transportId)
     || Object.keys(input).some(key => ![...common, ...fields].includes(key))) throw new Error('Invalid IPC request version, profile, action or fields')
-  if (input.action !== 'bots' && (typeof input.botId !== 'string' || !input.botId || input.botId.length > 1024 || /[\0\r\n]/u.test(input.botId))) throw new Error('IPC operation requires a Bot identity')
+  if (!['bots', 'removed'].includes(input.action) && (typeof input.botId !== 'string' || !input.botId || input.botId.length > 1024 || /[\0\r\n]/u.test(input.botId))) throw new Error('IPC operation requires a Bot identity')
+  if (input.action === 'remove' && (!/^bot-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(input.botId)
+    || input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0))) throw new Error('IPC removal requires a stable Bot ID and valid optional revision')
   return input
 }
 
@@ -164,7 +166,13 @@ export class MBotIpc extends Service {
       if (typeof input?.transportId === 'string') response.transportId = input.transportId
       validateRequest(input, this.endpoint.profileId)
       if (this.closed || this.ctx.mbotRuntime.closed) throw new Error('MBot Host is unavailable')
-      if (input.action === 'bots') response.value = this.ctx.mbot.registry()
+      if (input.action === 'bots') {
+        const { retiredBots, ...active } = this.ctx.mbot.registry()
+        response.value = active
+      } else if (input.action === 'removed') {
+        const registry = this.ctx.mbot.registry()
+        response.value = { schemaVersion: registry.schemaVersion, revision: registry.revision, retiredBots: registry.retiredBots }
+      } else if (input.action === 'remove') response.value = await this.ctx.mbot.removeBot(input.botId, { revision: input.revision })
       else {
         // Capture the stable Bot identity before any asynchronous resolution.
         const bot = this.ctx.mbot.bot({ botId: input.botId })

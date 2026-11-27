@@ -18,7 +18,7 @@ Host 的 `importBot` 继续作为只登记身份的 API；`ensureBinding(identit
 
 ## 持久状态与失败恢复
 
-登记新增可为空的 binding，旧 schemaVersion 1 记录默认补 null，原数据不迁移/覆盖：
+Bot 登记条目仍为 schemaVersion 1，新增可为空的 binding，旧记录默认补 null，原数据不迁移/覆盖：
 
 | 状态 | 持久信息 |
 |---|---|
@@ -48,3 +48,5 @@ Host 的管理调用串行；跨进程使用现有 Bot `.mbot/lock`，与数据 
 Web 故障探针验证创建后重命名失败、受管理预留 Agent、失败准入/待办保留、多行错误保存、并发修复、用户标题、外部进程持锁与只读打开、归档/恢复、注入 writer-held 回应不触发 create、新选择 CAS 和 Git 数据不变。Chromium 验证 init 自动打开、旧会话/其他窗口保留、import/open/repair、双实例路由、刷新/重启及链接导航，全程创建/控制不调用模型。测试仅使用隔离 profile 与 /tmp 数据，未调用真实 DeepSeek API。
 
 本阶段证据：全量回归 `/tmp/mbot-binding-full-tests.log`，最终类型/插件回归 `/tmp/mbot-binding-final-plugin.log`，安装与故障探针 `/tmp/mbot-plugin-install.5z5o3N`，Chromium `/tmp/mbot-gui-test.TZhrxF`。Web profile 的上游全树 schema 导出对内置非标准 group carrier 报错，因此本阶段在三种基础 profile 导出 schema，Web 的工作区/会话由真实运行与浏览器验收覆盖。
+
+注销由 `/mbot remove` 显式执行，保留全部主/预留 Session ID 的持久退役记录；原生工作区删除或归档不直接删除独立 Bot。重新导入创建新身份及新主 Session，旧会话保持阻止业务执行，见 [Bot 注销](bot-removal.md)。

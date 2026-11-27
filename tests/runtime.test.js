@@ -124,6 +124,125 @@ async function app(t, script, options = {}) {
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
 
+async function removalController(ctx, agent, resolve = async () => ({ agent })) {
+  class Controller extends Service {
+    constructor(ctx) { super(ctx, 'sessionController') }
+    resolveAgent(id) { assert.equal(id, agent.id); return resolve() }
+  }
+  await ctx.plugin(Controller)
+}
+
+test('removal rejects a live turn, then revokes the mailbox and preserves native data and pending input', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, ws, bot, agent, requests, owner } = await app(t, async () => {
+    entered.resolve(); await release.promise; return response('settled before retirement')
+  }, { main: true })
+  await removalController(ctx, agent)
+  const mailbox = mainMailbox(ctx, agent)
+  await mailbox.send({ requestId: 'retire-active', text: 'complete the current turn' })
+  await entered.promise
+  await assert.rejects(ctx.mbot.removeBot(bot.botId), /busy/u)
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.signal.aborted, false, 'Removal must not cancel active business execution')
+  assert.equal(ctx.mbot.registry().retiredBots.length, 0)
+  release.resolve()
+  await settle(ctx, agent)
+  const before = git(ws, 'rev-parse', 'HEAD')
+  agent.inbox.splice('next-turn', 0, 0, [message('keep this queued input')])
+  const removed = await ctx.mbot.removeBot(bot.botId)
+  assert.deepEqual(removed.sessionIds, [agent.id])
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), before)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
+  await assert.rejects(mailbox.send({ requestId: 'retire-after', text: 'must not run' }), /unavailable/u)
+  agent.followup(message('old window must remain blocked'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  assert.equal(agent.inbox.nextTurn.length, 2)
+  assert.throws(() => ctx.mbot.workspace({ sessionId: agent.id }), /removed/u)
+  assert.equal((await ctx.mbot.removeBot(bot.botId, { revision: 0 })).alreadyRemoved, true)
+  await owner.dispose()
+  await ctx.plugin(runtime)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
+  const fresh = await ctx.mbot.importBot(ws)
+  assert.notEqual(fresh.botId, bot.botId)
+  await assert.rejects(ctx.mbotRuntime.attach(agent, { botId: fresh.botId }), /redirected/u)
+  agent.followup(message('blocked after reload and reimport'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 1)
+  assert.equal(agent.inbox.nextTurn.length, 3)
+})
+
+test('a failed retirement save releases its temporary gate and the same mailbox remains usable', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, requests } = await app(t, () => response('save failure recovered'), { main: true })
+  await removalController(ctx, agent)
+  const mailbox = mainMailbox(ctx, agent)
+  const edit = ctx.configEditor.edit.bind(ctx.configEditor)
+  let calls = 0
+  ctx.configEditor.edit = async (...args) => {
+    if (++calls === 2) {
+      assert.equal((await ctx.mbotRuntime.status(agent)).state, 'removing')
+      await assert.rejects(mailbox.send({ requestId: 'held', text: 'temporarily blocked' }), /unavailable/u)
+      throw new Error('injected retirement save failure')
+    }
+    return edit(...args)
+  }
+  await assert.rejects(ctx.mbot.removeBot(bot.botId), /save failure/u)
+  ctx.configEditor.edit = edit
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+  assert.equal(ctx.mbot.registry().retiredBots.length, 0)
+  await mailbox.send({ requestId: 'after-save-failure', text: 'still an active Bot' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+})
+
+test('native input arriving during retirement is parked without model dispatch or an audit transaction', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, requests } = await app(t, () => response('must not run'), { main: true })
+  await removalController(ctx, agent)
+  const edit = ctx.configEditor.edit.bind(ctx.configEditor)
+  let calls = 0
+  ctx.configEditor.edit = async (...args) => {
+    if (++calls === 2) {
+      agent.followup(message('arrived from another native window during removal'))
+      await agent.whenIdle()
+      assert.equal(requests.length, 0)
+    }
+    return edit(...args)
+  }
+  const before = git(ws, 'rev-parse', 'HEAD')
+  await ctx.mbot.removeBot(bot.botId)
+  ctx.configEditor.edit = edit
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), before)
+  assert.equal(await lstat(join(ws, '.mbot/runs/active-turn.json')).then(() => true, error => {
+    assert.equal(error.code, 'ENOENT'); return false
+  }), false)
+})
+
+test('bound removal refuses foreign writers or mismatched Session ownership and retires failed reservations', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent } = await app(t, () => response('must not run'), { main: true })
+  let result = { error: Object.assign(new Error('foreign writer-held'), { code: 'session/writer-held' }) }
+  await removalController(ctx, agent, async () => result)
+  const before = ctx.mbot.registry()
+  await assert.rejects(ctx.mbot.removeBot(bot.botId), /writer-held/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+  result = { agent: { id: agent.id, session: { header: { cwd: '/tmp/foreign-directory' } } } }
+  await assert.rejects(ctx.mbot.removeBot(bot.botId), /ownership/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+  const { editor, entry } = ctx.mbot.configurationEntry()
+  // A failed reservation retains its original ID; it never creates a replacement.
+  // Convert a ready binding only within this fixture's already trusted initial state.
+  const registration = ctx.mbot.bot({ botId: bot.botId })
+  await editor.edit(entry, current => ({ ...current, registry: { ...current.registry,
+    revision: current.registry.revision + 1, bots: [{ ...registration, mainSessionId: null,
+      binding: { state: 'failed', pendingSessionId: agent.id, error: 'injected setup failure' } }] } }))
+  result = { agent }
+  const retired = await ctx.mbot.removeBot(bot.botId)
+  assert.equal(retired.bot.binding.state, 'failed')
+  assert.deepEqual(retired.sessionIds, [agent.id])
+})
+
 const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'chat:owner' }
 const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
 
@@ -155,6 +274,39 @@ async function until(check) {
   for (let count = 0; count < 500; count++) { if (await check()) return; await delay(10) }
   throw new Error('Timed out waiting for IPC fixture')
 }
+
+test('CLI removal requires stable identity and uncertain acknowledgement is resolved by an idempotent retry', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, endpoint, ipc: service } = await ipcApp(t)
+  await removalController(ctx, agent)
+  const options = ['--endpoint-dir', endpoint.directory, '--bot', bot.botId]
+  assert.equal((await cli(['remove', '--endpoint-dir', endpoint.directory, '--bot', bot.name])).exitCode, 1)
+  assert.equal((await cli(['remove', ...options, '--revision', '0'])).exitCode, 1)
+  assert.equal(ctx.mbot.registry().retiredBots.length, 0)
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const edit = ctx.configEditor.edit.bind(ctx.configEditor)
+  let calls = 0
+  ctx.configEditor.edit = async (...args) => {
+    if (++calls === 2) { entered.resolve(); await release.promise }
+    return edit(...args)
+  }
+  const request = { action: 'remove', botId: bot.botId, revision: ctx.mbot.registry().revision }
+  const failed = assert.rejects(requestHost(endpoint, request, { timeoutMs: 100 }), error => error.code === 'IPC_UNCONFIRMED' && error.uncertain && /removed Bots/u.test(error.message))
+  await entered.promise
+  await failed
+  assert.equal(service.operations.size, 1)
+  release.resolve()
+  await until(() => service.operations.size === 0)
+  ctx.configEditor.edit = edit
+  const retry = await cli(['remove', ...options, '--revision', String(request.revision)])
+  assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout)
+  assert.equal(JSON.parse(retry.stdout).value.alreadyRemoved, true)
+  assert.equal((await cli(['talk', ...options, '--request-id', 'retired-talk', '--text', 'do not dispatch'])).exitCode, 1)
+  const listed = await cli(['removed', '--endpoint-dir', endpoint.directory])
+  assert.equal(JSON.parse(listed.stdout).value.retiredBots[0].bot.botId, bot.botId)
+  const active = await cli(['bots', '--endpoint-dir', endpoint.directory])
+  assert.deepEqual(JSON.parse(active.stdout).value.bots, [])
+})
 
 test('real botctl CLI talks to the managed Inbox, preserves stdin bytes and retries one request', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent, endpoint, requests } = await ipcApp(t)

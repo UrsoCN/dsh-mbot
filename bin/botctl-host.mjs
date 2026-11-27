@@ -6,6 +6,8 @@ const usage = `Usage: botctl talk --profile NAME --bot ID --request-id ID --text
        botctl receipt --profile NAME --bot ID --request-id ID [--wait --timeout-ms 60000]
        botctl runtime|stop --profile NAME --bot ID
        botctl bots --profile NAME
+       botctl remove --profile NAME --bot ID [--revision NUMBER]
+       botctl removed --profile NAME
 Use --endpoint-dir DIR instead of --profile for an explicitly configured Host.
 All commands print JSON; talk returns admission, not a completed model response.
 Exit 3 means unconfirmed delivery; exit 4 means waiting expired. Do not resubmit with a new ID.\n`
@@ -30,7 +32,7 @@ async function main() {
   const values = {}
   while (args.length) {
     const name = args.shift()
-    if (!['--profile', '--endpoint-dir', '--bot', '--request-id', '--text', '--stdin', '--correlation-id', '--wait', '--timeout-ms'].includes(name) || name in values) throw new Error('Unknown or duplicate Host option')
+    if (!['--profile', '--endpoint-dir', '--bot', '--request-id', '--text', '--stdin', '--correlation-id', '--wait', '--timeout-ms', '--revision'].includes(name) || name in values) throw new Error('Unknown or duplicate Host option')
     if (['--stdin', '--wait'].includes(name)) values[name] = true
     else {
       if (!args.length) throw new Error('Host option requires a value')
@@ -38,17 +40,19 @@ async function main() {
     }
   }
   if (Boolean(values['--profile']) === Boolean(values['--endpoint-dir'])) throw new Error('Choose exactly one of --profile or --endpoint-dir')
-  if (action !== 'bots' && !values['--bot']) throw new Error('--bot is required')
+  if (!['bots', 'removed'].includes(action) && !values['--bot']) throw new Error('--bot is required')
   if (['talk', 'receipt'].includes(action) && !values['--request-id']) throw new Error('--request-id is required')
   if (action === 'talk' && (('--text' in values) === Boolean(values['--stdin']))) throw new Error('talk requires exactly one of --text or --stdin')
-  const allowed = ['--profile', '--endpoint-dir', ...(action === 'bots' ? [] : ['--bot']),
+  const allowed = ['--profile', '--endpoint-dir', ...(['bots', 'removed'].includes(action) ? [] : ['--bot']),
     ...(['talk', 'receipt'].includes(action) ? ['--request-id'] : []), ...(action === 'talk' ? ['--text', '--stdin', '--correlation-id'] : []),
-    ...(action === 'receipt' ? ['--wait', '--timeout-ms'] : [])]
+    ...(action === 'receipt' ? ['--wait', '--timeout-ms'] : []), ...(action === 'remove' ? ['--revision'] : [])]
   if (Object.keys(values).some(name => !allowed.includes(name))) throw new Error('Option does not apply to this Host command')
   const waitMs = values['--timeout-ms'] === undefined ? 60000 : Number(values['--timeout-ms'])
   if (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 3600000 || ('--timeout-ms' in values && !values['--wait'])) throw new Error('--timeout-ms requires --wait and 1–3600000 milliseconds')
+  if ('--revision' in values && (!Number.isSafeInteger(Number(values['--revision'])) || Number(values['--revision']) < 0)) throw new Error('Invalid registry revision')
   const input = { action, ...(values['--bot'] ? { botId: values['--bot'] } : {}),
     ...(values['--request-id'] ? { requestId: values['--request-id'] } : {}),
+    ...(values['--revision'] === undefined ? {} : { revision: Number(values['--revision']) }),
     ...(action === 'talk' ? { text: values['--stdin'] ? await stdinText() : values['--text'],
       ...(values['--correlation-id'] ? { correlationId: values['--correlation-id'] } : {}) } : {}) }
   try {

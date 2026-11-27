@@ -5,10 +5,11 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { redact } from './redact.js'
-import { BotRegistry, BotRegistrySchema, emptyRegistry, findBot, registration, revise, uniqueName } from './instances.js'
+import { BotRegistry, BotRegistrySchema, emptyRegistry, findBot, registration, revise, uniqueName, registryTransition } from './instances.js'
 import { openTurn } from './turn.js'
 import { processStart } from './recovery.js'
 import { nativeBindingAvailable, provisionBinding, resolveBinding, sessionResult } from './binding.js'
+import { removeBot } from './removal.js'
 
 export const name = 'mbot'
 export const inject = ['subprocess']
@@ -42,18 +43,21 @@ export class MBotService extends Service {
 
   /** Capture live configuration once so an edit cannot redirect an in-flight operation. */
   registry() {
-    return structuredClone(this.config.registry.get())
+    return structuredClone(BotRegistry(this.config.registry.get()))
   }
 
   /** Bound sessions stay on their Bot even when another client changes the default. */
   bot(options = {}) {
-    const registry = this.config.registry.get()
+    const registry = this.registry()
     if (options.botId !== undefined) return findBot(registry, options.botId)
+    if (options.sessionId && registry.retiredBots.some(entry => entry.sessionIds.includes(options.sessionId))) throw new Error('Bot was removed; choose an active Bot explicitly')
     const bound = options.sessionId === undefined ? undefined : registry.bots.find(bot => bot.mainSessionId === options.sessionId || bot.binding?.pendingSessionId === options.sessionId)
     return bound ?? (registry.selectedBotId === null ? undefined : findBot(registry, registry.selectedBotId))
   }
 
   workspace(options = {}) {
+    const registry = this.registry()
+    if (options.workspace === undefined && options.botId === undefined && !options.sessionId && registry.retiredBots.length && registry.selectedBotId === null && !this.config.workspace.get()) throw new Error('No active Bot selected. Use /mbot select or an explicit init/import directory.')
     let path = options.workspace ?? this.bot(options)?.workspacePath ?? this.config.workspace.get()
     if (typeof path !== 'string') throw new Error('mbot workspace must be an absolute single-line path or ~/path')
     if (path === '~' || path.startsWith('~/')) path = join(homedir(), path.slice(2))
@@ -133,6 +137,17 @@ export class MBotService extends Service {
     })
   }
 
+  removeBot(identity, options = {}) {
+    if (typeof identity !== 'string' || !identity.trim() || /[\0\r\n]/u.test(identity)) return Promise.reject(new Error('remove requires an explicit Bot ID or name'))
+    return this.manage(() => removeBot(this, identity, { ...options }))
+  }
+
+  async describeRemovedBots() {
+    const entries = this.registry().retiredBots
+    if (!entries.length) return 'No removed Bots.\n'
+    return (await Promise.all(entries.map(entry => redact(`Removed Bot: ${entry.bot.name} (${entry.bot.botId})\n  Data: ${entry.bot.workspacePath}\n  Retired: ${entry.retiredAt}\n  Retired Sessions: ${entry.sessionIds.join(', ') || 'none'}\n`, entry.bot.workspacePath)))).join('')
+  }
+
   ensureBinding(identity, options = {}) {
     options = { ...options }
     return this.manage(() => provisionBinding(this, identity, options))
@@ -159,8 +174,8 @@ export class MBotService extends Service {
       options.signal?.throwIfAborted()
       const { editor, entry } = this.configurationEntry()
       const before = this.config.workspace.get()
-      const selection = this.config.registry.get().selectedBotId
-      const result = await this.execute('mbot', ['init', ...(directory === undefined ? [] : [directory])], options)
+      const selection = this.registry().selectedBotId
+      const result = await this.execute('mbot', ['init', ...(directory === undefined ? [] : [directory])], directory === undefined ? options : { ...options, workspace: directory })
       if (result.exitCode) return result
       let created
       try {
@@ -272,7 +287,7 @@ export function apply(ctx, config) {
   // Keep the public schema projectable; native cross-record rules also run on edits.
   ctx.on('internal/config', (fiber, next) => {
     const input = next()
-    if (fiber.uid === owner) BotRegistry(input.registry ?? emptyRegistry)
+    if (fiber.uid === owner) registryTransition(config.registry.get(), input.registry ?? emptyRegistry)
     return input
   })
   ctx.plugin(MBotService, config)

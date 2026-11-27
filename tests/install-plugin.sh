@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and any(.path=="plugin/removal.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -178,7 +178,7 @@ for mode in tarball source git web-tarball; do
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/$mode.runtime.log" 2>&1
   jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
-  jq -e '.registry.schemaVersion==1 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
+  jq -e '.registry.schemaVersion==2 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
   [[ $(git -C "$ws" log -1 --format=%s) == 'human: board add 001'* ]]

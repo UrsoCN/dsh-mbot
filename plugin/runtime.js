@@ -29,7 +29,10 @@ const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit'
   'web_search', 'web_fetch', 'ask_user_question', 'session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
 
 function requireState(cell) {
+  if (cell.retired) throw new Error('This Bot was removed; its old managed Session is retired')
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
+  if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
+  if (cell.state.runtime.ctx.mbot.registry().retiredBots.some(entry => entry.bot.botId === cell.state.botId)) throw new Error('This Bot was removed; its old managed Session is retired')
   return cell.state
 }
 
@@ -181,7 +184,7 @@ class ManagedSession {
     if (record.lease || record.admission) {
       this.pending = record.settlement = this.settle(record)
       void this.pending.catch(error => { this.error = error; void this.runtime.report(error, this.botId, record.lease).catch(() => {}) })
-    }
+    } else record.settled = true
   }
 
   record(record, event) {
@@ -199,7 +202,7 @@ class ManagedSession {
       record.admission = (async () => {
         await this.pending
         signal.throwIfAborted()
-        if (this.closing || this.runtime.closed) throw new Error('MBot Runtime is unavailable')
+        if (this.closing || this.retiring || this.runtime.closed) throw new Error('MBot Runtime is unavailable')
         if (this.error) throw this.error
         const bot = this.runtime.ctx.mbot.bot({ botId: this.botId })
         if (bot.binding && bot.binding.state !== 'ready') throw new Error('MBot main Session binding needs /mbot repair before business turns')
@@ -240,7 +243,7 @@ class ManagedSession {
     // awaited gate covers native Web and adapters before lease/model dispatch.
     await flushInput(this.runtime.ctx, this.agent.session, signal)
     signal.throwIfAborted()
-    if (this.closing || this.runtime.closed || this.error) throw this.error ?? new Error('MBot Runtime is unavailable')
+    if (this.closing || this.retiring || this.runtime.closed || this.error) throw this.error ?? new Error('MBot Runtime is unavailable')
     for (const message of fresh) record.admitted.add(message.id)
   }
 
@@ -326,6 +329,8 @@ export class MBotRuntime extends Service {
     this.attachments = new Map()
     this.closed = false
     ctx.on('agent/created', async ({ agent }) => {
+      const retired = ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
+      if (retired) { this.attachRetired(agent, retired); return }
       const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
       if (bot) await this.attach(agent, { botId: bot.botId })
     })
@@ -357,6 +362,15 @@ export class MBotRuntime extends Service {
 
   async [Service.init]() {
     for (const agent of this.ctx.agents.list()) {
+      const retired = this.ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
+      if (retired) {
+        if (agent.status !== 'idle') {
+          agent.cancel({ kind: 'hook', reason: 'Retiring removed MBot Session' }, { keepInbox: true })
+          await agent.whenIdle()
+        }
+        this.attachRetired(agent, retired)
+        continue
+      }
       const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
       if (!bot) continue
       if (agent.status !== 'idle') {
@@ -380,6 +394,7 @@ export class MBotRuntime extends Service {
 
   async attachNew(agent, botId) {
     if (this.closed) throw new Error('MBot Runtime is disposed')
+    if (this.ctx.mbot.registry().retiredBots.some(entry => entry.sessionIds.includes(agent.id)) || cells.get(agent)?.retired) throw new Error('Removed Bot Session cannot be redirected to another Bot')
     if (this.states.has(agent)) {
       if (this.states.get(agent).botId !== botId) throw new Error('Managed Session cannot be redirected to another Bot')
       return
@@ -418,6 +433,40 @@ export class MBotRuntime extends Service {
 
   managed(agent) { return this.states.has(agent) }
 
+  attachRetired(agent, retired) {
+    let cell = cells.get(agent)
+    if (!cell) { cell = {}; cells.set(agent, cell); installGates(agent, cell) }
+    const state = this.states.get(agent)
+    const onlyHeldAdmission = state?.retiring && !state.current?.lease && !state.current?.admission
+    if (state && !onlyHeldAdmission && (agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; wait for its managed turn/audit before removal')
+    if (onlyHeldAdmission) {
+      const pending = new Set([...agent.inbox.nextTurn, ...agent.inbox.nextStep].map(message => message.id))
+      const messages = state.current?.messages.filter(message => !pending.has(message.id)) ?? []
+      if (messages.length) agent.inbox.splice('next-turn', 0, 0, messages)
+    }
+    if (state) state.closing = true
+    cell.state = undefined
+    cell.retired = structuredClone(retired)
+    this.states.delete(agent)
+  }
+
+  /** Reversible pre-save gate. No active turn/tool/audit is cancelled by removal. */
+  prepareRemoval(botId) {
+    if (this.closed || [...this.attachments.values()].some(item => item.botId === botId)) throw new Error('Bot Runtime attachment is busy')
+    const states = [...this.states.values()].filter(state => state.botId === botId)
+    if (states.some(state => state.closing || state.retiring || state.agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; stop and settle its current turn before removal')
+    for (const state of states) state.retiring = true
+    let committed = false
+    return {
+      sessionIds: states.map(state => state.agent.id),
+      commit: retired => {
+        committed = true
+        for (const state of states) this.attachRetired(state.agent, retired)
+      },
+      release: () => { if (!committed) for (const state of states) state.retiring = false },
+    }
+  }
+
   /** Host capability: the caller verifies owner identity and binds the route. */
   ownerMailbox(agent, options) {
     const state = this.states.get(agent)
@@ -428,7 +477,7 @@ export class MBotRuntime extends Service {
     const binding = ownerBinding(options, state.botId)
     let revoked = false
     const check = () => {
-      if (revoked || this.closed || state.closing || this.states.get(agent) !== state || this.ctx.mbot.closed) throw new Error('MBot owner mailbox is unavailable')
+      if (revoked || this.closed || state.closing || state.retiring || this.states.get(agent) !== state || this.ctx.mbot.closed) throw new Error('MBot owner mailbox is unavailable')
       const current = this.ctx.mbot.bot({ botId: state.botId })
       if (current.mainSessionId !== agent.id || current.binding?.state !== 'ready') throw new Error('Bot main Session binding changed; reopen the mailbox')
     }
@@ -510,7 +559,12 @@ export class MBotRuntime extends Service {
 
   async status(agent) {
     const state = this.states.get(agent)
-    if (!state) throw new Error('Session is not managed by the active MBot Runtime')
+    if (!state) {
+      const retired = cells.get(agent)?.retired
+      if (retired) return { botId: retired.bot.botId, sessionId: agent.id, state: 'retired',
+        queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length }, error: 'Bot was removed; old Session will not execute business turns' }
+      throw new Error('Session is not managed by the active MBot Runtime')
+    }
     const record = state.current
     let lastReceipt = state.lastReceipt
     if (!lastReceipt) {
@@ -521,7 +575,7 @@ export class MBotRuntime extends Service {
     const error = state.error ? record?.lease ? await record.lease.redactResult(state.error.message ?? String(state.error))
       : await redact(state.error.message ?? String(state.error), this.ctx.mbot.bot({ botId: state.botId }).workspacePath) : undefined
     return structuredClone({ botId: state.botId, sessionId: agent.id,
-      state: this.closed || state.closing ? 'unavailable' : error ? 'failed'
+      state: this.closed || state.closing ? 'unavailable' : state.retiring ? 'removing' : error ? 'failed'
         : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
       queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
       ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })

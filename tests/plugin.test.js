@@ -15,6 +15,7 @@ import * as plugin from '../plugin/index.js'
 import * as tools from '../plugin/tools.js'
 import * as commands from '../plugin/commands.js'
 import { redact } from '../plugin/redact.js'
+import { BotRegistry } from '../plugin/instances.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
 process.env.XDG_CONFIG_HOME = join(root, 'config')
@@ -206,7 +207,7 @@ async function configEditor(ctx, owner, initial) {
   }
   await ctx.plugin(Editor)
   return { raw: () => structuredClone(raw), fail: () => { fail = true }, edit: change => ctx.configEditor.edit(entry, change),
-    update: async path => { raw = { workspace: path }; await ctx.loader.update(id, { config: raw }) } }
+    update: async path => { raw = { ...raw, workspace: path, ...(raw.registry ? { registry: { ...raw.registry, revision: raw.registry.revision + 1, selectedBotId: null } } : {}) }; await ctx.loader.update(id, { config: raw }) } }
 }
 
 test('init selects a canonical Unicode directory and failed init keeps the previous selection', async t => {
@@ -369,7 +370,7 @@ test('registry revisions and invalid persisted references reject without changin
   const before = ctx.mbot.registry()
   await assert.rejects(ctx.mbot.selectBot(bot.botId, { revision: stale }), /registry changed/u)
   for (const change of [
-    registry => ({ ...registry, schemaVersion: 2 }),
+    registry => ({ ...registry, schemaVersion: 3 }),
     registry => ({ ...registry, selectedBotId: 'bot-00000000-0000-0000-0000-000000000000' }),
     registry => ({ ...registry, bots: [...registry.bots, registry.bots[0]] }),
     registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, mainSessionId: 'unbound-session' })) }),
@@ -380,6 +381,87 @@ test('registry revisions and invalid persisted references reject without changin
     assert.deepEqual(ctx.mbot.registry(), before)
   }
   assert.equal(ctx.mbot.workspace(), ws)
+})
+
+test('removal preserves Bot data, clears its selection and permits a fresh import with a new identity', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws, { name: 'Remove Alpha' })
+  await ctx.mbot.selectBot(bot.botId)
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const result = await ctx.mbot.removeBot(bot.botId)
+  assert.equal(result.alreadyRemoved, false)
+  assert.equal(ctx.mbot.registry().schemaVersion, 2)
+  assert.equal(ctx.mbot.registry().bots.length, 0)
+  assert.equal(ctx.mbot.registry().selectedBotId, null)
+  assert.equal(editor.raw().workspace, '')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  assert.ok(!String(await ctx.mbot.describeBots()).includes(bot.botId))
+  assert.ok((await ctx.mbot.describeRemovedBots()).includes(bot.botId))
+  assert.throws(() => ctx.mbot.bot({ botId: bot.botId }), /removed/u)
+  await assert.rejects(ctx.mbot.execute('mbot', ['status']), /No active Bot/u)
+  assert.equal((await ctx.mbot.removeBot(bot.botId)).alreadyRemoved, true)
+  const fresh = await ctx.mbot.importBot(ws, { name: bot.name })
+  assert.notEqual(fresh.botId, bot.botId)
+  assert.equal(ctx.mbot.registry().retiredBots.length, 1)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal((await ctx.mbot.initialize(join(root, 'created after removal'))).exitCode, 0)
+})
+
+test('removal keeps another selected Bot and works after the target data directory disappears', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const a = await ctx.mbot.importBot(ws, { name: 'Missing Alpha' })
+  const bPath = join(root, 'kept selected Beta')
+  const initialized = await ctx.mbot.initialize(bPath)
+  assert.equal(initialized.exitCode, 0)
+  const b = ctx.mbot.registry().bots.find(bot => bot.workspacePath === bPath)
+  await rm(ws, { recursive: true })
+  await ctx.mbot.removeBot(a.botId)
+  assert.equal(ctx.mbot.registry().selectedBotId, b.botId)
+  assert.equal(ctx.mbot.workspace(), bPath)
+  assert.equal(ctx.mbot.registry().bots.length, 1)
+})
+
+test('registry migration is explicit and retired references cannot be discarded by config edits', async t => {
+  const legacy = { schemaVersion: 1, revision: 4, selectedBotId: null, bots: [] }
+  assert.deepEqual(BotRegistry(legacy), { schemaVersion: 2, revision: 4, selectedBotId: null, bots: [], retiredBots: [] })
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const before = ctx.mbot.registry()
+  await assert.rejects(editor.edit(current => ({ ...current, registry: { ...current.registry, bots: [] } })), /retain/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+  await ctx.mbot.removeBot(bot.botId)
+  const retired = ctx.mbot.registry()
+  for (const registry of [
+    { ...retired, retiredBots: [] },
+    { schemaVersion: 1, revision: retired.revision, selectedBotId: null, bots: [] },
+    { ...retired, retiredBots: retired.retiredBots.map(entry => ({ ...entry, retiredAt: '2026-11-28T00:00:00.000Z' })) },
+  ]) {
+    await assert.rejects(editor.edit(current => ({ ...current, registry })))
+    assert.deepEqual(ctx.mbot.registry(), retired)
+  }
+})
+
+test('removal checks revision, requires an explicit identity and shows native command feedback', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const before = ctx.mbot.registry()
+  await assert.rejects(ctx.mbot.removeBot(''), /explicit/u)
+  await assert.rejects(ctx.mbot.removeBot(bot.botId, { revision: before.revision - 1 }), /changed/u)
+  assert.deepEqual(ctx.mbot.registry(), before)
+  const session = Session.create('remove-command-feedback')
+  const invocation = { session }
+  const result = await ctx.commands.execute(invocation, `/mbot remove ${bot.botId}`, [], new AbortController().signal)
+  assert.equal(result.result.kind, 'success')
+  assert.match(result.result.text, /Data preserved/u)
+  assert.equal(session.snapshotEvents().at(-1).type, 'command/done')
+  assert.equal(session.surface.nodes.length, 0)
+  assert.ok((await ctx.commands.execute(invocation, '/mbot removed', [], new AbortController().signal)).result.text.includes(bot.botId))
+  assert.throws(() => commands.commandArgs('remove'), /remove/u)
 })
 
 test('managed turn pins context, lets its tools mutate without requeue, and makes one audited commit', async t => {

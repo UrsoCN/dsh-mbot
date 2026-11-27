@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：Bot 注销与持久 Session 退役（未发布）
+
+- 新增 /mbot remove/removed 与 botctl remove/removed，解决创建后无法退出活动列表的反馈。原生工作区删除保留独立 Bot，显式注销保留 Git 数据、Session 历史、Inbox 和恢复证据；重新导入生成新的 Bot 身份与主 Session。
+- 登记文档 v2 兼容 v1，持久保存不可变退役快照及全部旧主/预留 Session ID。注销核实原生写者与数据锁，执行/审计中拒绝且不取消当前模型；保存前临时闸门可回退，保存后旧 Agent 的被动闸门跨 Runtime 重载与 Host 重启。
+- 43 项 Host、57 项 Runtime、类型、64 组 Bash、四类安装与实际 Chromium 验收通过，覆盖并发输入、失败保存、CLI 断连重试、工作区删除和 SIGKILL 重启；见 [Bot 注销](bot-removal.md)。未调用真实 DeepSeek API。
+
+Chief 旧运行 Host 请求头的兼容修复已在前一阶段提交；其遗留 agent-runtime journal 仍需协调恢复。Worker、IM/peer、回复 outbox、compact/睡眠和管理面板继续推进。包仍为 0.1.1，未打新 tag。
+
 ## dev：按请求核验并查回回答（未发布）
 
 - receipt 增加独立的 result/audit/reply，按原生请求/回合和可达 Git 审计查回实际回答，稳定 replyId/固定原路线；CLI receipt --wait 支持等待及截止。后续对话、重载、merge 或当前文件编辑不替换原回答，展示卡片不参与证明。

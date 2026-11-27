@@ -12,14 +12,19 @@ export interface BotRegistration {
   createdAt: string
 }
 export interface BotRegistrySnapshot {
-  schemaVersion: 1
+  schemaVersion: 2
   revision: number
   selectedBotId: string | null
   bots: BotRegistration[]
+  retiredBots: RetiredBot[]
 }
+export interface RetiredBot { bot: BotRegistration; sessionIds: string[]; retiredAt: string }
+export type BotRegistryInput = BotRegistrySnapshot | { schemaVersion: 1; revision: number; selectedBotId: string | null; bots: BotRegistration[]; retiredBots?: never }
 export declare const BotRegistration: z<BotRegistration, BotRegistration>
-export declare const BotRegistrySchema: z<BotRegistrySnapshot, BotRegistrySnapshot>
-export declare function BotRegistry(input: BotRegistrySnapshot): BotRegistrySnapshot
+export declare const BotRegistrySchema: z<BotRegistryInput, BotRegistryInput>
+export declare const RetiredBot: z<RetiredBot, RetiredBot>
+export declare function BotRegistry(input: BotRegistryInput): BotRegistrySnapshot
+export declare function registryTransition(previous: BotRegistryInput, next: BotRegistryInput): BotRegistrySnapshot
 export declare const emptyRegistry: BotRegistrySnapshot
 export declare function registration(workspacePath: string, options?: { name?: string; defaultRole?: string }): BotRegistration
 export declare function uniqueName(registry: BotRegistrySnapshot, candidate: BotRegistration, explicit?: boolean): BotRegistration

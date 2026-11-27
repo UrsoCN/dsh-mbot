@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { setTimeout as delay, setImmediate } from 'node:timers/promises'
 
-export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents']
+export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents', 'commands', 'workspaceController']
 if (process.env.MBOT_GUI_RUNTIME_ROOT) await writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-imported'), '')
 export function apply(ctx) {
   void writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-applied'), '')
@@ -17,6 +17,12 @@ async function setup(ctx) {
   const { LlmAdapter } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
   const { defineTool } = await import(fromPackage.resolve('@deepseek-ai/dsh-tools'))
   const marker = name => join(root, name)
+  ctx.commands.register({ name: 'mbot_fixture_delete', description: 'Delete a native workspace inside the disposable GUI fixture.', recordInput: false,
+    async handler(invocation) {
+      const bot = ctx.mbot.bot({ sessionId: invocation.agent.id })
+      await ctx.workspaceController.delete({ workspaceId: bot.workspaceId })
+      return { kind: 'success', text: `Native workspace deleted: ${bot.workspaceId}` }
+    } })
   const wait = async name => {
     const deadline = Date.now() + 15000
     while (!existsSync(marker(name))) {

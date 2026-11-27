@@ -127,6 +127,8 @@ dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 
+dev 已支持 [显式注销与持久 Session 退役](bot-removal.md)：独立 Bot 身份不随原生工作区删除；注销持有数据锁及可回退的准入闸门，ConfigEditor 保存活动登记到不可变 retiredBots 后撤销入口。旧主/预留 Session 在重启时继续受闸门约束，数据、历史、Inbox 与 journal 保留。重新导入创建新身份；未完成的执行/审计先 stop 收尾，注销不等于恢复。登记文档 v2 兼容 v1 读取，禁止配置重置丢弃既有 Session 归属。
+
 当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定已接入；对话域、迁移与完整生命周期仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
 
 ## 9. 下一轮：设置与管理面板
@@ -135,7 +137,7 @@ UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工
 
 通过官方 Plugins/Settings 扩展注册 MBot 页面。Host 持有实例 CRUD、绑定、路径/权限/版本校验与保存，浏览器只走支持的远程协议，不执行 Bash、直接改配置或读凭据。关闭/卸载/重连清理注册和订阅。
 
-面板展示实例、目录、主 Session、角色、看板/预算/PAUSED/最近报告，并支持创建/导入/选择/打开/修复及已支持的配置编辑。插件默认项走 ConfigEditor/form revision；数据配置走静态校验/human Git 事务；DSH 原生实体由官方服务持有，不重复维护值。无效/并发/保存失败不改变有效配置，key 只使用引用。
+面板展示实例、目录、主 Session、角色、看板/预算/PAUSED/最近报告，并支持创建/导入/选择/打开/修复/注销及已支持的配置编辑。插件默认项走 ConfigEditor/form revision；数据配置走静态校验/human Git 事务；DSH 原生实体由官方服务持有，不重复维护值。无效/并发/保存失败不改变有效配置，key 只使用引用。
 
 真实 GUI 的创建、保存、重启、多实例切换、开关/卸载是验收条件；schema、组件、接口检查不能替代完整用户流程。
 

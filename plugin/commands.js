@@ -3,7 +3,7 @@ import { nativeBindingAvailable, sessionResult } from './binding.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
-export const usage = '/mbot init [directory] | import <directory> | list | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
+export const usage = '/mbot init [directory] | import <directory> | list | removed | remove <botId or name> | select <botId or name> | open [botId or name] | repair [botId or name] | runtime [botId or name] | stop [botId or name] | recover | status | lint | board | run <request> | tick | archive | dream | pause [reason] | resume'
 
 /** Human grammar: everything after run/pause is literal text, without shell quote parsing. */
 export function commandArgs(raw) {
@@ -13,9 +13,10 @@ export function commandArgs(raw) {
   const rest = match?.[2] ?? ''
   if (action === 'help') return null
   if (action === 'list' && !rest) return { program: 'host', argv: ['list'] }
+  if (action === 'removed' && !rest) return { program: 'host', argv: ['removed'] }
   if (action === 'recover' && !rest) return { program: 'host', argv: ['recover'] }
   if (['open', 'repair', 'runtime', 'stop'].includes(action)) return { program: 'host', argv: [action, ...(rest ? [rest] : [])] }
-  if (['import', 'select'].includes(action)) {
+  if (['import', 'select', 'remove'].includes(action)) {
     if (!rest) throw new Error(usage)
     return { program: 'host', argv: [action, rest] }
   }
@@ -42,7 +43,8 @@ export function apply(ctx) {
             const runtime = ctx.get('mbotRuntime')
             if (!runtime) throw new Error('MBot Runtime is unavailable')
             let agent = invocation.agent
-            if (command.argv[1] || !runtime.managed(agent)) {
+            const retiredHere = command.argv[0] === 'runtime' && ctx.mbot.registry().retiredBots.some(item => item.sessionIds.includes(agent?.id))
+            if (command.argv[1] || !runtime.managed(agent) && !retiredHere) {
               const bot = command.argv[1] ? ctx.mbot.bot({ botId: command.argv[1] }) : ctx.mbot.bot(options)
               if (!bot?.mainSessionId) throw new Error('Bot has no main Session. Use /mbot open or /mbot repair.')
               const controller = ctx.get('sessionController')
@@ -59,6 +61,11 @@ export function apply(ctx) {
               + (status.error ? `${status.error}\n` : '')) }
           }
           if (command.argv[0] === 'list') return { kind: 'success', text: await ctx.mbot.describeBots() }
+          if (command.argv[0] === 'removed') return { kind: 'success', text: await ctx.mbot.describeRemovedBots() }
+          if (command.argv[0] === 'remove') {
+            const result = await ctx.mbot.removeBot(command.argv[1], options)
+            return { kind: 'success', text: await redact(`Bot removed from active registry: ${result.bot.name} (${result.bot.botId})\nData preserved: ${result.bot.workspacePath}\nRetired Sessions: ${result.sessionIds.join(', ') || 'none'}\nView: /mbot removed\n`, result.bot.workspacePath) }
+          }
           if (command.argv[0] === 'recover') {
             const result = await ctx.mbot.recoverTurn(options)
             return { kind: 'success', text: result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
@@ -83,7 +90,7 @@ export function apply(ctx) {
           const bot = await ctx.mbot.selectBot(command.argv[1], options)
           return { kind: 'success', text: await redact(`Selected Bot: ${bot.name} (${bot.botId})\nWorkspace: ${bot.workspacePath}\nBound Bot sessions keep their own selection.\n`, bot.workspacePath) }
         }
-        const bot = ctx.mbot.bot(options)
+        const bot = command.argv[0] === 'init' ? undefined : ctx.mbot.bot(options)
         if (command.argv[0] === 'run' && bot) command.argv[1] = bot.defaultRole
         const result = command.argv[0] === 'init'
           ? await ctx.mbot.initialize(command.argv[1], options)
