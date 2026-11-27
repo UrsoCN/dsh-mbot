@@ -48,6 +48,7 @@ dev 的实例登记使用 Config.registry 的单个 volatile 文档，保存 sch
 | plugin/binding.js | dev 的官方实体创建/修复、持久预留与只读主会话打开 |
 | plugin/runtime.js、context.js | dev 的真实 Agent 上下文/前台工具/结束闸门；主 Session 实体已接入，Worker、消息与生命周期恢复仍待完成 |
 | plugin/messages.js | dev 的所有者私聊信封与原生日志请求投影；模型消费仍归 DSH Inbox，不另建队列 |
+| plugin/ipc.js、ipc-protocol.js、bin/botctl-host.mjs | dev 的本地所有者 CLI/profile 私有 socket，端点归属/断连/关闭 drain；不复制模型队列 |
 | plugin/tools.js、commands.js、*.d.ts | 模型工具、人类命令和公开 API |
 | bin/mbot、bin/botctl、lib/ | 配置、事务、lint、运行、渲染、guard、Dreaming、调度、备份 |
 | templates/workspace/ | 新仓库模板；gitignore 在 init 时生成 .gitignore |
@@ -122,7 +123,7 @@ Web profile 的插件 /mbot init 已接入以下流程，详见 [主会话](main
 
 主 Session 的目标是受插件管理的真实交互会话：按版本组合 SOUL、MEMORY、近期摘要/原始尾部与本次请求，配合 compact 和睡眠。DSH 持有 Session 日志/Inbox/Agent，MBot Runtime 持有业务上下文、准入、来源和写事务；启用业务对话前接入每轮基准、锁、guard 与审计，不再以长期“只读入口”作为目标。0.1 headless 入口保留兼容，Worker/Dreaming 不复用主 Session。详见 [Session Runtime](session-runtime.md)。
 
-dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。规范化 [turn outcome](turn-outcomes.md) 区分用户取消与故障，并在 Git 结算/恢复时使用相同规则。dev 的 [所有者准入](message-admission.md) 已接入 Host 门面、原生 Web/steer 请求关联、来源与持久化闸门、日志去重及投递收据；CLI/IM/peer、审计终态/回复 outbox、Worker、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
+dev 已实现 [turn 事务桥](turn-transactions.md) 与数据恢复，并通过 [真实 Agent Runtime](native-runtime.md) 将租约接到 system-prompt/assemble waterfall，在返回提示前重建固定上下文；pre-step 再核实最终提示并用公开 surface replacement 退役旧快照。前台工具、取消、结束审计及下一轮闸门已验收；[聊天区审计卡片与 runtime/stop](runtime-feedback.md) 进一步区分 Agent 空闲和 Host 完成，验证原生停止保留队列。规范化 [turn outcome](turn-outcomes.md) 区分用户取消与故障，并在 Git 结算/恢复时使用相同规则。dev 的 [所有者准入](message-admission.md) 已接入 Host 门面、原生 Web/steer 请求关联、来源与持久化闸门、日志去重及投递收据；[本地 CLI IPC](host-ipc.md) 将外部 botctl 接到同一 Runtime，提供 profile 私有端点、所有者身份、断连与重载去重。IM/peer、审计终态/回复 outbox、Worker、compaction/sleep/checkpoint 与 Runtime 恢复仍待完成。
 
 UI、IM、CLI 和跨 Bot 消息共用 botctl 门面/Runtime；运行内数据工具凭当前运行权限直接执行事务，不能再次等待同一会话 FIFO。主会话默认私人对话域，群聊/不同主体可用隔离 conversation；同一所有者的专用 TG 私聊可绑定主会话。上下文、消息路由、多窗口并发与睡眠 checkpoint 的完整边界见上述设计。
 

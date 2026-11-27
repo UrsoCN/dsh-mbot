@@ -13,6 +13,14 @@ if [[ ${1:-} == -C ]]; then
   [[ $# -ge 2 && -n $2 ]] || { mbot_error '-C requires a directory'; exit 2; }
   MBOT_CLI_WS=$2; shift 2
 fi
+case ${1:-} in
+  talk|receipt|runtime|stop|bots)
+    if [[ -v MBOT_CLI_WS ]]; then
+      printf '%s\n' 'mbot: Host commands use --bot and --profile, not -C' >&2
+      exit 2
+    fi
+    exec node "$MBOT_ROOT/bin/botctl-host.mjs" "$@" ;;
+esac
 for arg in "$@"; do
   if [[ $arg == --help || $arg == -h ]]; then set -- --help; break; fi
 done
@@ -22,7 +30,9 @@ case ${1:---help} in
       '       botctl [-C dir] board show|add|set ...' \
       '       botctl [-C dir] task show|result ...' \
       '       botctl [-C dir] remember "fact" [--as bot] [--task id]' \
-      '       botctl [-C dir] lint'
+      '       botctl [-C dir] lint' \
+      '       botctl talk|receipt|runtime|stop|bots --profile NAME ...' \
+      '       botctl talk --help'
     exit 0 ;;
 esac
 mbot_load_workspace

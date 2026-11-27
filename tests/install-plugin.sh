@@ -14,7 +14,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -26,7 +26,7 @@ git clone --bare --no-hardlinks "$root/git-source" "$root/plugin.git" > "$root/g
 cat > "$root/probe.mjs" <<'JS'
 import { writeFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
-export const inject = ['mbot', 'mbotRuntime', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit']
+export const inject = ['mbot', 'mbotRuntime', 'mbotIpc', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit', 'subprocess']
 export function apply(ctx) { void setImmediate().then(() => probe(ctx)) }
 async function probe(ctx) {
   try {
@@ -107,6 +107,32 @@ async function probe(ctx) {
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')
     if (!candidateText.includes('installed Runtime native candidate')) throw new Error('installed Runtime data tool did not commit its candidate')
+    if (ctx.mbotIpc.status().state !== 'ready') throw new Error('installed private Host IPC missing')
+    const { dirname, join } = await import('node:path')
+    const ctl = join(dirname(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON)), 'bin/botctl')
+    const hostCall = async args => {
+      const child = ctx.subprocess.spawn({ argv: [ctl, ...args, '--profile', ctx.get('profileContext').name],
+        cwd: dirname(ctl), graceMs: 5000, env: { DSH_HOME: process.env.DSH_HOME },
+        stdio: { stdin: 'ignore', stdout: { maxBytes: 128000 }, stderr: { maxBytes: 128000 } } })
+      const done = await child.done
+      const stdout = child.collected.stdout.readFrom(0).text
+      if (done.exitCode !== 0) {
+        if (!native && args[0] === 'talk' && done.exitCode === 1) return JSON.parse(stdout)
+        throw new Error(child.collected.stderr.readFrom(0).text || stdout)
+      }
+      return JSON.parse(stdout)
+    }
+    if ((await hostCall(['bots'])).value.bots[0].botId !== bot.botId) throw new Error('installed IPC registry routing failed')
+    const cliInput = ['talk', '--bot', bot.botId, '--request-id', 'installed-cli-1', '--text', 'installed CLI message']
+    const cli = await hostCall(cliInput)
+    if (native) {
+      await managed.agent.whenIdle()
+      await ctx.mbotRuntime.settled(managed.agent)
+      const again = await hostCall(cliInput)
+      const receipt = await hostCall(['receipt', '--bot', bot.botId, '--request-id', 'installed-cli-1'])
+      if (cli.value.confirmation !== 'confirmed' || again.value.messageId !== cli.value.messageId || receipt.value.delivery !== 'ended'
+        || runtimeCalls !== 3) throw new Error('installed external CLI request was not deduplicated')
+    } else if (cli.ok || runtimeCalls !== 2) throw new Error('basic Host IPC created an unmanaged main Session')
     if (native) {
       const afterTurn = await ctx.mbot.ensureBinding(bot.botId)
       if (afterTurn.mainSessionId !== bound.mainSessionId) throw new Error('repair replaced a started Session')
@@ -149,7 +175,7 @@ for mode in tarball source git web-tarball; do
   app_args=()
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/$mode.runtime.log" 2>&1
-  jq -e '.success and .runtimeCalls==2 and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
+  jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|contains("001")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
   jq -e '.registry.schemaVersion==1 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]

@@ -1,6 +1,6 @@
 # dev：所有者消息准入与原生收据
 
-2026-11-27。本阶段提供可信 Host 的所有者私聊入口，复用实际主 Session、DSH Inbox 与事件存储。它是 [统一门面设计](session-runtime.md) 的基础；CLI IPC、真实 IM、独立 Bot 通信、隔离 conversation、回复 outbox 和 sleep/wake 尚未实现。包仍为 0.1.1，这些属于未发布的 dev。
+2026-11-27。本阶段提供可信 Host 的所有者私聊入口，复用实际主 Session、DSH Inbox 与事件存储。它是 [统一门面设计](session-runtime.md) 的基础；[本地 CLI IPC](host-ipc.md) 已在后续阶段接入；真实 IM、独立 Bot 通信、隔离 conversation、回复 outbox 和 sleep/wake 尚未实现。包仍为 0.1.1，这些属于未发布的 dev。
 
 ## 宿主能力与身份边界
 

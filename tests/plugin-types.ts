@@ -3,6 +3,7 @@ import * as plugin from 'dsh-mbot'
 import * as tools from 'dsh-mbot/tools'
 import * as commands from 'dsh-mbot/commands'
 import * as runtime from 'dsh-mbot/runtime'
+import * as ipc from 'dsh-mbot/ipc'
 
 const ctx = new Context()
 ctx.plugin(plugin, { workspace: '/tmp/mbot-types' })
@@ -44,3 +45,6 @@ const delivery: Promise<runtime.MessageDeliveryReceipt> = mailbox.send({ request
 mailbox.receipt('platform-event-id')
 mailbox.dispose()
 void delivery
+ctx.plugin(ipc, { directory: '/tmp/mbot-ipc-types' })
+const ipcStatus: ipc.IpcStatus = ctx.mbotIpc.status()
+void ipcStatus

@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
-import { execFileSync } from 'node:child_process'
+import { mkdtemp, readFile, writeFile, mkdir, chmod, lstat, symlink, unlink } from 'node:fs/promises'
+import { execFileSync, spawn } from 'node:child_process'
+import { createConnection } from 'node:net'
+import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -26,6 +28,8 @@ import * as runtime from '../plugin/runtime.js'
 import Commands from '@deepseek-ai/dsh-commands'
 import * as botCommands from '../plugin/commands.js'
 import { MessageIndex } from '../plugin/messages.js'
+import * as ipc from '../plugin/ipc.js'
+import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -121,6 +125,265 @@ async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntim
 
 const privateRoute = { visibility: 'owner-private', adapterId: 'test-tg', ownerId: 'verified-owner', conversationKey: 'private-chat', replyRoute: 'chat:owner' }
 const mainMailbox = (ctx, agent, changes = {}) => ctx.mbotRuntime.ownerMailbox(agent, { ...privateRoute, ...changes })
+
+async function ipcApp(t, script = () => response('IPC reply')) {
+  const fixture = await app(t, script, { main: true })
+  // Core fixtures lack the full Web Controller. Native resolve/ownership is
+  // separately exercised by installed Web and Chromium acceptance.
+  fixture.ctx.mbot.resolveMainSession = async id => fixture.ctx.mbot.bot({ botId: id })
+  const directory = join(root, `ipc-${++sequence}`)
+  const owner = fixture.ctx.plugin(ipc, { directory })
+  await owner
+  const endpoint = fixture.ctx.mbotIpc.status()
+  assert.equal(endpoint.state, 'ready')
+  return { ...fixture, ipcOwner: owner, ipc: fixture.ctx.mbotIpc, endpoint }
+}
+
+async function cli(args, input, extraEnv = {}) {
+  const child = spawn(join(mbot.packageRoot, 'bin', 'botctl'), args, { env: { ...process.env, ...extraEnv }, stdio: 'pipe' })
+  let stdout = '', stderr = ''
+  child.stdout.on('data', chunk => { stdout += chunk })
+  child.stderr.on('data', chunk => { stderr += chunk })
+  child.stdin.on('error', () => {})
+  child.stdin.end(input)
+  const exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve) })
+  return { exitCode, stdout, stderr }
+}
+
+async function until(check) {
+  for (let count = 0; count < 500; count++) { if (await check()) return; await delay(10) }
+  throw new Error('Timed out waiting for IPC fixture')
+}
+
+test('real botctl CLI talks to the managed Inbox, preserves stdin bytes and retries one request', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, endpoint, requests } = await ipcApp(t)
+  const options = ['--endpoint-dir', endpoint.directory, '--bot', bot.botId, '--request-id', 'cli-event:1']
+  const text = '第一行\nliteral $() and `code`\n最后一行\n'
+  const sent = await cli(['talk', ...options, '--stdin'], text)
+  assert.equal(sent.exitCode, 0, sent.stderr || sent.stdout)
+  const receipt = JSON.parse(sent.stdout).value
+  assert.equal(receipt.confirmation, 'confirmed')
+  await settle(ctx, agent)
+  assert.equal(requests.length, 1)
+  assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'text' && block.text === text)))
+  const retried = await cli(['talk', ...options, '--text', text])
+  assert.equal(retried.exitCode, 0, retried.stderr)
+  assert.equal(JSON.parse(retried.stdout).value.messageId, receipt.messageId)
+  assert.equal(requests.length, 1)
+  const lookup = await cli(['receipt', ...options])
+  assert.equal(JSON.parse(lookup.stdout).value.delivery, 'ended')
+  const status = await cli(['runtime', '--endpoint-dir', endpoint.directory, '--bot', bot.botId])
+  assert.equal(JSON.parse(status.stdout).value.lastReceipt.head, git(ws, 'rev-parse', 'HEAD'))
+  const bots = await cli(['bots', '--endpoint-dir', endpoint.directory])
+  assert.equal(JSON.parse(bots.stdout).value.bots[0].botId, bot.botId)
+})
+
+test('CLI owner commands reject nested runs, invalid routes and changed retries before model dispatch', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent, endpoint, requests } = await ipcApp(t)
+  const options = ['--endpoint-dir', endpoint.directory, '--bot', bot.botId, '--request-id', 'cli-safe-1']
+  const nested = await cli(['talk', ...options, '--text', 'nested'], undefined, { MBOT_RUN_ID: 'owned-turn' })
+  assert.equal(nested.exitCode, 2)
+  assert.match(nested.stderr, /unavailable inside managed runs/u)
+  assert.equal(requests.length, 0)
+  const misplaced = await cli(['-C', '/tmp/unused-bot', 'talk', ...options, '--text', 'wrong path'])
+  assert.equal(misplaced.exitCode, 2)
+  const injected = await requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'cli-safe-1', text: 'forged', ownerId: 'other-owner' })
+  assert.equal(injected.ok, false)
+  assert.match(injected.error.message, /fields/u)
+  assert.equal(requests.length, 0)
+  assert.equal((await cli(['talk', ...options, '--text', '--help'])).exitCode, 0)
+  await settle(ctx, agent)
+  const changed = await cli(['talk', ...options, '--text', 'changed request bytes'])
+  assert.equal(changed.exitCode, 1)
+  assert.match(JSON.parse(changed.stdout).error.message, /reused/u)
+  assert.equal(requests.length, 1)
+})
+
+test('IPC disconnect/timeout does not cancel transferred input and same-ID retry recovers acknowledgement', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, bot, agent, endpoint, requests, ipc: service } = await ipcApp(t)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { entered.resolve(); await release.promise; return flush(session) }
+  const input = { action: 'talk', botId: bot.botId, requestId: 'disconnected-1', text: 'keep accepted input' }
+  const sending = requestHost(endpoint, input, { timeoutMs: 100 })
+  const failure = assert.rejects(sending, error => error.code === 'IPC_UNCONFIRMED' && error.uncertain)
+  await entered.promise
+  await failure
+  assert.equal(requests.length, 0)
+  assert.equal(service.operations.size, 1)
+  release.resolve()
+  ctx.sessions.flush = flush
+  await until(() => service.operations.size === 0)
+  await settle(ctx, agent)
+  const recovered = await requestHost(endpoint, input)
+  assert.equal(recovered.ok, true)
+  assert.equal(recovered.value.delivery, 'ended')
+  assert.equal(requests.length, 1)
+})
+
+test('IPC disposal drains disconnected operations before another endpoint can acquire the Host lock', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, bot, endpoint, ipc: service, ipcOwner } = await ipcApp(t)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { entered.resolve(); await release.promise; return flush(session) }
+  const pending = requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'drain-1', text: 'drain admission' }, { timeoutMs: 100 })
+  const expected = assert.rejects(pending, /unconfirmed/u)
+  await entered.promise
+  const closing = ipcOwner.dispose()
+  await until(() => service.closed)
+  await expected
+  const contender = ctx.plugin(ipc, { directory: endpoint.directory })
+  await contender
+  assert.equal(ctx.mbotIpc.status().state, 'busy')
+  await contender.dispose()
+  assert.equal(service.operations.size, 1)
+  release.resolve()
+  ctx.sessions.flush = flush
+  await closing
+  const replacement = ctx.plugin(ipc, { directory: endpoint.directory })
+  await replacement
+  assert.equal(ctx.mbotIpc.status().state, 'ready')
+  assert.notEqual(ctx.mbotIpc.status().instanceId, endpoint.instanceId)
+})
+
+test('IPC lock rejects a live second owner, then reload reuses original native request history', { timeout: 30000 }, async t => {
+  const first = await ipcApp(t)
+  const other = await app(t, () => response('other'), { main: true })
+  const contender = other.ctx.plugin(ipc, { directory: first.endpoint.directory })
+  await contender
+  assert.equal(other.ctx.mbotIpc.status().state, 'busy')
+  const request = { action: 'talk', botId: first.bot.botId, requestId: 'before-ipc-reload', text: 'once' }
+  const original = await requestHost(first.endpoint, request)
+  await settle(first.ctx, first.agent)
+  await first.ipcOwner.dispose()
+  const owner = first.ctx.plugin(ipc, { directory: first.endpoint.directory })
+  await owner
+  const replacement = first.ctx.mbotIpc.status()
+  const retried = await requestHost(replacement, request)
+  assert.equal(retried.value.messageId, original.value.messageId)
+  assert.equal(first.requests.length, 1)
+  assert.equal(other.requests.length, 0)
+})
+
+test('losing the flock helper cannot transfer ownership while its live Host still drains input', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const { ctx, bot, endpoint, ipc: service, ipcOwner } = await ipcApp(t)
+  const other = await app(t, () => response('other'), { main: true })
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { entered.resolve(); await release.promise; return flush(session) }
+  const pending = requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'lost-lock', text: 'preserve transferred input' })
+  const expected = assert.rejects(pending, /unconfirmed/u)
+  await entered.promise
+  service.lock.terminate()
+  await until(() => service.closed)
+  await expected
+  const contender = other.ctx.plugin(ipc, { directory: endpoint.directory })
+  await contender
+  assert.equal(other.ctx.mbotIpc.status().state, 'busy')
+  await contender.dispose()
+  assert.equal(service.operations.size, 1)
+  release.resolve()
+  ctx.sessions.flush = flush
+  await service.close()
+  await ipcOwner.dispose()
+  await ctx.plugin(ipc, { directory: endpoint.directory })
+  assert.equal(ctx.mbotIpc.status().state, 'ready')
+})
+
+test('profile discovery uses canonical DSH profile identity and creates only a short private /tmp endpoint', async t => {
+  const directory = join(root, 'ipc-profile-home')
+  await mkdir(join(directory, 'profiles', 'web'), { recursive: true })
+  await mkdir(join(directory, 'profiles', '中文'), { recursive: true })
+  const alias = join(root, 'ipc-profile-alias')
+  await symlink(directory, alias)
+  const canonical = await profileLocation('web', { DSH_HOME: directory })
+  const same = await profileLocation('web', { DSH_HOME: alias })
+  assert.deepEqual(canonical, same)
+  assert.notEqual((await profileLocation('中文', { DSH_HOME: directory })).profileId, canonical.profileId)
+  assert.ok(canonical.directory.startsWith('/tmp/dsh-mbot-'))
+  assert.ok(Buffer.byteLength(canonical.socketPath) <= 100)
+  await assert.rejects(profileLocation('../other', { DSH_HOME: directory }), /Invalid/u)
+  const { ctx } = await app(t, () => response('done'), { main: true })
+  ctx.provide('profileContext', { dir: join(directory, 'profiles', 'web') })
+  await ctx.plugin(ipc)
+  assert.equal(ctx.mbotIpc.status().socketPath, canonical.socketPath)
+  assert.equal((await lstat(canonical.directory)).mode & 0o777, 0o700)
+  assert.equal((await lstat(canonical.socketPath)).mode & 0o777, 0o600)
+  const listing = await cli(['bots', '--profile', 'web'], undefined, { DSH_HOME: directory })
+  assert.equal(listing.exitCode, 0, listing.stderr || listing.stdout)
+})
+
+test('unsafe IPC filesystem objects and overlong paths are rejected without rewriting files', async t => {
+  const { ctx } = await app(t, () => response('done'))
+  const unsafe = join(root, 'ipc-public')
+  await mkdir(unsafe, { mode: 0o755 })
+  await assert.rejects(Promise.resolve(ctx.plugin(ipc, { directory: unsafe })), /private/u)
+  assert.equal((await lstat(unsafe)).mode & 0o777, 0o755)
+  const safe = join(root, 'ipc-file-socket')
+  await mkdir(safe, { mode: 0o700 })
+  await writeFile(join(safe, 'owner.sock'), 'keep unrelated file', { mode: 0o600 })
+  await assert.rejects(Promise.resolve(ctx.plugin(ipc, { directory: safe })), /expected file type/u)
+  assert.equal(await readFile(join(safe, 'owner.sock'), 'utf8'), 'keep unrelated file')
+  const target = join(root, 'ipc-secret-target')
+  await writeFile(target, 'unchanged', { mode: 0o600 })
+  const linked = join(root, 'ipc-linked-lock')
+  await mkdir(linked, { mode: 0o700 })
+  await symlink(target, join(linked, 'owner.lock'))
+  await assert.rejects(Promise.resolve(ctx.plugin(ipc, { directory: linked })))
+  assert.equal(await readFile(target, 'utf8'), 'unchanged')
+  await assert.rejects(ipcLocation({ directory: `/tmp/${'long'.repeat(40)}` }), /too long/u)
+})
+
+test('IPC protocol rejects extra frames and malformed sources without executing a model', { timeout: 30000 }, async t => {
+  const { bot, endpoint, requests } = await ipcApp(t)
+  const extra = await requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'malformed', text: 'data', source: { kind: 'user' } })
+  assert.equal(extra.ok, false)
+  const disconnected = await new Promise((resolve, reject) => {
+    const socket = createConnection(endpoint.socketPath)
+    socket.on('error', reject)
+    let text = ''
+    socket.on('data', chunk => { text += chunk })
+    socket.once('end', () => resolve(text))
+    socket.once('connect', () => socket.write('not json\nsecond frame\n'))
+  })
+  assert.equal(JSON.parse(disconnected).ok, false)
+  const invalidUtf8 = await new Promise((resolve, reject) => {
+    const socket = createConnection(endpoint.socketPath)
+    socket.on('error', reject)
+    let text = ''
+    socket.on('data', chunk => { text += chunk })
+    socket.once('end', () => resolve(text))
+    socket.once('connect', () => socket.write(Buffer.from([123, 34, 120, 34, 58, 34, 255, 34, 125, 10])))
+  })
+  assert.equal(JSON.parse(invalidUtf8).ok, false)
+  await new Promise((resolve, reject) => {
+    const socket = createConnection(endpoint.socketPath)
+    socket.on('error', reject)
+    socket.once('close', resolve)
+    socket.once('connect', () => socket.write(Buffer.alloc(maxFrameBytes + 1, 120)))
+  })
+  assert.equal(requests.length, 0)
+})
+
+test('IPC stop joins the captured turn and preserves queued messages', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  const { ctx, bot, agent, endpoint, requests } = await ipcApp(t, async () => { entered.resolve(); await release.promise; return response('stopped') })
+  await requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'active-ipc', text: 'active' })
+  await entered.promise
+  const queued = await requestHost(endpoint, { action: 'talk', botId: bot.botId, requestId: 'queued-ipc', text: 'pending' })
+  const stopping = requestHost(endpoint, { action: 'stop', botId: bot.botId })
+  await until(() => requests.length === 1 && ctx.mbotRuntime.states.get(agent).current.signal.aborted)
+  release.resolve()
+  const stopped = await stopping
+  assert.equal(stopped.ok, true)
+  assert.equal(stopped.value.targetTurn, 1)
+  assert.equal(stopped.value.receipt.outcome, 'cancelled')
+  assert.equal(agent.inbox.nextTurn[0].id, queued.value.messageId)
+  assert.equal(requests.length, 1)
+})
 const auditAtHead = ws => {
   const path = git(ws, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').findLast(path => path.endsWith('.meta.json'))
   return JSON.parse(git(ws, 'show', `HEAD:${path}`))

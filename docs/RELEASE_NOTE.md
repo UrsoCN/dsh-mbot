@@ -1,5 +1,13 @@
 # 发布说明
 
+## dev：botctl 本地宿主 IPC（未发布）
+
+- 新增 talk/receipt/runtime/stop/bots 外部 CLI，按明确的 profile/Bot 身份连接实际主 Session；复用所有者信封、原生 Inbox 和审计，正文支持 UTF-8 stdin/字面 shell 字符。同 ID 重试复用消息，断连不取消共享执行，收据仍区分持久确认与模型/审计完成。
+- Cordis bundle 增加 dsh-mbot/ipc，按官方 profileContext 在 /tmp 派生私有 Unix 端点；flock 与原子 PID 出生身份记录约束归属。关闭先 drain 转交操作，丢锁不允许活宿主被提前替代；不安全对象拒绝，崩溃后核实旧宿主并回收遗留 socket。基础 headless 明确拒绝未绑定会话业务，不创建替代 Agent。
+- 79 项 Host/Runtime、类型、64 组 Bash 回归通过；source/tarball/Git 与 Web tarball 安装通过，Chromium 验证 CLI 入原生聊天、停止/队列保留，以及 SIGKILL 重启后的同 MessageId 去重。依据：`/tmp/mbot-ipc-suite-final.log`、`/tmp/mbot-plugin-install.iXPiZR`、`/tmp/mbot-gui-runtime.GFwT3v`；见 [使用与边界](host-ipc.md)。没有调用真实 DeepSeek API。
+
+IM/peer、隔离域、审计终态/回复 outbox、Worker、compact/睡眠及 Runtime 恢复继续在 TODO；包仍为 0.1.1，未打新 tag。
+
 ## dev：所有者消息准入与原生投递收据（未发布）
 
 - 新增可信 Host 的 ownerMailbox，固定已验证的所有者、主 Session、对话键和回复路线；文本信封使用命名空间请求 ID 与不可变指纹，并发/重载后的同 ID 重试复用原消息，改变正文/关联 ID/回复路线报冲突。

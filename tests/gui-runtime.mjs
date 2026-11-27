@@ -153,7 +153,52 @@ try {
   const calls = (await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length
   assert.equal(calls, 6)
   assert.deepEqual(errors, [])
-  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/no-external-model')
+  // External CLI uses the installed package and the same native main Session.
+  const cliWs = join(root, 'CLI GUI Bot')
+  await command(`/mbot init ${cliWs}`)
+  const ctl = join(env.DSH_HOME, 'profiles/web/node_modules/.bin/botctl')
+  const hostCall = async args => JSON.parse(await run(ctl, [...args, '--profile', 'web']))
+  const cliBot = (await hostCall(['bots'])).value.bots.find(bot => bot.workspacePath === cliWs)
+  assert.ok(cliBot.mainSessionId)
+  const cliArgs = ['talk', '--bot', cliBot.botId, '--request-id', 'gui-cli-1', '--text', 'External CLI message']
+  const submitted = await hostCall(cliArgs)
+  assert.equal(submitted.value.confirmation, 'confirmed')
+  await until(async () => await audit(1).getAttribute('data-phase') === 'committed')
+  await page.getByText('External CLI message', { exact: true }).waitFor()
+  assert.equal((await hostCall(['receipt', '--bot', cliBot.botId, '--request-id', 'gui-cli-1'])).value.delivery, 'ended')
+  assert.equal((await hostCall(cliArgs)).value.messageId, submitted.value.messageId)
+  const cliGit = (...args) => execFileSync('git', ['-C', cliWs, ...args], { encoding: 'utf8' }).trim()
+  assert.equal((await hostCall(['runtime', '--bot', cliBot.botId])).value.lastReceipt.head, cliGit('rev-parse', 'HEAD'))
+  for (const name of ['writer-started', 'writer-cancelled', 'release-writer']) await rm(join(root, name))
+  await hostCall(['talk', '--bot', cliBot.botId, '--request-id', 'gui-cli-2', '--text', 'slow writer'])
+  await until(() => exists('writer-started'))
+  const queuedCli = await hostCall(['talk', '--bot', cliBot.botId, '--request-id', 'gui-cli-3', '--text', 'queued after writer'])
+  const stoppingCli = hostCall(['stop', '--bot', cliBot.botId])
+  await until(() => exists('writer-cancelled'))
+  await writeFile(join(root, 'release-writer'), '')
+  const stoppedCli = await stoppingCli
+  assert.equal(stoppedCli.value.receipt.outcome, 'cancelled')
+  assert.equal((await hostCall(['receipt', '--bot', cliBot.botId, '--request-id', 'gui-cli-3'])).value.messageId, queuedCli.value.messageId)
+  assert.equal((await hostCall(['runtime', '--bot', cliBot.botId])).value.queued.nextTurn, 1)
+  await hostCall(['talk', '--bot', cliBot.botId, '--request-id', 'gui-cli-4', '--text', 'wake'])
+  await until(async () => await audit(4).getAttribute('data-phase') === 'committed')
+  await page.screenshot({ path: join(root, 'external-cli-in-chat.png'), fullPage: true })
+  const callsBeforeRestart = (await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length
+  assert.equal(callsBeforeRestart, 10)
+  // SIGKILL leaves the Unix path behind. A new Host must acquire flock before
+  // reclaiming it; same-ID retry reads persisted native history after restart.
+  server.child.kill('SIGKILL')
+  await server.child.finished
+  await rm(join(root, 'fixture-ready'))
+  server = await host()
+  const afterRestart = await hostCall(cliArgs)
+  assert.equal(afterRestart.value.messageId, submitted.value.messageId)
+  assert.equal(afterRestart.value.delivery, 'ended')
+  await page.goto(`${server.url}#mbot-session=${cliBot.mainSessionId}`)
+  await page.locator('[data-mbot-audit="4"][data-phase="committed"]').waitFor()
+  assert.equal(await page.locator('[data-mbot-audit]').count(), 4)
+  assert.equal((await readFile(join(root, 'requests.jsonl'), 'utf8')).trim().split('\n').length, callsBeforeRestart)
+  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/shared-replay/external-cli/cli-stop/crash-restart-dedup/no-external-model')
 } catch (error) {
   if (page) { await page.screenshot({ path: join(root, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(root, 'failure.txt'), await page.locator('body').innerText()).catch(() => {}) }
   throw error

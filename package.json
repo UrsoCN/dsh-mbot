@@ -28,6 +28,10 @@
     "./runtime": {
       "types": "./plugin/runtime.d.ts",
       "default": "./plugin/runtime.js"
+    },
+    "./ipc": {
+      "types": "./plugin/ipc.d.ts",
+      "default": "./plugin/ipc.js"
     }
   },
   "bin": {

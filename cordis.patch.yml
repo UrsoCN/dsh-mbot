@@ -7,3 +7,5 @@
       name: dsh-mbot/commands
     - id: mbot-runtime
       name: dsh-mbot/runtime
+    - id: mbot-ipc
+      name: dsh-mbot/ipc
