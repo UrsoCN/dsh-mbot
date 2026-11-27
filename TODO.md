@@ -14,7 +14,7 @@ Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实�
 
 按 [Session Runtime](docs/session-runtime.md#8-实施与验收) 的阶段顺序推进，先完成主 Session 上下文闭环，再扩展来源和写工具：
 
-- [ ] **阶段 1 · checkpoint/compact**：固定 SOUL/MEMORY + 近期摘要/尾部的取材与来源协议；持久 checkpoint 绑定 memoryCommit、知识内容 hash、contextEpoch、compaction ID、摘要 hash、原始日志 cut 与有序 surface 来源引用。接真实手动 `/compact` 闸门与自动 compaction，验收工具配对、来源/可见域保留、旧规则退役、flush/替换崩溃和重启恢复；不能把每次 Git HEAD 变化当记忆更新
+- [ ] **阶段 1 · checkpoint/compact**：在已交付 [turn 上下文 checkpoint 基础](docs/context-checkpoints.md) 上接近期摘要/尾部、原生 compaction ID 与摘要 hash/来源证明；接真实手动 `/compact` 闸门与自动 compaction，验收工具配对、来源/可见域保留、旧规则退役、空摘要、flush/替换崩溃和重启恢复。知识内容 hash、memoryCommit/contextEpoch、原始日志 cut、有序 surface/Inbox 来源与原生/Git 单次恢复已接入，不能将此基础视为 compact 已完成
 - [ ] **阶段 2 · sleep/wake**：Bot 维护屏障与 Writer 静止，Dreaming → 各 conversation compact/checkpoint 的阶段 journal；睡眠继续接收原生 Inbox 消息，固定执行 cutoff，Git 成功后失败只补未完成阶段，epoch 不提前发布。wake 保留主 Session ID，衔接准入失败后的待办，同 ID 重试不合成业务消息或调用私有 Agent API；验收多窗口发送/编辑/停止、睡眠公平性和中断单次结算
 - [ ] **阶段 3a · 对话域/入口**：在 ownerMailbox/CLI IPC 基础上实现持久 conversation 绑定、来源/可见域权限及真实适配器；所有者专用私聊可连主 Session，群/其他用户/peer 默认隔离，未实现记忆过滤前不开放。适配器通过 Cordis Runtime 门面，Web 保留原生提交闸门；附件/路由恢复复用 DSH Inbox，不另造消费状态，继续验收跨 Host 原生 writer-held 与端点交接
 - [ ] **阶段 3b · 回复/peer**：按已核验 replyRoute 实现 outbox、外部 ack/不确定状态；独立 Bot 异步信封带来源、correlation/causation、目标权限与 hops/TTL，不能复用所有者身份或树内 send_message。验收 A/B 互相请求不持锁等待、断连/崩溃转交、IM 重试、@alias、编辑冲突与回复不串域，不把 confirmed/ended 或展示记录当事务证明

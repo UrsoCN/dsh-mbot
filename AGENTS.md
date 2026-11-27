@@ -18,6 +18,7 @@
 - 保留锁、干净工作树、HEAD 基准、guard、恢复/熔断、审计提交；新增主 Session/GUI/续聊不能绕过。
 - 主 Session 的业务上下文/准入由 MBot Runtime 管理，DSH 持有事件与执行；遵循 docs/session-runtime.md 的来源、对话域、compact/睡眠与恢复设计。受信任 Host 插件间接口约束不宣称为安全沙箱。
 - 主 Session 默认私人对话域；多窗口共用，群/其他用户/独立 peer 的额外 conversation 在可见域/记忆过滤接齐后开放。统一 botctl 门面不要求 Web/IM 启动 shell；ownerMailbox 不可冒充 peer/其他用户入口。checkpoint 绑定知识内容 hash、原生有序来源 cut 与阶段证明，不能把普通 Git HEAD 变化当记忆更新或把展示记录当恢复证明；先推进 checkpoint/compact 与 sleep/wake，再扩展来源和 Worker 写工具。
+- turn checkpoint 基础见 docs/context-checkpoints.md：context-snapshot 原生记录由同一次 Git runtime.context 封存，原 journal 结算和 Session flush 后才发布；恢复过滤保留该类型，用原生 fold 校验有序来源和 Inbox 字节，旧回合无 snapshot 不合成证明。新回合丢弃已捕获 context 不能降级；knowledge 嵌套身份冻结，取材失败也要按真实 native outcome 关闭已取得 lease。此基础不代表 compact 摘要/睡眠已交付，未知 Writer 仍用原恢复边界。
 - 所有者消息准入见 docs/message-admission.md：ownerMailbox 绑定已验证的私人主 Session/发送者/回复路线；原生 rpcId 与旧 requestId 都关联审计，投递收据来自原生 splice/claim/end。confirmed 只证明 flush，ended 不证明 Git 提交；未知业务来源不绕过闸门，同 ID 重试不合成唤醒消息，隔离域/回复 outbox 与其他写者/旧契约 Runtime 恢复仍待完成。
 - 请求结果见 docs/request-replies.md：仅原生事件 + 可达 Git 审计 + journal/持久确认一致才释放回复，旧记录无证明不伪造终态；reply 文本 hash/掩码/目标/原生位置绑定，提交/计数/查询共用 lib/turn-outcome.jq。源码链接旧 Host 头兼容原审计，不让热更新脚本误暂停；已支持前台契约的中断 journal 走协调恢复，未知旧契约继续保留，outbox 外部投递/ack 未接齐。
 - 本地 CLI 见 docs/host-ipc.md：按官方 profileContext 派生私有 Unix 端点，owner.json 原子保存 PID 出生身份；丢锁不等于原宿主已静止，关闭先 drain 转交操作再释放归属，不 unlink 锁 inode。不创建替代 Agent/队列，断连不取消业务，运行内工具不得走 owner IPC；同权限本地进程仍是可信边界。
@@ -47,6 +48,7 @@
 - 按变更选择 npm run check:types、npm run test:plugin、bash tests/run.sh；整体回归用 npm test。
 - 包/export/资源/安装改动跑 npm run test:install，查 npm pack；模型用 tests/real-*.sh，不无必要重复耗时测试。
 - 恢复的 /proc 全进程检查与 Chromium 测试不要同时运行：新启动的浏览器沙箱进程可能不可读，恢复应保守拒绝，不为测试放宽写者检查。
+- npm test 的 Host/Runtime 文件保持串行，避免进程核验与其他夹具争用。测试对 Cannot inspect possible writer 的重试须先确认原 PID 已退出（消失或 kernel zombie），并核对 Git/工作树/journal 未变化；始终重走公开恢复接口，不将仍存活/身份不明的写者当静止。
 - client/会话改动补真实界面流程，不只调 handler；保留 CLI/headless/源码/tarball 兼容矩阵。
 - 文档/低影响可逆整理检查链接、事实、git diff --check、包内容，通常不另写镜像实现的测试。
 - TODO 只放未完成；交付/验证摘要入 RELEASE_NOTE；design 区分基线/规划，README 面向当前操作。

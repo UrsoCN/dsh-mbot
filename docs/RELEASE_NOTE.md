@@ -1,5 +1,17 @@
 # 发布说明
 
+## dev：主 Session 的 turn 上下文 checkpoint 基础（未发布）
+
+- 在模型提示组装前固定人格/协议/共享与角色记忆的 Git blob、内容 hash 和知识版本，捕获有序原生 surface 来源及已接受的 Inbox 输入 hash；任务或审计 Git 提交不推进知识 epoch，嵌套知识身份不可改写。
+- 原生 context-snapshot 由同一次 Git `runtime.context` 审计封存；原 journal 结算与 Session flush 后发布。新增可信 Host 查询 `ctx.mbotRuntime.checkpoint(agent)`，首轮之前返回 null，未知/缺失/冲突证据不合成 checkpoint。
+- 原生 Session resume、Runtime 交接和 recover 校验知识对象、前序链、原生来源和 Worker 证明；Git 成功后的确认修复不重复模型/提交。取材失败也按真实原生结果关闭已取得 lease，保留未执行输入。
+- 查询保持自己的观察快照，避免旧读取覆盖新回合；Native/Git 跨提交重新观察，连续变化返回可重试状态，Bot 不计故障。Runtime 关闭和 Bot 注销等待查询/原生 flush 静止。
+- `npm test` 串行运行 Host/Runtime 测试文件；恢复测试仅在 PID 已退出且 Git/工作树/journal 未变化时通过公开接口重试，保留生产写者校验。类型、172 项 Host/Runtime 和 64 组 Bash 检查通过，证据 `/tmp/mbot-context-checkpoint-suite-serial.log`。
+
+source/tarball/Git/Web 四类安装与 Chromium 实际 Worker 崩溃恢复通过：查询恢复后的 checkpoint，核对原主 Session、知识身份/epoch 和唯一 Git 审计；全程使用本地 adapter。证据 `/tmp/mbot-context-checkpoint-install-current.log`（安装产物 `/tmp/mbot-plugin-install.aFk114`）、`/tmp/mbot-context-checkpoint-gui-current.log`（浏览器产物 `/tmp/mbot-gui-runtime.cqP0sq`）。没有调用真实 DeepSeek API。
+
+实际 compact 摘要、compaction 证明和 sleep/wake 仍在 TODO，本文不将 turn checkpoint 基础视为完整上下文生命周期；包仍为 0.1.1，不新增发布 tag。实现与迁移边界见 [上下文 checkpoint](context-checkpoints.md)。
+
 ## dev：主 Session 上下文与入口设计细化（设计更新）
 
 - 明确默认私人主 Session、多窗口共用和按可见域隔离的 conversation；botctl 是 Runtime 门面，Web 原生提交、Cordis 适配器与 CLI IPC 归入同一管理协议。

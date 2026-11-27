@@ -30,6 +30,17 @@ export interface RuntimeStopResult extends RuntimeStatus {
   /** Captured turn; status may already describe work accepted afterward. */
   targetTurn?: number; receipt?: RuntimeTurnReceipt & { seq: number }
 }
+export interface ContextCheckpoint {
+  schemaVersion: 1; snapshotSeq: number; snapshotHash: string; commit: string; meta: string; turn: number
+  snapshot: {
+    schemaVersion: 1; kind: 'turn-input'; visibility: 'owner-private'; botId: string; sessionId: string; conversationId: string
+    turn: number; runId: string; role: string; memoryCommit: string; contextEpoch: number
+    knowledge: import('./turn.js').ContextKnowledge
+    sourceCut: { throughSeq: number; events: { seq: number; type: string; hash: string }[] }
+    input: { messageId: string; hash: string }[]
+    previous: null | { schemaVersion: 1; snapshotHash: string; knowledgeVersion: string; contextEpoch: number; commit: string }
+  }
+}
 export interface OwnerMailboxBinding {
   visibility: 'owner-private'; adapterId: string; ownerId: string
   conversationKey: string; replyRoute: string
@@ -85,6 +96,8 @@ export declare class MBotRuntime extends Service {
   foregroundTool(name: string): () => void
   dataLease(agent: Agent): TurnLease | ActorLease
   settled(agent: Agent): Promise<void>
+  /** Flushed native context sealed by reachable Git audit; null before the first audited snapshot. */
+  checkpoint(agent: Agent): Promise<ContextCheckpoint | null>
   status(agent: Agent): Promise<RuntimeStatus>
   stop(agent: Agent, options?: { signal?: AbortSignal }): Promise<RuntimeStopResult>
 }
@@ -93,6 +106,7 @@ declare module '@deepseek-ai/cordis' { interface Context { mbotRuntime: MBotRunt
 declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap {
   'plugin:mbot/runtime-turn': RuntimeTurnReceipt
   'plugin:mbot/worker-assignment': WorkerAssignment
+  'plugin:mbot/context-snapshot': ContextCheckpoint['snapshot']
 } }
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

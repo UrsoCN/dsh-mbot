@@ -93,6 +93,9 @@ jq -n --arg head "$MBOT_BASE" --arg role "$role" --arg workspace "$MBOT_WS" \
   --rawfile roleMemory "$MBOT_SCRATCH/MEMORY.md.bots_${role}_MEMORY.md" \
   '{head:$head,role:$role,workspace:$workspace,protocol:$protocol,soul:$soul,memory:$memory,roleMemory:$roleMemory,board:$board}' \
   | mbot_scrub > "$MBOT_SCRATCH/context.json"
+node "$MBOT_ROOT/bin/context-checkpoint.mjs" --knowledge "$MBOT_WS" "$MBOT_BASE" "$role" > "$MBOT_SCRATCH/knowledge.json"
+jq --slurpfile knowledge "$MBOT_SCRATCH/knowledge.json" '. + {knowledge:$knowledge[0]}' "$MBOT_SCRATCH/context.json" > "$MBOT_SCRATCH/versioned-context.json"
+mv -- "$MBOT_SCRATCH/versioned-context.json" "$MBOT_SCRATCH/context.json"
 jq -cn --slurpfile ledger "$MBOT_SCRATCH/ledger.json" --slurpfile context "$MBOT_SCRATCH/context.json" \
   '{kind:"ready",journalSchemaVersion:$ledger[0].schemaVersion,runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}'
 flock -u 9

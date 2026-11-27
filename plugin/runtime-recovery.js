@@ -5,6 +5,7 @@ import { processStart } from './recovery.js'
 import { fileURLToPath } from 'node:url'
 import { readonlyLegacy } from './readonly-migration.js'
 import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
+import { restoreContext } from './context-checkpoint.js'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 
 function awaited(signal, operation) {
@@ -32,7 +33,7 @@ export async function repairNativeReceipt(runtime, bot, options) {
       const start = log.events.find(event => event.type === 'turn/start' && event.data.turn === record.turn)
       const end = log.events.find(event => event.type === 'turn/end' && event.data.turn === record.turn)
       if (!start || !end || log.session.id !== state.agent.id || log.session.cwd !== bot.workspacePath) throw new Error('Native receipt recovery identity changed')
-      const events = log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && !event.ignorable)
+      const events = log.events.filter(event => event.seq >= start.seq && event.seq <= end.seq && (!event.ignorable || event.type === 'plugin:mbot/context-snapshot'))
       const workers = await runtime.workerLogs(events)
       const check = runtime.ctx.mbot.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/turn-runtime-recovery.mjs'), '--audit-input'],
         cwd: packageRoot, signal: options.signal, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ workspace: bot.workspacePath,
@@ -47,6 +48,7 @@ export async function repairNativeReceipt(runtime, bot, options) {
       await state.publish(record, result.success ? 'committed' : 'rejected', { runId: result.runId,
         ...(record.memoryCommit || record.lease?.snapshot.head ? { memoryCommit: record.memoryCommit ?? record.lease.snapshot.head } : {}) })
       await awaited(options.signal, runtime.ctx.sessions.flush(state.agent.session))
+      await restoreContext(state)
       state.error = undefined
       state.failedAuditRunId = undefined
       state.failedAuditRecord = undefined
@@ -129,6 +131,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
       try {
         await state.publish(receiptRecord, recovered.success ? 'committed' : 'rejected', { runId: journal.runId, memoryCommit: journal.baseHead })
         await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
+        await restoreContext(state)
       } catch (error) {
         state.error = new Error('Recovered Git audit awaits native receipt confirmation')
         throw state.error

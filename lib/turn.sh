@@ -51,7 +51,7 @@ mbot_turn_finalize() {
           + (if $reply[0]==null then {} else {writer_scope:"agent-runtime",journal_schema_version:$journal[0].schemaVersion,reply:$reply[0]} end)
           + (if $journal[0].schemaVersion==3 then {actors:[$journal[0].actors[] | del(.token)]} else {} end))}' \
     "$MBOT_SCRATCH/meta.json" | mbot_scrub > "$MBOT_SCRATCH/managed-meta.json"
-  node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" > "$MBOT_SCRATCH/sealed-meta.json"
+  node "$MBOT_ROOT/bin/turn-reply.mjs" --seal-meta "$MBOT_SCRATCH/reply.json" "$MBOT_SCRATCH/managed-meta.json" "$events_file" "$MBOT_WS" > "$MBOT_SCRATCH/sealed-meta.json"
   mv -- "$MBOT_SCRATCH/sealed-meta.json" "$MBOT_SCRATCH/meta.json"
   mbot_turn_outcome "$MBOT_SCRATCH/meta.json" || return 1
   if [[ ${MBOT_RECOVERING:-0} == 1 ]]; then

@@ -54,7 +54,7 @@
     "docs"
   ],
   "scripts": {
-    "test": "npm run check:types && node --test tests/plugin.test.js tests/runtime.test.js && bash tests/run.sh",
+    "test": "npm run check:types && node --test --test-concurrency=1 tests/plugin.test.js tests/runtime.test.js && bash tests/run.sh",
     "test:plugin": "node --test tests/plugin.test.js",
     "test:gui": "node tests/gui-plugin.mjs",
     "check:types": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 tests/plugin-types.ts",

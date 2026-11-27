@@ -41,6 +41,7 @@ import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
 import { readonlyLegacy } from '../plugin/readonly-migration.js'
 import { recoveryInput } from '../plugin/recovery-proof.js'
+import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -51,6 +52,40 @@ delete process.env.MBOT_RUN_ID
 delete process.env.MBOT_WS
 let sequence = 0
 const git = (workspace, ...args) => execFileSync('git', ['-C', workspace, ...args], { encoding: 'utf8' }).trim()
+// The production /proc proof deliberately refuses disappearing, uninspectable
+// PIDs. Retry the PUBLIC operation only after that PID exited and the refusal
+// demonstrably left Git/data/journal unchanged. Live/unknown writers still fail.
+async function recoverNativeTurn(ctx, options) {
+  const registry = ctx.mbot.registry()
+  const retired = registry.retiredBots.find(entry => entry.bot.botId === options.botId)
+  const workspace = (retired?.bot ?? ctx.mbot.bot(options)).workspacePath
+  const ledger = async () => readFile(join(workspace, '.mbot/runs/active-turn.json'), 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
+  const before = { head: git(workspace, 'rev-parse', 'HEAD'), status: git(workspace, 'status', '--porcelain'), journal: await ledger() }
+  for (let attempt = 0; ; attempt++) {
+    try { return await ctx.mbot.recoverTurn(options) }
+    catch (error) {
+      const match = /Cannot inspect possible writer pid (\d+)/u.exec(error.message)
+      if (!match || attempt >= 3) throw error
+      let gone = false
+      const deadline = Date.now() + 500
+      while (Date.now() < deadline) {
+        try {
+          const value = await readFile(`/proc/${match[1]}/stat`, 'utf8')
+          if (value.slice(value.lastIndexOf(')') + 2).split(/\s+/u)[0] === 'Z') { gone = true; break }
+        }
+        catch (inspection) { if (inspection.code === 'ENOENT') { gone = true; break }; throw error }
+        await delay(20)
+      }
+      if (!gone) throw error
+      assert.equal(git(workspace, 'rev-parse', 'HEAD'), before.head)
+      assert.equal(git(workspace, 'status', '--porcelain'), before.status)
+      assert.equal(contextHash(await ledger()), contextHash(before.journal))
+    }
+  }
+}
 const message = text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 
 function* response(text, tool) {
@@ -136,6 +171,339 @@ async function app(t, script, options = {}) {
 }
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
+
+test('context checkpoints bind native history and Git knowledge, keeping epochs stable across task commits', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('context boundary reply'), { main: true })
+  assert.equal(await ctx.mbotRuntime.checkpoint(agent), null)
+  agent.followup(message('first context input'))
+  await settle(ctx, agent)
+  const first = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(first.commit, git(ws, 'rev-parse', 'HEAD'))
+  assert.equal(first.snapshot.contextEpoch, 1)
+  assert.equal(first.snapshot.previous, null)
+  assert.equal(first.snapshotHash, contextHash(first.snapshot))
+  const meta = JSON.parse(git(ws, 'show', `${first.commit}:${first.meta}`))
+  assert.deepEqual(meta.runtime.context.snapshot, first.snapshot)
+  const state = ctx.mbotRuntime.states.get(agent)
+  assert.ok(Object.isFrozen(state.current.lease.snapshot.knowledge.documents))
+  assert.throws(() => { state.current.lease.snapshot.knowledge.documents[0].blob = 'changed' }, TypeError)
+  first.snapshot.knowledge.documents[0].path = 'caller mutation'
+  agent.followup(message('second input after only an audit Git commit'))
+  await settle(ctx, agent)
+  const second = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(second.snapshot.memoryCommit, first.commit)
+  assert.equal(second.snapshot.contextEpoch, 1)
+  assert.equal(second.snapshot.knowledge.version, first.snapshot.knowledge.version)
+  assert.equal(second.snapshot.knowledge.documents[0].path, 'AGENTS.md')
+  assert.ok(second.snapshot.sourceCut.events.length > 0)
+  const history = await ctx.sessionQuery.readSession(agent.id)
+  const user = history.events.find(event => event.type === 'user/message' && event.data.content.some(block => block.text === 'first context input'))
+  assert.equal(second.snapshot.sourceCut.events.find(item => item.seq === user.seq).hash, contextHash(user))
+  assert.ok(requests[1].messages.some(message => message.content.some(block => block.type === 'text' && block.text.includes('"contextEpoch":1'))))
+  const soul = join(ws, 'bots/chief/SOUL.md')
+  await writeFile(soul, (await readFile(soul, 'utf8')) + '\nnew-persona-context-version-882211\n')
+  git(ws, 'add', 'bots/chief/SOUL.md'); git(ws, 'commit', '-m', 'fixture: new knowledge version')
+  agent.followup(message('third input with new personality'))
+  await settle(ctx, agent)
+  const third = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(third.snapshot.contextEpoch, 2)
+  assert.notEqual(third.snapshot.knowledge.version, second.snapshot.knowledge.version)
+  assert.equal(third.snapshot.previous.commit, second.commit)
+  assert.ok(JSON.stringify(requests[2].messages).includes('new-persona-context-version-882211'))
+})
+
+test('a checkpoint remains unpublished until native flush and receipt recovery does not repeat its Git commit', { timeout: 30000 }, async t => {
+  let emitted = false, failed = false
+  const { ctx, ws, bot, agent } = await app(t, () => { emitted = true; return response('checkpoint flush reply') }, { main: true })
+  await removalController(ctx, agent)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => {
+    if (emitted && !failed) { failed = true; throw new Error('checkpoint persistence failure') }
+    return flush(session)
+  }
+  agent.followup(message('commit but do not confirm the checkpoint'))
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent), /persistence/u)
+  assert.equal(ctx.mbotRuntime.states.get(agent).checkpoint, null)
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /persistence/u)
+  const head = git(ws, 'rev-parse', 'HEAD')
+  ctx.sessions.flush = flush
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).receiptRepaired, true)
+  const restored = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(restored.commit, head)
+  assert.equal(restored.snapshot.contextEpoch, 1)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+})
+
+test('native persistence resumes the same Session with its verified context checkpoint and epoch', { timeout: 30000 }, async t => {
+  const { ctx, agent, handle, bot } = await app(t, () => response('persisted context reply'), { main: true, persistence: true })
+  agent.followup(message('context survives native writer release'))
+  await settle(ctx, agent)
+  const before = await ctx.mbotRuntime.checkpoint(agent)
+  await handle.dispose()
+  const resumed = await ctx.agents.resume({ resumeSessionId: agent.id, agentOptions: { provider: 'runtime-test', model: 'scripted' },
+    setup: (_ctx, current) => ctx.mbotRuntime.attach(current, { botId: bot.botId }) })
+  assert.notEqual(resumed.agent, agent)
+  assert.equal(resumed.agent.id, agent.id)
+  assert.deepEqual(await ctx.mbotRuntime.checkpoint(resumed.agent), before)
+  resumed.agent.followup(message('continue the same memory version'))
+  await settle(ctx, resumed.agent)
+  assert.equal((await ctx.mbotRuntime.checkpoint(resumed.agent)).snapshot.contextEpoch, before.snapshot.contextEpoch)
+})
+
+test('context sources preserve surface order after a native replacement introduces nonmonotonic seqs', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, () => response('surface order reply'), { main: true })
+  agent.followup(message('first historical turn'))
+  await settle(ctx, agent)
+  const first = await ctx.sessionQuery.readSurface(agent.id)
+  const beginning = first.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+  const end = first.events.findLast(event => event.type === 'assistant/message')
+  agent.followup(message('second historical turn stays visible'))
+  await settle(ctx, agent)
+  const currentSurface = await ctx.sessionQuery.readSurface(agent.id)
+  const replaced = currentSurface.events.slice(currentSurface.events.findIndex(event => event.seq === beginning.seq),
+    currentSurface.events.findIndex(event => event.seq === end.seq) + 1).map(event => event.seq)
+  const replacementSeq = agent.session.append('user/message', message('trusted replacement of the first historical span'),
+    { surfaceOp: { op: 'replace', startSeq: beginning.seq, endSeq: end.seq }, sourceEventSeqs: replaced }).seq
+  agent.followup(message('capture the reordered native history'))
+  await settle(ctx, agent)
+  const checkpoint = await ctx.mbotRuntime.checkpoint(agent)
+  const refs = checkpoint.snapshot.sourceCut.events
+  const replacementIndex = refs.findIndex(item => item.seq === replacementSeq)
+  assert.ok(replacementIndex >= 0)
+  assert.ok(refs.slice(replacementIndex + 1).some(item => item.seq < replacementSeq))
+})
+
+test('checkpoint restoration rejects changed historical source bytes and holds subsequent model admission', { timeout: 30000 }, async t => {
+  const { ctx, agent, requests } = await app(t, () => response('source proof reply'), { main: true })
+  agent.followup(message('first source bytes'))
+  await settle(ctx, agent)
+  agent.followup(message('second source bytes'))
+  await settle(ctx, agent)
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  t.after(() => { if (ctx.sessionQuery) ctx.sessionQuery.readSession = read })
+  ctx.sessionQuery.readSession = async id => {
+    const log = structuredClone(await read(id))
+    if (id === agent.id) {
+      const user = log.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+      user.data.content = [{ type: 'text', text: 'changed historical source' }]
+    }
+    return log
+  }
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /source cut/u)
+  ctx.sessionQuery.readSession = read
+  agent.followup(message('must remain pending after evidence conflict'))
+  await agent.whenIdle()
+  assert.equal(requests.length, 2)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+})
+
+test('native context snapshot tampering is refused even when a command card claims success', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent } = await app(t, () => response('sealed snapshot reply'), { main: true })
+  appendPluginRecord(agent.session, 'plugin:mbot/context-checkpoint', { contextEpoch: 999, committed: true })
+  assert.equal(await ctx.mbotRuntime.checkpoint(agent), null, 'An ignorable presentation event is not checkpoint evidence')
+  agent.followup(message('create actual native and Git evidence'))
+  await settle(ctx, agent)
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  t.after(() => { if (ctx.sessionQuery) ctx.sessionQuery.readSession = read })
+  ctx.sessionQuery.readSession = async id => {
+    const log = structuredClone(await read(id))
+    if (id === agent.id) log.events.find(event => event.type === contextSnapshotType).data.contextEpoch = 999
+    return log
+  }
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /evidence/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+})
+
+test('removing all native context snapshots cannot turn an audited Session into an empty checkpoint baseline', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, () => response('context evidence must survive'), { main: true })
+  agent.followup(message('publish a checkpoint that cannot be silently dropped'))
+  await settle(ctx, agent)
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  ctx.sessionQuery.readSession = async id => {
+    const log = await read(id)
+    return id === agent.id ? { ...log, events: log.events.filter(event => event.type !== contextSnapshotType) } : log
+  }
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /evidence/u)
+  ctx.sessionQuery.readSession = read
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+})
+
+test('interrupted native turn recovery publishes its original checkpoint once without running another model', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, journal, requests } = await failedRuntime(t)
+  const before = requests.length
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  const checkpoint = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(checkpoint.snapshot.runId, journal.runId)
+  assert.equal(checkpoint.snapshot.memoryCommit, journal.baseHead)
+  assert.equal(checkpoint.commit, recovered.head)
+  assert.equal(checkpoint.snapshot.contextEpoch, 1)
+  assert.equal(requests.length, before)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
+  assert.equal(git(ws, 'rev-list', '--count', `${journal.baseHead}..HEAD`), '1')
+})
+
+test('a checkpoint stays withheld after Git committed until the abandoned journal is settled', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, journal, owner } = await failedRuntime(t, { crash: 'commit' })
+  const committed = git(ws, 'rev-parse', 'HEAD')
+  assert.notEqual(committed, journal.baseHead)
+  await owner.dispose()
+  await ctx.plugin(runtime)
+  assert.equal(ctx.mbotRuntime.states.get(agent).checkpoint, null)
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.alreadyCommitted, true)
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).commit, committed)
+  assert.equal(git(ws, 'rev-list', '--count', `${journal.baseHead}..HEAD`), '1')
+})
+
+test('checkpoint capture failure after lease acquisition closes the native blocked audit and parks unexecuted input', { timeout: 30000 }, async t => {
+  const { ctx, ws, agent, requests } = await app(t, () => response('must not dispatch'), { main: true })
+  const read = ctx.sessionQuery.readSurface.bind(ctx.sessionQuery)
+  ctx.sessionQuery.readSurface = async () => { throw new Error('injected context capture failure') }
+  agent.followup(message('park this input if context cannot be captured'))
+  await agent.whenIdle()
+  await ctx.mbotRuntime.settled(agent)
+  ctx.sessionQuery.readSurface = read
+  assert.equal(requests.length, 0)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  const state = ctx.mbotRuntime.states.get(agent)
+  assert.equal(state.current.lease.transportEnded, true)
+  await assert.rejects(readFile(join(ws, '.mbot/runs/active-turn.json')), { code: 'ENOENT' })
+  assert.equal(state.current.result.outcome, 'failed')
+})
+
+test('a checkpoint query overlapping a new commit returns its observation without regressing Runtime context', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, () => response('overlapping checkpoint observation'), { main: true })
+  agent.followup(message('first published context'))
+  await settle(ctx, agent)
+  const first = await ctx.mbotRuntime.checkpoint(agent)
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let hold = true
+  ctx.sessions.flush = async session => {
+    if (hold) { hold = false; entered.resolve(); await release.promise }
+    return flush(session)
+  }
+  const observing = ctx.mbotRuntime.checkpoint(agent)
+  await entered.promise
+  agent.followup(message('newer context commits while the earlier query waits'))
+  await settle(ctx, agent)
+  const second = ctx.mbotRuntime.states.get(agent).checkpoint
+  assert.ok(second.turn > first.turn)
+  release.resolve()
+  assert.equal((await observing).commit, first.commit)
+  assert.equal(ctx.mbotRuntime.states.get(agent).checkpoint.commit, second.commit)
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).commit, second.commit)
+  ctx.sessions.flush = flush
+})
+
+test('Runtime handoff drains an in-flight checkpoint observation and its native flush', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner } = await app(t, () => response('checkpoint reader lifetime'), { main: true })
+  agent.followup(message('publish context before handoff'))
+  await settle(ctx, agent)
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { entered.resolve(); await release.promise; return flush(session) }
+  const observing = ctx.mbotRuntime.checkpoint(agent)
+  const rejected = assert.rejects(observing, /unavailable/u)
+  await entered.promise
+  const old = ctx.mbotRuntime, closing = owner.dispose()
+  let closed = false
+  const drained = closing.then(() => { closed = true })
+  await delay(30)
+  assert.equal(closed, false)
+  assert.equal(old.states.has(agent), true)
+  release.resolve()
+  await rejected
+  await drained
+  assert.equal(old.states.size, 0)
+  ctx.sessions.flush = flush
+})
+
+test('Bot retirement drains an accepted checkpoint query before dropping its Runtime owner', { timeout: 30000 }, async t => {
+  const { ctx, bot, agent } = await app(t, () => response('checkpoint retirement lifetime'), { main: true })
+  await removalController(ctx, agent)
+  agent.followup(message('publish context before retirement'))
+  await settle(ctx, agent)
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let hold = true
+  ctx.sessions.flush = async session => {
+    if (hold) { hold = false; entered.resolve(); await release.promise }
+    return flush(session)
+  }
+  const observing = ctx.mbotRuntime.checkpoint(agent)
+  const rejected = assert.rejects(observing, /unavailable/u)
+  await entered.promise
+  let retired = false
+  const retiring = ctx.mbot.removeBot(bot.botId).then(value => { retired = true; return value })
+  const state = ctx.mbotRuntime.states.get(agent), deadline = Date.now() + 5000
+  while (!state.closing && Date.now() < deadline) await delay(10)
+  assert.equal(state.closing, true, 'Retirement must reach its reader-drain boundary')
+  assert.equal(retired, false)
+  assert.equal(ctx.mbotRuntime.states.has(agent), true)
+  release.resolve()
+  await rejected
+  await retiring
+  assert.equal(ctx.mbotRuntime.states.has(agent), false)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
+  ctx.sessions.flush = flush
+})
+
+test('a native/Git checkpoint observation crossing a newer commit retries without failing the Bot', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, () => response('checkpoint observation retry'), { main: true })
+  agent.followup(message('first checkpoint observation'))
+  await settle(ctx, agent)
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  let hold = true, reads = 0
+  ctx.sessionQuery.readSession = async id => {
+    const log = await read(id)
+    if (id === agent.id) {
+      reads++
+      if (hold) { hold = false; entered.resolve(); await release.promise }
+    }
+    return log
+  }
+  const observing = ctx.mbotRuntime.checkpoint(agent)
+  await entered.promise
+  agent.followup(message('commit while the old native log observation is held'))
+  await settle(ctx, agent)
+  const latest = ctx.mbotRuntime.states.get(agent).checkpoint
+  release.resolve()
+  assert.equal((await observing).commit, latest.commit)
+  assert.equal(reads, 2)
+  assert.equal(ctx.mbotRuntime.states.get(agent).error, undefined)
+  ctx.sessionQuery.readSession = read
+})
+
+test('continuous newer commits bound checkpoint observation retries without pausing normal conversation', { timeout: 30000 }, async t => {
+  const { ctx, agent } = await app(t, () => response('bounded checkpoint observation'), { main: true })
+  agent.followup(message('initial context before overlapping observations'))
+  await settle(ctx, agent)
+  const read = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  let commits = 0
+  ctx.sessionQuery.readSession = async id => {
+    const log = await read(id)
+    if (id === agent.id && commits < 3) {
+      agent.followup(message(`new turn crossing observation ${++commits}`))
+      await settle(ctx, agent)
+    }
+    return log
+  }
+  await assert.rejects(ctx.mbotRuntime.checkpoint(agent), /observations crossed/u)
+  assert.equal(commits, 3)
+  assert.equal(ctx.mbotRuntime.states.get(agent).error, undefined)
+  ctx.sessionQuery.readSession = read
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).commit, ctx.mbotRuntime.states.get(agent).checkpoint.commit)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
+})
 
 async function removalController(ctx, agent, resolve = async () => ({ agent })) {
   class Controller extends Service {
@@ -717,7 +1085,7 @@ test('Worker recovery verifies native child history and settles a failed parent 
     script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
   const count = requests.length, base = git(ws, 'rev-parse', 'HEAD')
   assert.equal(journal.schemaVersion, 3)
-  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(recovered.success, true)
   assert.equal(recovered.outcome, 'completed')
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
@@ -726,7 +1094,7 @@ test('Worker recovery verifies native child history and settles a failed parent 
   const receipt = await mailbox.receipt('runtime-recover-request')
   assert.equal(receipt.result.final, true)
   assert.equal(receipt.result.reply.text, 'parent Worker audit answer')
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
   assert.equal(await accessPaused(ws), true)
 })
 
@@ -738,11 +1106,11 @@ test('Worker recovery refuses a competing native child writer and preserves its 
   const before = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
   const writer = await ctx.sessionPersistence.open(journal.actors[0].sessionId, 'write')
   try {
-    await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /writer|owned|claim|locked/iu)
+    await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /writer|owned|claim|locked/iu)
     assert.equal(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'), before)
     assert.equal(ctx.mbotRuntime.recoveries.size, 0)
   } finally { await writer.close() }
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
 })
 
 for (const crash of ['commit', 'settlement']) {
@@ -751,12 +1119,12 @@ for (const crash of ['commit', 'settlement']) {
       script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
     const committed = git(ws, 'rev-parse', 'HEAD'), count = requests.length
     assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, false)
-    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
     assert.equal(recovered.alreadyCommitted, true)
     assert.equal(recovered.runId, journal.runId)
     assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
     assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, true)
-    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+    assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
     assert.equal(requests.length, count)
   })
 }
@@ -769,11 +1137,11 @@ test('Worker recovery rejects changed private child events before restoring Git 
   const rows = original.trim().split('\n').map(line => JSON.parse(line))
   rows[0].type = 'plugin:tampered-worker'
   await writeFile(file, rows.map(row => JSON.stringify(row)+'\n').join(''))
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /Private Worker events contradict/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /Private Worker events contradict/u)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
   assert.equal(ctx.mbotRuntime.recoveries.size, 0)
   await writeFile(file, original)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
 })
 
 test('Worker recovery refuses a live process holding a derived Actor token', { timeout: 30000 }, async t => {
@@ -783,11 +1151,11 @@ test('Worker recovery refuses a live process holding a derived Actor token', { t
   const exit = new Promise(resolve => child.once('exit', resolve))
   t.after(() => child.kill('SIGKILL'))
   const base = git(ws, 'rev-parse', 'HEAD')
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /permit-bearing process/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /permit-bearing process/u)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
   child.kill('SIGKILL')
   await exit
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
 })
 
 test('Worker v3 receipt repair confirms child failure without repeating the committed audit', { timeout: 30000 }, async t => {
@@ -808,7 +1176,7 @@ test('Worker v3 receipt repair confirms child failure without repeating the comm
   await assert.rejects(ctx.mbotRuntime.settled(agent), /receipt flush failed/u)
   const committed = git(ws, 'rev-parse', 'HEAD')
   ctx.sessions.flush = flush
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).receiptRepaired, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).receiptRepaired, true)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
   const receipt = await mailbox.receipt('worker-flush')
   assert.equal(receipt.result.final, true)
@@ -822,7 +1190,7 @@ test('a different Runtime module recovers the original Worker audit and preserve
   await owner.dispose()
   await ctx.plugin(await replacementRuntime(), { workers: true })
   assert.equal(ctx.agents.get(original), agent)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
   assert.equal(requests.length, count)
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
@@ -946,17 +1314,17 @@ test('failed Worker recovery retries derived inputs and rejects edits to its rec
   const spawn = ctx.subprocess.spawn.bind(ctx.subprocess), base = git(ws, 'rev-parse', 'HEAD')
   ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot') && spec.argv.at(-1) === 'recover'
     ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /commit failed/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /commit failed/u)
   ctx.subprocess.spawn = spawn
   assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
   const file = join(journal.scratch, 'runtime-recovery.ledger.json'), original = await readFile(file, 'utf8')
   const changed = JSON.parse(original)
   changed.actors[0].native.usage.total_tokens++
   await writeFile(file, JSON.stringify(changed))
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /Derived Worker recovery ledger changed/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /Derived Worker recovery ledger changed/u)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
   await writeFile(file, original)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
 })
 
@@ -970,7 +1338,7 @@ test('Worker audit helpers preserve UTF-8 when stdin splits inside a Chinese con
   for (const event of log.events) index.apply(event, log.inheritedEventCount)
   const record = [...index.requests.values()].find(item => item.message.source.mbot?.requestId === 'worker-utf8')
   const turn = index.turns.get(record.turn)
-  const events = log.events.filter(event => event.seq >= turn.startSeq && event.seq <= turn.endSeq && !event.ignorable)
+  const events = log.events.filter(event => event.seq >= turn.startSeq && event.seq <= turn.endSeq && contextAuditEvent(event))
   const workers = await ctx.mbotRuntime.workerLogs(events), current = ctx.mbotRuntime.states.get(agent).current
   const payload = Buffer.from(JSON.stringify({ workspace: ws, botId: bot.botId, sessionId: agent.id, record, turn, events, workers,
     confirmation: 'confirmed', result: current.result, header: { botId: bot.botId, sessionId: agent.id, turn: current.turn,
@@ -1029,7 +1397,7 @@ test('Runtime recovery joins the native owner, commits the saved answer once and
   const base = git(ws, 'rev-parse', 'HEAD')
   const input = message('pending work must not execute during recovery')
   agent.inbox.splice('next-turn', 0, 0, [input])
-  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(recovered.needed, true)
   assert.equal(recovered.alreadyCommitted, false)
   assert.equal(recovered.success, true)
@@ -1043,7 +1411,7 @@ test('Runtime recovery joins the native owner, commits the saved answer once and
   assert.equal(receipt.result.final, true)
   assert.equal(receipt.result.reply.text, 'recover this native answer')
   assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.head, recovered.head)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
   assert.equal((await ctx.mbot.execute('mbot', ['resume'], { botId: bot.botId })).exitCode, 0)
   agent.followup(message('resume after review'))
@@ -1058,12 +1426,12 @@ test('Runtime recovery rejects altered native completion and releases the gate w
   const finish = JSON.parse(original)
   await writeFile(finishFile, JSON.stringify({ ...finish, text: 'forged native answer' }))
   const before = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /completion contradicts/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /completion contradicts/u)
   assert.equal(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'), before)
   assert.equal(ctx.mbotRuntime.recoveries.size, 0)
   assert.equal(requests.length, 1)
   await writeFile(finishFile, original)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
 })
 
 test('Runtime recovery after reload uses the persisted foreground contract and holds native input before its proof flush', { timeout: 30000 }, async t => {
@@ -1083,7 +1451,7 @@ test('Runtime recovery after reload uses the persisted foreground contract and h
     }
     return flush(session)
   }
-  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   ctx.sessions.flush = flush
   assert.equal(recovered.success, true)
   assert.equal(agent.inbox.nextTurn.length, 1)
@@ -1095,7 +1463,7 @@ test('Runtime recovery after reload uses the persisted foreground contract and h
 test('Runtime recovery of a retired Bot preserves its old gate and allows later data import', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent, journal, requests } = await failedRuntime(t)
   await ctx.mbot.removeBot(bot.botId)
-  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(recovered.runId, journal.runId)
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'retired')
   assert.equal(requests.length, 1)
@@ -1124,13 +1492,13 @@ test('Runtime recovery repairs a failed native receipt without repeating its Git
   await agent.whenIdle()
   assert.equal(requests.length, 1)
   ctx.sessions.flush = flush
-  const repaired = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const repaired = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(repaired.receiptRepaired, true)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
   assert.equal(agent.inbox.nextTurn[0].id, queued.id)
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
   assert.equal((await mailbox.receipt('repair-native-receipt')).result.final, true)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
 })
 
 test('Runtime recovery can retry a flush failure after its own successful Git settlement', { timeout: 30000 }, async t => {
@@ -1145,11 +1513,11 @@ test('Runtime recovery can retry a flush failure after its own successful Git se
     }
     return flush(session)
   }
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /awaits native receipt/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /awaits native receipt/u)
   ctx.sessions.flush = flush
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).receiptRepaired, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).receiptRepaired, true)
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
   assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, true)
 })
@@ -1159,13 +1527,13 @@ for (const crash of ['commit', 'settlement']) {
     const { ctx, ws, bot, journal, mailbox, requests } = await failedRuntime(t, { crash })
     const committed = git(ws, 'rev-parse', 'HEAD')
     assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, false)
-    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
     assert.equal(recovered.alreadyCommitted, true)
     assert.equal(recovered.runId, journal.runId)
     assert.equal(recovered.success, true)
     assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
     assert.equal((await mailbox.receipt('runtime-recover-request')).result.final, true)
-    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+    assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
     assert.equal(git(ws, 'rev-parse', 'HEAD'), committed)
     assert.equal(requests.length, 1)
   })
@@ -1181,7 +1549,7 @@ test('Runtime recovery supports a legacy header only with its captured live owne
   await writeFile(headerFile, JSON.stringify(header))
   await writeFile(join(journal.scratch, 'ledger.json'), JSON.stringify(journal))
   await writeFile(join(ws, '.mbot/runs/active-turn.json'), JSON.stringify(journal))
-  const result = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const result = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(result.success, true)
   const meta = JSON.parse(await readFile(join(ws, result.meta), 'utf8'))
   assert.equal(meta.runtime.recovered, true)
@@ -1196,7 +1564,7 @@ test('Runtime recovery rejects unsupported cold ownership contracts and native w
   const resolve = ctx.sessionController.resolveAgent.bind(ctx.sessionController)
   ctx.sessionController.resolveAgent = async () => ({ error: Object.assign(new Error('other Host owns the native writer'), { code: 'session/writer-held' }) })
   const before = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /other Host/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /other Host/u)
   assert.equal(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'), before)
   assert.equal(ctx.mbotRuntime.recoveries.size, 0)
   ctx.sessionController.resolveAgent = resolve
@@ -1212,7 +1580,7 @@ test('Runtime recovery rejects unsupported cold ownership contracts and native w
   await writeFile(join(journal.scratch, 'ledger.json'), JSON.stringify(bad))
   await writeFile(join(ws, '.mbot/runs/active-turn.json'), JSON.stringify(bad))
   const changed = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /Unsupported Runtime writer ownership/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /Unsupported Runtime writer ownership/u)
   assert.equal(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'), changed)
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')
 })
@@ -1226,12 +1594,12 @@ test('Runtime recovery refuses a still live permit-bearing subprocess', { timeou
   t.after(async () => { child.kill(); await ended })
   await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject) })
   const before = git(ws, 'rev-parse', 'HEAD')
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /permit-bearing process/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /permit-bearing process/u)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), before)
   assert.ok(await lstat(join(ws, '.mbot/runs/active-turn.json')))
   child.kill()
   await ended
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).success, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).success, true)
 })
 
 test('Runtime recovery refuses an executing Agent without cancelling it', { timeout: 30000 }, async t => {
@@ -1241,7 +1609,7 @@ test('Runtime recovery refuses an executing Agent without cancelling it', { time
   await removalController(ctx, agent)
   agent.followup(message('do not interrupt this active turn'))
   await entered.promise
-  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /still executing/u)
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /still executing/u)
   assert.equal(ctx.mbotRuntime.states.get(agent).current.signal.aborted, false)
   release.resolve()
   await settle(ctx, agent)
@@ -1275,7 +1643,7 @@ test('cold legacy readonly recovery proves the native tool contract and refuses 
   await owner.dispose()
   runtimeCells.get(agent).handoff = undefined // emulate cold process loss, not a warm reload
   await ctx.plugin(runtime)
-  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(recovered.success, true)
   const meta = JSON.parse(await readFile(join(ws, recovered.meta), 'utf8'))
   assert.equal(meta.runtime.recovery_proof.mode, 'legacy-readonly')
@@ -2407,7 +2775,7 @@ test('different Runtime module retains failed audit proof and repairs the origin
   agent.followup(message('must remain parked before repair'))
   await agent.whenIdle()
   assert.equal(requests.length, 1)
-  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).receiptRepaired, true)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).receiptRepaired, true)
   assert.equal((await mainMailbox(ctx, agent).receipt('replacement-repair')).result.final, true)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'idle')

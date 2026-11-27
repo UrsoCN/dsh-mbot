@@ -35,6 +35,8 @@ ctx.plugin(runtime, { workers: true })
 declare const managedAgent: import('@deepseek-ai/dsh-agent').Agent
 ctx.mbotRuntime.attach(managedAgent, { botId: 'example' })
 ctx.mbotRuntime.settled(managedAgent)
+const contextCheckpoint: Promise<runtime.ContextCheckpoint | null> = ctx.mbotRuntime.checkpoint(managedAgent)
+void contextCheckpoint
 const workerResult: Promise<runtime.WorkerReceipt | string> = ctx.mbotRuntime.workerAction(managedAgent, 'worker_spawn', { bot: 'coder', task_id: '001' }, new AbortController().signal)
 void workerResult
 const runtimeStatus: Promise<runtime.RuntimeStatus> = ctx.mbotRuntime.status(managedAgent)

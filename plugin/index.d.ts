@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
 import type { TurnLease, BeginTurnOptions } from './turn.js'
 export type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
-export type { TurnLease, BeginTurnOptions, ContextSnapshot, TurnResult, ManagedOutcome, FailureCountEffect } from './turn.js'
+export type { TurnLease, BeginTurnOptions, ContextSnapshot, ContextKnowledge, TurnResult, ManagedOutcome, FailureCountEffect } from './turn.js'
 
 export declare const name: 'mbot'
 export declare const inject: string[]

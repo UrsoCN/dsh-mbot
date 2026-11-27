@@ -112,6 +112,10 @@ async function probe(ctx) {
     if (runtimeCalls !== 2) throw new Error(`installed Runtime made ${runtimeCalls} calls; expected tool and final response`)
     const runtimeStatus = await ctx.mbotRuntime.status(managed.agent)
     if (runtimeStatus.state !== 'idle' || runtimeStatus.lastReceipt?.phase !== 'committed' || !runtimeStatus.lastReceipt.head) throw new Error('installed Runtime audit receipt missing')
+    const checkpoint = await ctx.mbotRuntime.checkpoint(managed.agent)
+    if (!checkpoint || checkpoint.commit !== runtimeStatus.lastReceipt.head || checkpoint.snapshot.contextEpoch !== 1
+      || checkpoint.snapshot.sessionId !== managed.agent.id || checkpoint.snapshot.memoryCommit !== runtimeStatus.lastReceipt.memoryCommit
+      || checkpoint.snapshot.knowledge.documents.length !== 4) throw new Error('installed native/Git context checkpoint missing')
     if (mailbox) {
       const retried = await mailbox.send({ requestId: 'installed-event-1', text: 'installed managed Runtime' })
       const receipt = await mailbox.receipt('installed-event-1')

@@ -1,4 +1,5 @@
 /** A role/task-scoped data capability sharing one Host-owned transaction. */
+import { freezeContext } from './context-state.js'
 export class ActorLease {
   #execute
   #environment
@@ -11,7 +12,7 @@ export class ActorLease {
   #closing
   constructor(identity, snapshot, capability) {
     Object.defineProperty(this, 'identity', { value: Object.freeze(identity) })
-    Object.defineProperty(this, 'snapshot', { value: Object.freeze(snapshot) })
+    Object.defineProperty(this, 'snapshot', { value: freezeContext(snapshot) })
     this.#execute = capability.execute
     this.#environment = capability.environment
     this.#redact = capability.redact

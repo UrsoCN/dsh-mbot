@@ -17,6 +17,10 @@ async function setup(ctx) {
   const { LlmAdapter } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
   const { defineTool } = await import(fromPackage.resolve('@deepseek-ai/dsh-tools'))
   const marker = name => join(root, name)
+  ctx.commands.register({ name: 'mbot_fixture_checkpoint', description: 'Inspect the installed Runtime checkpoint inside this disposable fixture.', recordInput: false,
+    async handler(invocation) {
+      return { kind: 'success', text: JSON.stringify(await ctx.mbotRuntime.checkpoint(invocation.agent)) }
+    } })
   ctx.commands.register({ name: 'mbot_fixture_delete', description: 'Delete a native workspace inside the disposable GUI fixture.', recordInput: false,
     async handler(invocation) {
       const bot = ctx.mbot.bot({ sessionId: invocation.agent.id })

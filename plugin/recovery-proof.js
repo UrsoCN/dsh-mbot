@@ -58,7 +58,7 @@ export async function recoveryInput(journal, log) {
   const ends = log.events.filter(event => event.type === 'turn/end' && event.data.turn === journal.turn && event.seq > start)
   if (ends.length !== 1) throw new Error('Native recovery turn has not ended; resolve and settle its original Agent first')
   const end = ends[0]
-  const events = log.events.filter(event => event.seq >= start && event.seq <= end.seq && !event.ignorable)
+  const events = log.events.filter(event => event.seq >= start && event.seq <= end.seq && (!event.ignorable || event.type === 'plugin:mbot/context-snapshot'))
   const native = new Map(log.events.map(event => [event.seq, event]))
   const captured = (await privateFile(join(journal.scratch, 'session-events.jsonl'))).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
   let previous = start - 1

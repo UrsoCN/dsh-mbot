@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { redact, redactValue } from './redact.js'
 import { processStart } from './recovery.js'
 import { validateOwnership } from './recovery-proof.js'
+import { freezeContext } from './context-state.js'
 
 function write(stream, value) {
   return new Promise((resolve, reject) => stream.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()))
@@ -44,7 +45,7 @@ export class TurnLease {
     void child.done.then(() => { this.#transportEnded = true }, () => { this.#transportEnded = true })
     this.#finalizationTimeoutMs = finalizationTimeoutMs
     Object.defineProperty(this, 'identity', { value: Object.freeze({ ...identity, runId: ready.runId }) })
-    Object.defineProperty(this, 'snapshot', { value: Object.freeze(ready.snapshot) })
+    Object.defineProperty(this, 'snapshot', { value: freezeContext(ready.snapshot) })
     Object.defineProperty(this, 'runtimeOwnership', { value: runtimeOwnership && Object.freeze({ ...runtimeOwnership, tools: Object.freeze([...runtimeOwnership.tools]),
       ...(runtimeOwnership.workerTools ? { workerTools: Object.freeze([...runtimeOwnership.workerTools]) } : {}) }) })
     const scheduleExpiry = () => {

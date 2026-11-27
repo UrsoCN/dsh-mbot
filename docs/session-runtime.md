@@ -4,6 +4,8 @@
 
 本轮决策：一个 Bot 默认有一个私人主 Session，多窗口是它的客户端；不同可见域使用独立 conversation。MBot Runtime 统一管理业务上下文和生命周期，botctl 是它的工具/CLI 门面。独立 Bot 通过异步信封交流，树内 send_message 只用于本轮 Worker。下一阶段优先补主 Session 的 checkpoint、compact 和 sleep/wake，再扩展对话域、IM/peer 与 Worker 写工具；以下新增协议仍属设计。
 
+dev 已交付 [turn 上下文 checkpoint 基础](context-checkpoints.md)：知识版本/epoch、原生历史及输入来源、Git 封存和 flush/恢复已接入。近期摘要、原生 compaction 证明与 compact/sleep/wake 尚未交付，以下对应部分仍是目标设计。
+
 ## 1. 所有入口共用 Runtime，botctl 是门面
 
 botctl 可以成为统一的命令/API 名称，核心状态机放在 Cordis MBot Runtime 中；GUI、IM、其他 Bot 与 CLI 不各自管理上下文。Native tool 与 Bash CLI 是适配器，不要求它们都启动模型或直接改 Session log。

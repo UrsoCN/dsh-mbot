@@ -362,9 +362,14 @@ try {
   await page.goto(`${server.url}#mbot-session=${workerCrashBot.mainSessionId}`)
   await audit(1).waitFor()
   assert.equal(await audit(1).getAttribute('data-phase'), 'rejected')
+  const recoveredCheckpoint = JSON.parse(await command('/mbot_fixture_checkpoint'))
+  assert.equal(recoveredCheckpoint.commit, workerRecovered.value.head)
+  assert.equal(recoveredCheckpoint.snapshot.sessionId, workerCrashBot.mainSessionId)
+  assert.equal(recoveredCheckpoint.snapshot.contextEpoch, 1)
+  assert.equal(recoveredCheckpoint.snapshot.knowledge.documents.length, 4)
   await page.screenshot({ path: join(root, 'native-worker-crash-recovered.png'), fullPage: true })
   assert.deepEqual(errors, [])
-  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/recovery/shared-replay/external-cli/cli-stop/crash-restart-dedup/native-workspace-delete/removal/restart-retirement/reimport-new-main/active-crash/native-closers/runtime-recovery/verified-interrupted-reply/resume/native-worker/worker-context-isolation/worker-single-audit/multi-window/worker-crash/native-worker-closers/worker-recovered-once/worker-reply/no-external-model')
+  console.log('GUI Runtime PASS: installed/local-adapter/pending-audit/native-stop/late-writer/queue-retained/commit-failure/recovery/shared-replay/external-cli/cli-stop/crash-restart-dedup/native-workspace-delete/removal/restart-retirement/reimport-new-main/active-crash/native-closers/runtime-recovery/verified-interrupted-reply/resume/native-worker/worker-context-isolation/worker-single-audit/multi-window/worker-crash/native-worker-closers/worker-recovered-once/worker-reply/context-checkpoint-recovery/no-external-model')
 } catch (error) {
   if (page) { await page.screenshot({ path: join(root, 'failure.png'), fullPage: true }).catch(() => {}); await writeFile(join(root, 'failure.txt'), await page.locator('body').innerText()).catch(() => {}) }
   throw error

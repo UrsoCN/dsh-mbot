@@ -11,9 +11,10 @@ import { MessageIndex, ownerBinding, ownerMessage, requestIdentity, validateSour
 import { messageReceipt } from './receipts.js'
 import { recoverRuntime, repairNativeReceipt } from './runtime-recovery.js'
 import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
+import { captureContext, restoreContext } from './context-checkpoint.js'
 
 export const name = 'mbot-runtime'
-export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt']
+export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess']
 export const Config = z.object({ workers: z.boolean().default(true).description('Allow Chief Sessions to delegate task data operations to fresh Workers.') })
 export const runtimeRecordType = 'plugin:mbot/runtime-turn'
 const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
@@ -188,6 +189,7 @@ class ManagedSession {
     this.error = undefined
     this.messageIndex = new MessageIndex()
     this.messageOperations = Promise.resolve()
+    this.contextOperations = Promise.resolve()
     this.earlyEvents = []
   }
 
@@ -196,6 +198,7 @@ class ManagedSession {
     this.inheritedEventCount = log.inheritedEventCount
     for (const event of [...log.events, ...this.earlyEvents]) this.messageIndex.apply(event, this.inheritedEventCount)
     this.earlyEvents = undefined
+    await restoreContext(this)
   }
 
   observe(event) {
@@ -253,9 +256,10 @@ class ManagedSession {
           signal, writerScope: 'agent-runtime', runtimeOwnership: this.runtime.workersEnabled && this.runtime.workerManager && bot.defaultRole === 'chief' ? { schemaVersion: 2, mode: 'foreground-workers', workerDepth: 1, maxWorkers: 2, tools: [...this.runtime.foreground].sort(), workerTools }
             : { schemaVersion: 1, mode: 'foreground-only', workerDepth: 0, tools: [...this.runtime.foreground].sort() },
           onExpiry: () => this.expire(record), onCancel: message => this.stop(record, message) })
-        await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         for (const event of record.events) this.record(record, event)
         record.events = []
+        await captureContext(this, record)
+        await this.publish(record, 'active').catch(error => { record.feedbackError = error })
         return record
       })()
       void record.admission.catch(() => {
@@ -318,9 +322,13 @@ class ManagedSession {
     try {
       try { await record.admission }
       catch (error) {
-        await this.publish(record, record.signal?.aborted ? 'cancelled' : 'failed', { error: error.message ?? String(error) })
-        await this.runtime.ctx.sessions.flush(this.agent.session)
-        return
+        if (!record.lease) {
+          await this.publish(record, record.signal?.aborted ? 'cancelled' : 'failed', { error: error.message ?? String(error) })
+          await this.runtime.ctx.sessions.flush(this.agent.session)
+          return
+        }
+        // Capture can fail after the data lease was acquired. Close that lease
+        // using the real blocked/cancelled native outcome, retaining its audit.
       }
       if (!record.lease) return
       await Promise.allSettled([...record.calls])
@@ -331,6 +339,7 @@ class ManagedSession {
       record.result = await record.lease.finish({ reason: record.reason, text: record.text ?? '' })
       await this.publish(record, record.result.success ? 'committed' : 'rejected')
       await this.runtime.ctx.sessions.flush(this.agent.session)
+      if (record.context) this.checkpoint = { ...record.context, commit: record.result.head, meta: record.result.meta, turn: record.turn }
       return record.result
     } catch (error) {
       const message = record.lease ? await record.lease.redactResult(error.message ?? String(error))
@@ -364,6 +373,7 @@ class ManagedSession {
     await this.agent.whenIdle()
     await this.pending.catch(() => {})
     await this.messageOperations.catch(() => {})
+    await this.contextOperations.catch(() => {})
     if (this.agent.status !== 'idle' || this.current?.calls.size || this.current?.lease && !this.current.lease.transportEnded) throw new Error('Managed Session writers have not drained for Runtime handoff')
   }
 }
@@ -629,7 +639,10 @@ export class MBotRuntime extends Service {
       const messages = state.current?.messages.filter(message => !pending.has(message.id)) ?? []
       if (messages.length) agent.inbox.splice('next-turn', 0, 0, messages)
     }
-    if (state) state.closing = true
+    if (state) {
+      state.closing = true
+      await state.contextOperations?.catch(() => {})
+    }
     cell.state = undefined
     cell.retired = structuredClone(retired)
     cell.driver = driver
@@ -744,6 +757,18 @@ export class MBotRuntime extends Service {
   }
 
   async settled(agent) { await this.states.get(agent)?.pending }
+
+  /** Only the flushed native snapshot sealed by a reachable Git audit is returned. */
+  async checkpoint(agent) {
+    const state = this.states.get(agent)
+    if (!state || state.initializing || state.closing || this.closed || !this.ready) throw new Error('Session is not managed by the active MBot Runtime')
+    if (state.worker) throw new Error('Context checkpoints require a managed main Session')
+    if (state.retiring || this.recoveries.has(state.botId)) throw new Error('Context checkpoint query is unavailable during Bot management')
+    await state.pending
+    if (state.error) throw state.error
+    const checkpoint = await restoreContext(state, { update: false })
+    return checkpoint ? structuredClone(checkpoint) : null
+  }
 
   async status(agent) {
     const state = this.states.get(agent)

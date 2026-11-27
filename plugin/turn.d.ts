@@ -1,5 +1,9 @@
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { MBotService, ExecuteResult } from './index.js'
+export interface ContextKnowledge {
+  readonly schemaVersion: 1; readonly role: string; readonly version: string
+  readonly documents: readonly { readonly path: string; readonly blob: string; readonly contentHash: string }[]
+}
 export interface ContextSnapshot {
   readonly head: string
   readonly role: string
@@ -9,6 +13,8 @@ export interface ContextSnapshot {
   readonly memory: string
   readonly roleMemory: string
   readonly board: string
+  /** Version of Git persona/protocol/memory content, independent of task HEAD changes. */
+  readonly knowledge?: ContextKnowledge
 }
 export interface TurnIdentity { readonly botId: string; readonly sessionId: string; readonly turn: number; readonly runId: string }
 export interface TurnOutcome { reason: { kind: string; [key: string]: unknown }; text: string }

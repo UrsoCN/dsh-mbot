@@ -23,6 +23,8 @@ export function turnContext(record) {
   if (!record?.lease) return ''
   return JSON.stringify({ botId: record.lease.identity.botId, sessionId: record.lease.identity.sessionId,
     turn: record.turn, memoryCommit: record.lease.snapshot.head, runId: record.lease.identity.runId,
+    ...(record.context ? { contextEpoch: record.context.snapshot.contextEpoch, knowledgeVersion: record.context.snapshot.knowledge.version,
+      contextSnapshotSeq: record.context.snapshotSeq, sourceCut: record.context.snapshot.sourceCut.throughSeq } : {}),
     requests: record.messages.map(message => ({ messageId: message.id, source: message.source.kind,
       ...(message.source.rpcId ?? message.source.requestId ? { requestId: message.source.rpcId ?? message.source.requestId } : {}),
       ...(message.source.mbot ? { adapterId: message.source.mbot.adapterId, ownerId: message.source.mbot.ownerId,

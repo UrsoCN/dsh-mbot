@@ -131,6 +131,8 @@ botctl 统一的是服务协议；Web 保留原生提交并经过 Runtime 闸门
 
 接下来先交付 checkpoint/compact，再交付睡眠/唤醒，随后扩展对话域与 IM/peer/outbox，最后扩展 Worker Bash/文件/PTC 写工具。知识内容 hash 区分人格/记忆更新与普通任务 Git 提交；每轮 Snapshot 固定，checkpoint epoch 只在成功发布时推进。详细恢复和来源规则见 [Session Runtime](session-runtime.md)。
 
+dev 已接入 [turn 上下文 checkpoint 基础](context-checkpoints.md)：知识 Git blob/hash、epoch、有序原生 surface 来源与 Inbox 输入 hash 在模型执行前捕获，同一次 Git 审计封存，结算/flush 后发布；原生 resume、Runtime 交接与 recover 联合核验。它尚未生成或管理 compaction 摘要，真实 compact 与睡眠继续在阶段 1/2。
+
 dev 已支持 [显式注销与持久 Session 退役](bot-removal.md)：独立 Bot 身份不随原生工作区删除；注销持有数据锁及可回退的准入闸门，ConfigEditor 保存活动登记到不可变 retiredBots 后撤销入口。旧主/预留 Session 在重启时继续受闸门约束，数据、历史、Inbox 与 journal 保留。重新导入创建新身份；未完成的执行/审计先 stop 收尾，注销不等于恢复。登记文档 v2 兼容 v1 读取，禁止配置重置丢弃既有 Session 归属。
 
 当前选择优先服从显式 botId、调用 Session 的已存绑定、profile 的 selectedBotId，再回退旧 workspace；导入不自动切换默认项，init 成功会选择新 Bot。Bash CLI 保留自身目录来源。实际 Session 绑定已接入；对话域、迁移与完整生命周期仍在 P1 完成。全局选择不能重定向已绑定会话；缺失/归档 Session 可见并可修复，wake 走 resolve/resume，不反复 create。重启不销毁数据，clone 可重建 DSH 绑定。
