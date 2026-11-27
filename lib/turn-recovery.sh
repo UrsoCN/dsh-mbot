@@ -73,7 +73,9 @@ mbot_turn_recover() {
   jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2 or (.schemaVersion==3 and .writerScope=="agent-runtime")) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))
-    and (.scratch|type)=="string" and (.scratch|test("^/tmp/mbot-turn\\.[A-Za-z0-9]+$"))
+    and (.scratch|type)=="string" and (.scratch|length)>0 and (.scratch|test("[\u0000\r\n]")|not)
+    and (.scratchFormatVersion==null or .scratchFormatVersion==1)
+    and (.bootId==null or ((.bootId|type)=="string" and (.bootId|test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))))
     and (.pid|type)=="number" and .pid>0 and (.pid|floor)==.pid
     and (.pidStart|type)=="string" and (.pidStart|test("^[0-9]+$"))
     and (.ownerPid|type)=="number" and .ownerPid>=0 and (.ownerPid|floor)==.ownerPid
@@ -84,6 +86,8 @@ mbot_turn_recover() {
     and (.startedMs|type)=="number" and .startedMs>0 and (.baseFailures|type)=="number" and .baseFailures>=0
     and (.phase=="active" or .phase=="abandoned" or .phase=="committing" or .phase=="committed")' "$ledger" >/dev/null 2>&1 \
     || { mbot_error 'invalid or incomplete turn journal; review manually'; return 1; }
+  node "$MBOT_ROOT/bin/turn-state.mjs" --validate "$ledger" >/dev/null \
+    || { mbot_error 'private turn snapshot is missing or unsafe; review manually'; return 1; }
   scratch=$(jq -r .scratch "$ledger")
   [[ -d $scratch && ! -L $scratch && $(stat -c '%u:%a' "$scratch") == "$UID:700" ]] || { mbot_error 'private turn snapshot is missing or unsafe; review manually'; return 1; }
   node "$MBOT_ROOT/bin/turn-snapshot.mjs" "$scratch"

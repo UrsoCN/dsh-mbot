@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { journalDigest, readJournal, recoveryInput, validateOwnership } from './recovery-proof.js'
-import { processStart } from './recovery.js'
+import { processStart, currentBootId } from './recovery.js'
 import { fileURLToPath } from 'node:url'
 import { readonlyLegacy } from './readonly-migration.js'
 import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
@@ -91,7 +91,9 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     if (retired) await awaited(options.signal, runtime.attachRetired(agent, retired))
     else await awaited(options.signal, runtime.attach(agent, { botId: bot.botId }))
     const ownerStart = await processStart()
+    const bootId = await currentBootId()
     const captured = journal.ownerPid === process.pid && journal.ownerStart === ownerStart
+      && (journal.bootId === undefined || journal.bootId === bootId)
       && states.some(state => state.current?.lease?.identity.runId === journal.runId || state.failedAuditRunId === journal.runId)
     if (journal.schemaVersion === 3) workerRecoveryContract(journal)
     if (!captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
@@ -127,7 +129,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     const start = input.events[0].seq, end = input.events.at(-1).seq
     directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
     const proofFile = join(directory, 'proof.json')
-    await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart,
+    await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart, bootId,
       mode: journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
       ...(captured ? { capturedRunId: journal.runId } : {}), ...(legacyEvidence ? { evidence: legacyEvidence } : {}),
       journalHash: journalDigest(journal), ...(journal.schemaVersion === 3 ? { workers } : {}), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,

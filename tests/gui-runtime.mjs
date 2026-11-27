@@ -10,7 +10,7 @@ const repo = fileURLToPath(new URL('../', import.meta.url))
 const root = await mkdtemp('/tmp/mbot-gui-runtime.')
 const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root,
   XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'),
-  XDG_STATE_HOME: join(root, 'state'), COREPACK_HOME: join(root, 'corepack'), DSH_TELEMETRY_MODE: 'DISABLED',
+  XDG_STATE_HOME: join(root, 'state'), COREPACK_HOME: join(root, 'corepack'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0', DSH_TELEMETRY_MODE: 'DISABLED',
   DEEPSEEK_API_KEY: 'mbot-disposable-local-adapter-key', MBOT_GUI_RUNTIME_ROOT: root,
   MBOT_GUI_PACKAGE: join(root, 'dsh/profiles/web/node_modules/dsh-mbot/package.json'),
   GIT_AUTHOR_NAME: 'MBot GUI Runtime', GIT_COMMITTER_NAME: 'MBot GUI Runtime',

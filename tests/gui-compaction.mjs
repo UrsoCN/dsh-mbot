@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 const { chromium } = await import(process.env.MBOT_PLAYWRIGHT_MODULE || 'playwright')
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const root = await mkdtemp('/tmp/mbot-gui-compaction.')
-const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root, COREPACK_HOME: join(root, 'corepack'),
+const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root, COREPACK_HOME: join(root, 'corepack'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
   XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
   DSH_TELEMETRY_MODE: 'DISABLED', DEEPSEEK_API_KEY: 'disposable-local-compaction-fixture-key',
   MBOT_GUI_COMPACTION_ROOT: root, MBOT_GUI_PACKAGE: join(root, 'dsh/profiles/web/node_modules/dsh-mbot/package.json'),

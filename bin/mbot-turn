@@ -30,7 +30,8 @@ MBOT_BASE=$(mbot_git rev-parse HEAD)
 MBOT_BASE_REF=$(mbot_git symbolic-ref -q HEAD || true)
 MBOT_MODE=run
 MBOT_RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-turn-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
-MBOT_SCRATCH=$(mktemp -d /tmp/mbot-turn.XXXXXX)
+MBOT_BOOT_ID=$(node "$MBOT_ROOT/bin/turn-state.mjs" --boot-id)
+MBOT_SCRATCH=$(node "$MBOT_ROOT/bin/turn-state.mjs" --create "$MBOT_WS" "$MBOT_RUN_ID" | jq -er .dir)
 open=0 settled=0
 cleanup() {
   local code=$?
@@ -68,16 +69,14 @@ base_failures=$(mbot_failure_count)
 jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" \
   --arg scratch "$MBOT_SCRATCH" --arg ws "$MBOT_WS" --argjson pid "$$" --argjson expires "$((start+MBOT_TIMEOUT*1000))" --slurpfile token "$MBOT_SCRATCH/token.json" \
   --arg started "$MBOT_STARTED" --argjson startedMs "$start" --argjson baseFailures "$base_failures" --arg ownerStart "${MBOT_OWNER_START:-}" --argjson ownerPid "${MBOT_OWNER_PID:-0}" \
-  --arg pidStart "$(awk '{print $22}' "/proc/$$/stat")" \
+  --arg pidStart "$(awk '{print $22}' "/proc/$$/stat")" --arg bootId "$MBOT_BOOT_ID" \
   --arg gitDir "$MBOT_GIT_DIR" --arg gitInode "$MBOT_GIT_INODE" --arg locks "$(stat -c '%d:%i' "$MBOT_WS/.mbot/lock" "$MBOT_WS/.mbot/botctl.lock")" \
   --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:(if $header[0].runtimeOwnership.schemaVersion==2 then 3 else 2 end),phase:"active",runId:$id,token:$token[0],
     botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:($header[0].writerScope // "data-subprocesses"),
-    baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}
+    baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,scratchFormatVersion:1,bootId:$bootId,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}
       + (if $header[0].runtimeOwnership==null then {} else {runtimeOwnership:$header[0].runtimeOwnership} end)
       + (if $header[0].compactionPolicyVersion==null then {} else {compactionPolicyVersion:$header[0].compactionPolicyVersion} end)
       + (if $header[0].runtimeOwnership.schemaVersion==2 then {actors:[]} else {} end)' > "$MBOT_SCRATCH/ledger.json"
-mbot_turn_write_ledger active
-open=1
 : > "$MBOT_SCRATCH/violations.jsonl"
 : > "$MBOT_SCRATCH/session-events.jsonl"
 : > "$MBOT_SCRATCH/stderr"
@@ -86,6 +85,18 @@ export MBOT_PERMIT_TOKEN
 mbot_capture_secrets
 mbot_guard_snapshot
 mbot_turn_save_settings
+# Sync durable private evidence before publishing active-turn.json so a power
+# loss after journal publication never leaves missing/partial private inputs.
+node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/header.json" "$MBOT_SCRATCH/token.json" "$MBOT_SCRATCH/ledger.json" "$MBOT_SCRATCH/ignored.list" "$MBOT_SCRATCH/settings" "$MBOT_SCRATCH/secrets.json" "$MBOT_SCRATCH/grants.json" "$MBOT_SCRATCH/session-events.jsonl" "$MBOT_SCRATCH/violations.jsonl" "$MBOT_SCRATCH/stderr" "$MBOT_SCRATCH"
+mbot_turn_write_ledger active
+open=1
+# Snapshot the newly published active-turn.json into ignored/ so guard recognizes it.
+mkdir -p -- "$MBOT_SCRATCH/ignored/.mbot/runs"
+cp -a -- "$ledger" "$MBOT_SCRATCH/ignored/.mbot/runs/active-turn.json"
+if ! grep -qzFx '.mbot/runs/active-turn.json' "$MBOT_SCRATCH/ignored.list" 2>/dev/null; then
+  printf '.mbot/runs/active-turn.json\0' >> "$MBOT_SCRATCH/ignored.list"
+fi
+node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/ignored/.mbot/runs/active-turn.json" "$MBOT_SCRATCH/ignored.list" "$MBOT_SCRATCH/ignored/.mbot/runs" "$MBOT_SCRATCH"
 for file in AGENTS.md MEMORY.md BOARD.md "bots/$role/SOUL.md" "bots/$role/MEMORY.md"; do
   mbot_git show "$MBOT_BASE:$file" > "$MBOT_SCRATCH/$(basename "$file").${file//\//_}"
 done
@@ -117,7 +128,7 @@ while IFS= read -r -t "$transport_timeout" frame; do
   fi
   [[ $kind == finish ]] || { mbot_error 'unknown managed turn frame'; exit 1; }
   jq -e --slurpfile token "$MBOT_SCRATCH/token.json" '.token==$token[0] and (.reason.kind|type)=="string" and (.text|type)=="string"' "$MBOT_SCRATCH/frame.json" >/dev/null
-  cp -- "$MBOT_SCRATCH/frame.json" "$MBOT_SCRATCH/finish.json"
+  node "$MBOT_ROOT/bin/turn-state.mjs" --atomic-write "$MBOT_SCRATCH/finish.json" < "$MBOT_SCRATCH/frame.json"
   mbot_turn_finalize
   exit 0
 done

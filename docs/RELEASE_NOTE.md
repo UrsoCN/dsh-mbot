@@ -1,5 +1,12 @@
 # 发布说明
 
+## dev：R1 持久恢复证据与跨重启进程身份（2026-11-28，未发布）
+
+- 将活动回合私有恢复快照迁出易失 `/tmp/mbot-turn.*`，落地到 Bot 数据工作树之外的持久私有状态目录（`MBOT_STATE_DIR` → `XDG_STATE_HOME/mbot` → 隔离 `DSH_HOME/mbot-state` → `~/.local/state/mbot` 下的 `turns/<workspaceHash>/<runId>`），严格校验路径归属、UID、非软链祖先、`0700` 权限与 `scratchFormatVersion: 1`。
+- 补齐创建、私有证据落盘、`active-turn.json` 发布、Worker 委托/事件、`finish.json`、`commit-intent.json` 与结算清理的原子替换和文件/目录 `fsync` 顺序；保留旧 `/tmp/mbot-turn.*` journal reader，不搬迁活跃快照、不补造缺失证明。
+- 将 Linux `/proc/sys/kernel/random/boot_id` 写入回合 journal、Runtime 恢复 proof 与 IPC `owner.json`，`turn-writers.mjs`/`turn-receipt.mjs`/`ipc.js` 结合 `bootId` 判定同次启动进程存活，避免宿主机重启后 PID 与 starttime 节拍复用导致误判，同时继续扫描并拒绝携带原/派生 permit token 的存活进程。
+- 新增数据桥与原生 Worker v3 跨重启恢复、权限/版本篡改拒绝及旧 `/tmp` reader 回归；全量测试（类型、52 项 Host + 142 项 Runtime + 64 组 Bash）及 source/tarball/Git/web-tarball 四类安装验收通过（安装产物 `/tmp/mbot-plugin-install.V2CJeV`）；详见 [持久恢复证据](durable-recovery.md)。包版本保持 0.1.1，未新增发布标签。
+
 ## dev：失效 Bot 注销与 Chief 控制命令显示（2026-11-28，未发布）
 
 - 修复数据目录缺失或 checkpoint 无法恢复时仍无法注销 Bot：保存前持有 Runtime 准入闸门，冷 Session 使用官方 persistence write handle 核验身份与独占归属，持有到保存完成。注销不调用 Agent create/resume、不恢复上下文、不改写 Git/journal/原生历史。

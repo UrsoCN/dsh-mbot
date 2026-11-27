@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { validateRecoveryProof, readJournal, privateFile } from '../plugin/recovery-proof.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
 import { verifyWorkerAudit } from '../plugin/worker-recovery-proof.js'
+import { atomicWriteSync } from '../plugin/turn-state.js'
 import { execFileSync } from 'node:child_process'
+import { lstat } from 'node:fs/promises'
 try {
   const [mode, file, workspace] = process.argv.slice(2)
   if (mode === '--audit-input') {
@@ -22,8 +23,13 @@ try {
   const proof = await validateRecoveryProof(file, journal)
   async function derived(name, value) {
     const target = join(journal.scratch, name)
-    try { await writeFile(target, value, { mode: 0o600, flag: 'wx' }) }
-    catch (error) { if (error.code !== 'EEXIST') throw error; if (await privateFile(target) !== value) throw new Error('Derived recovery inputs changed; preserve evidence and review') }
+    let exists = false
+    try { await lstat(target); exists = true } catch (error) { if (error.code !== 'ENOENT') throw error }
+    if (exists) {
+      if (await privateFile(target) !== value) throw new Error('Derived recovery inputs changed; preserve evidence and review')
+      return
+    }
+    await atomicWriteSync(target, value, 0o600)
   }
   if (mode === '--materialize') {
     await derived('runtime-recovery.events.jsonl', proof.input.events.map(event => JSON.stringify(event)+'\n').join(''))

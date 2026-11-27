@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 
 mbot_turn_write_ledger() {
-  local phase=$1 temp
+  local phase=$1
   mbot_guard_parent .mbot/runs/active-turn.json
   mbot_path .mbot/runs/active-turn.json >/dev/null
   [[ ! -L $ledger && ! -d $ledger ]] || rm -rf -- "$ledger"
-  temp=$(mktemp "$MBOT_WS/.mbot/runs/active-turn.XXXXXX")
-  printf '%s' "$phase" | jq -Rs --slurpfile original "$MBOT_SCRATCH/ledger.json" '. as $phase | $original[0] + {phase:$phase}' > "$temp"
-  mv -- "$temp" "$ledger"
+  printf '%s' "$phase" | jq -Rs --slurpfile original "$MBOT_SCRATCH/ledger.json" '. as $phase | $original[0] + {phase:$phase}' \
+    | node "$MBOT_ROOT/bin/turn-state.mjs" --atomic-write "$ledger"
 }
 mbot_turn_finalize() {
   local events_file=${MBOT_RECOVERY_EVENTS:-$MBOT_SCRATCH/session-events.jsonl} finish_file=${MBOT_RECOVERY_FINISH:-$MBOT_SCRATCH/finish.json}
@@ -81,8 +80,9 @@ mbot_turn_finalize() {
   # completed commit even if the process died before publishing its receipt.
   jq -n --arg tree "$(mbot_git write-tree)" --arg parent "$MBOT_BASE" --arg ref "$MBOT_BASE_REF" \
     --arg message "run($role): $MBOT_RUN_ID $summary" --arg meta "$meta" --arg transcript "$transcript" \
-    '{tree:$tree,parent:$parent,ref:$ref,message:$message,meta:$meta,transcript:$transcript}' > "$MBOT_SCRATCH/commit-intent.tmp"
-  mv -- "$MBOT_SCRATCH/commit-intent.tmp" "$MBOT_SCRATCH/commit-intent.json"
+    '{tree:$tree,parent:$parent,ref:$ref,message:$message,meta:$meta,transcript:$transcript}' \
+    | node "$MBOT_ROOT/bin/turn-state.mjs" --atomic-write "$MBOT_SCRATCH/commit-intent.json"
+  node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/meta.json" "$MBOT_SCRATCH/transcript.md" "$MBOT_SCRATCH/raw.jsonl" "$events_file" "$MBOT_SCRATCH"
   if [[ ${MBOT_RECOVERING:-0} == 1 && -n ${MBOT_RUNTIME_RECOVERY_PROOF:-} ]]; then
     node "$MBOT_ROOT/bin/turn-runtime-recovery.mjs" --validate "$MBOT_RUNTIME_RECOVERY_PROOF" "$MBOT_WS"
   fi
@@ -125,4 +125,5 @@ mbot_turn_settle() {
   printf '%s\n' "$base_failures" > "$(mbot_path .mbot/failures)"
   if ((base_failures>=3)); then mbot_mark_paused 'Automatically paused after three failed managed turns.'; fi
   rm -- "$ledger"
+  node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_WS/.mbot/failures" "$MBOT_WS/.mbot/runs"
 }

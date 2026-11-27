@@ -13,8 +13,8 @@ mbot_check_permit() {
     jq -e --argjson now "$(date +%s%3N)" '.phase=="active" and (.expiresAt|type)=="number" and .expiresAt>$now' "$file" >/dev/null \
       || { mbot_error 'managed turn permit is stale or invalid'; return 1; }
     scratch=$(jq -r .scratch "$file")
-    [[ $scratch =~ ^/tmp/mbot-turn\.[A-Za-z0-9]+$ && -d $scratch && ! -L $scratch
-      && $(stat -c '%u:%a' "$scratch") == "$UID:700" && -f $scratch/ledger.json && ! -L $scratch/ledger.json ]] \
+    node "$MBOT_ROOT/bin/turn-state.mjs" --validate "$file" >/dev/null 2>&1 \
+      && [[ -d $scratch && ! -L $scratch && $(stat -c '%u:%a' "$scratch") == "$UID:700" && -f $scratch/ledger.json && ! -L $scratch/ledger.json ]] \
       || { mbot_error 'unsafe managed permit snapshot'; return 1; }
     jq -e --slurpfile saved "$scratch/ledger.json" '. == $saved[0]' "$file" >/dev/null \
       || { mbot_error 'managed permit identity changed'; return 1; }

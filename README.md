@@ -112,7 +112,7 @@ mbot -C /tmp/mbot-demo resume
 
 0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。dev 已接入各实例的受管理主会话、创建/导入/修复与导航，以及 scoped botctl Worker/恢复；对话域、IM/peer 与手动 compact/睡眠生命周期继续列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
 
-dev 的 managed turn 若中断，journal 和私有快照会保留。用 `/mbot recover`（或 Host 已停止时的 `mbot -C <目录> recover`）核实写者并恢复审计，检查 status 后显式 resume；未确定写者/快照或提交身份时拒绝恢复。Host 命令已覆盖受管理 Agent/前台工具的遗留回合和原生回执；独立 CLI 仍只处理 data-subprocesses。[scoped botctl Worker 恢复与模块交接](docs/worker-recovery.md) 已接入；旧 headless run、Worker 的其他工具、后台/IPC 写者、睡眠 checkpoint 及缺失原生日志的恢复仍待接齐。
+dev 的 managed turn 若中断，journal 和持久私有快照（默认位于工作树外的持久状态目录，见 [持久恢复证据](docs/durable-recovery.md)）会跨重启保留，并结合内核 `boot_id` 核验进程身份。用 `/mbot recover`（或 Host 已停止时的 `mbot -C <目录> recover`）核实写者并恢复审计，检查 status 后显式 resume；未确定写者/快照或提交身份时拒绝恢复。Host 命令已覆盖受管理 Agent/前台工具的遗留回合和原生回执；独立 CLI 仍只处理 data-subprocesses。[scoped botctl Worker 恢复与模块交接](docs/worker-recovery.md) 已接入；旧 headless run、Worker 的其他工具、后台/IPC 写者、睡眠 checkpoint 及缺失原生日志的恢复仍待接齐。
 
 dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，支持直接对话和受控前台工具；聊天区显示 [Host 审计卡片](docs/runtime-feedback.md)，`/mbot runtime` 查执行/验收/队列状态，`/mbot stop` 保留待办并等待本轮收尾；干净的用户停止保留故障计数，越权/已记录故障仍计失败，详见 [停止语义](docs/turn-outcomes.md)。dev 已提供 [所有者消息准入](docs/message-admission.md)：可信 Host 可取得 ownerMailbox，共用原生 Inbox，并按请求 ID 去重/查询持久化收据。[本地 botctl 宿主入口](docs/host-ipc.md) 已接入 talk/receipt/runtime/stop/bots/recover，需明确 --profile 和 Bot 身份；remove/removed 支持注销与查询退役身份；[receipt --wait](docs/request-replies.md) 可按请求查回已审计回答；真实 IM/peer、回复投递、隔离域、手动 compact 与睡眠仍待实现；botctl 的完整门面按阶段接入，DSH 负责日志/执行。设计见 [Session Runtime](docs/session-runtime.md)。基础 headless profile 没有工作区/Session Controller，仍只登记数据身份；CLI init 始终只初始化 Git 数据。
 

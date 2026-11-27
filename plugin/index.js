@@ -220,6 +220,7 @@ export class MBotService extends Service {
     const argv = [join(packageRoot, 'bin', program), ...(workspace ? ['-C', workspace] : []), ...args]
     // The provider scrubs ambient credentials/DSH identity. Forward only facts these scripts need.
     const env = { DSH_HOME: process.env.DSH_HOME, DSH_TELEMETRY_MODE: process.env.DSH_TELEMETRY_MODE,
+      XDG_STATE_HOME: process.env.XDG_STATE_HOME, MBOT_STATE_DIR: process.env.MBOT_STATE_DIR,
       PATH: `${join(packageRoot, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}` }
     if (options.permit) {
       if (!(program === 'botctl' || (program === 'mbot' && args[0] === 'status'))

@@ -3,9 +3,10 @@ import { isDeepStrictEqual } from 'node:util'
 import { readFile, lstat } from 'node:fs/promises'
 import { contextAuditEvent } from './context-state.js'
 import { dirname, join } from 'node:path'
-import { processStart } from './recovery.js'
+import { processStart, validBootId } from './recovery.js'
 import { readonlyLegacy, readonlyDataCut } from './readonly-migration.js'
 import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
+import { validateTurnScratch } from './turn-state.js'
 
 export const journalDigest = journal => {
   const { phase, ...identity } = journal
@@ -39,9 +40,10 @@ export async function readJournal(workspace) {
 /** Compare private bridge evidence to an exclusively owned native Session. */
 export async function recoveryInput(journal, log) {
   if (![1, 2, 3].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
-    || !/^\/tmp\/mbot-turn\.[A-Za-z0-9]+$/u.test(journal.scratch ?? '')
+    || (journal.bootId !== undefined && !validBootId(journal.bootId))
     || !Number.isSafeInteger(journal.turn) || journal.turn < 1 || typeof journal.sessionId !== 'string'
     || log.session.id !== journal.sessionId || log.session.cwd !== journal.workspace || log.session.origin === 'subagent') throw new Error('Runtime recovery identity does not match its native Session')
+  await validateTurnScratch(journal)
   const info = await lstat(journal.scratch)
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o700) throw new Error('Unsafe Runtime recovery snapshot')
   const saved = JSON.parse(await privateFile(join(journal.scratch, 'ledger.json')))
@@ -93,7 +95,9 @@ export async function validateRecoveryProof(path, journal) {
     || !Number.isSafeInteger(proof.ownerPid) || proof.ownerPid <= 0 || !/^\d+$/u.test(proof.ownerStart)
     || ownerState === 'Z' || await processStart(proof.ownerPid) !== proof.ownerStart) throw new Error('Runtime recovery proof is stale or does not match its journal')
   if (proof.mode === 'captured-runtime') {
-    if (journal.ownerPid !== proof.ownerPid || journal.ownerStart !== proof.ownerStart || proof.capturedRunId !== journal.runId) throw new Error('Legacy Runtime recovery needs its original live owner')
+    if (journal.ownerPid !== proof.ownerPid || journal.ownerStart !== proof.ownerStart
+      || (journal.bootId !== undefined && journal.bootId !== proof.bootId)
+      || proof.capturedRunId !== journal.runId) throw new Error('Legacy Runtime recovery needs its original live owner')
   } else if (proof.mode === 'recorded-foreground-v1') validateOwnership(journal.runtimeOwnership)
   else if (proof.mode === 'recorded-workers-v2') { validateOwnership(journal.runtimeOwnership, true); workerRecoveryContract(journal) }
   else if (proof.mode === 'legacy-readonly' && journal.runtimeOwnership === undefined) { /* checked against native facts below */ }

@@ -13,7 +13,7 @@ const root = await mkdtemp('/tmp/mbot-gui-test.')
 const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root,
   XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'),
   XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
-  COREPACK_HOME: join(root, 'corepack'), DSH_TELEMETRY_MODE: 'DISABLED',
+  COREPACK_HOME: join(root, 'corepack'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0', DSH_TELEMETRY_MODE: 'DISABLED',
   GIT_AUTHOR_NAME: 'mbot GUI tests', GIT_COMMITTER_NAME: 'mbot GUI tests',
   GIT_AUTHOR_EMAIL: 'mbot-tests@example.invalid', GIT_COMMITTER_EMAIL: 'mbot-tests@example.invalid' }
 delete env.DEEPSEEK_API_KEY

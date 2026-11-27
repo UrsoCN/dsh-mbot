@@ -3785,3 +3785,40 @@ test('a recorded tool error remains a fault when the user stops the following mo
   const meta = JSON.parse(await readFile(join(ws, result.receipt.meta), 'utf8'))
   assert.equal(meta.runtime.execution_fault, true)
 })
+
+test('agent-runtime foreground and Worker recovery survive simulated reboot with durable state and bootId', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent, journal, mailbox, requests } = await failedRuntime(t, { fixture: { workers: true, persistence: true },
+    script: workerRecoveryScript(), prepare: fixture => workerTasks(fixture.ctx) })
+  const count = requests.length, base = git(ws, 'rev-parse', 'HEAD')
+  assert.equal(journal.schemaVersion, 3)
+  assert.equal(journal.scratchFormatVersion, 1)
+  assert.match(journal.bootId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u)
+  assert.ok(!journal.scratch.startsWith('/tmp/mbot-turn.'))
+  assert.ok(!journal.scratch.startsWith(`${ws}/`))
+  // Simulate a host reboot where /tmp was wiped, bootId changed, AND the old
+  // helper/owner PID + starttime ticks collide with the currently running process.
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const afterCrash = JSON.parse(await readFile(journalPath, 'utf8'))
+  const savedLedger = JSON.parse(await readFile(join(afterCrash.scratch, 'ledger.json'), 'utf8'))
+  const currentStat = await readFile(`/proc/${process.pid}/stat`, 'utf8')
+  const currentBirth = currentStat.slice(currentStat.lastIndexOf(')') + 2).trim().split(/\s+/u)[19]
+  const rebootBootId = '00000000-0000-4000-8000-000000000002'
+  await writeFile(journalPath, JSON.stringify({ ...afterCrash, bootId: rebootBootId, pid: process.pid, pidStart: currentBirth, ownerPid: process.pid, ownerStart: currentBirth }))
+  await writeFile(join(afterCrash.scratch, 'ledger.json'), JSON.stringify({ ...savedLedger, bootId: rebootBootId, pid: process.pid, pidStart: currentBirth, ownerPid: process.pid, ownerStart: currentBirth }))
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.needed, true)
+  assert.equal(recovered.success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(requests.length, count, 'Cross-boot recovery must not re-invoke any model')
+  const receipt = await mailbox.receipt('runtime-recover-request')
+  assert.equal(receipt.result.final, true)
+  assert.equal(receipt.result.reply.text, 'parent Worker audit answer')
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
+  // Resume and confirm the original main Session continues seamlessly.
+  assert.equal((await ctx.mbot.execute('mbot', ['resume'], { botId: bot.botId })).exitCode, 0)
+  agent.followup(message('after durable reboot recovery'))
+  await settle(ctx, agent)
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.phase, 'committed')
+  assert.ok(requests.length > count)
+})

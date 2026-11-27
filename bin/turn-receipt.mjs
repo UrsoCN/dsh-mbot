@@ -5,7 +5,7 @@ import { readFile, lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { processStart } from '../plugin/recovery.js'
+import { processStart, currentBootId, validBootId } from '../plugin/recovery.js'
 import { applyRedactions } from '../plugin/reply-proof.js'
 import { isDeepStrictEqual } from 'node:util'
 import { verifyWorkerAudit } from '../plugin/worker-recovery-proof.js'
@@ -37,8 +37,12 @@ async function prove(input) {
       || !Number.isSafeInteger(journal.ownerPid) || journal.ownerPid < 0) throw new Error('Invalid turn journal')
     if (journal.botId === botId && journal.sessionId === sessionId && journal.turn === record.turn) {
       let live = false
-      try { live = await processStart(journal.pid) === journal.pidStart && await processStart(journal.ownerPid) === journal.ownerStart }
-      catch (error) { if (error.code !== 'ENOENT') throw error }
+      if (journal.bootId !== undefined && !validBootId(journal.bootId)) throw new Error('Invalid turn journal boot identity')
+      const sameBoot = journal.bootId === undefined || journal.bootId === await currentBootId()
+      if (sameBoot) {
+        try { live = await processStart(journal.pid) === journal.pidStart && await processStart(journal.ownerPid) === journal.ownerStart }
+        catch (error) { if (error.code !== 'ENOENT') throw error }
+      }
       journalStatus = live ? 'auditing' : 'recovering'
     }
   } catch (error) { if (error.code !== 'ENOENT') journalStatus = 'unverified' }

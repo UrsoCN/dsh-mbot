@@ -243,7 +243,8 @@ export async function openTurn(mbot, root, bot, options) {
   const ownerStart = await processStart()
   options.signal?.throwIfAborted()
   const child = mbot.ctx.subprocess.spawn({ argv: [join(root, 'bin', 'mbot-turn'), '-C', bot.workspacePath, bot.defaultRole],
-    cwd: root, env: { DSH_HOME: process.env.DSH_HOME, MBOT_OWNER_PID: String(process.pid), MBOT_OWNER_START: ownerStart,
+    cwd: root, env: { DSH_HOME: process.env.DSH_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME, MBOT_STATE_DIR: process.env.MBOT_STATE_DIR,
+      MBOT_OWNER_PID: String(process.pid), MBOT_OWNER_START: ownerStart,
       PATH: `${join(root, 'bin')}:${process.env.PATH ?? '/usr/bin:/bin'}` },
     graceMs: 5000, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: { maxBytes: 128000 } } })
   mbot.active.add(child)

@@ -45,7 +45,8 @@ async function main() {
       journalHash: journalDigest(journal), log: native.log, input, evidence }), { mode: 0o600, flag: 'wx' })
     child = spawn(join(root, 'bin/mbot'), ['-C', workspace, 'recover'], { cwd: root, signal,
       env: Object.fromEntries(Object.entries({ PATH: `${join(root, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}`, HOME: process.env.HOME,
-        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, DSH_HOME: process.env.DSH_HOME,
+        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME, MBOT_STATE_DIR: process.env.MBOT_STATE_DIR,
+        LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, DSH_HOME: process.env.DSH_HOME,
         GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
         GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL,
         MBOT_RECOVERY_CHECK: options['--check'] ? '1' : '0', MBOT_RECOVERY_OWNER: String(process.pid), MBOT_RECOVERY_START: ownerStart, MBOT_RUNTIME_RECOVERY_PROOF: proof }).filter(([, value]) => value !== undefined)),

@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline'
 import { randomUUID } from 'node:crypto'
 import { ipcLocation, ipcVersion, maxFrameBytes, hostActions, privatePath } from './ipc-protocol.js'
 import { redact, redactValue } from './redact.js'
-import { processStart } from './recovery.js'
+import { processStart, currentBootId, validBootId } from './recovery.js'
 
 export const name = 'mbot-ipc'
 export const inject = ['mbot', 'mbotRuntime', 'agents', 'subprocess']
@@ -71,19 +71,23 @@ export class MBotIpc extends Service {
       if (first.done || first.value !== 'ready') { await this.releaseLock(); this.state = 'busy'; return }
       if (this.closed) throw new Error('IPC disposed during initialization')
       this.ownerPath = join(this.endpoint.directory, 'owner.json')
+      const bootId = await currentBootId()
       const previous = await this.readOwner()
       if (previous) {
         let birth
-        try { birth = await processStart(previous.pid) } catch (error) { if (error.code !== 'ENOENT') throw error }
+        const sameBoot = previous.bootId === undefined || previous.bootId === bootId
+        if (sameBoot) {
+          try { birth = await processStart(previous.pid) } catch (error) { if (error.code !== 'ENOENT') throw error }
+        }
         // A dead flock helper does not prove its live Host has drained already
         // transferred operations. The PID birth record survives that failure.
-        if (birth === previous.ownerStart) { await this.releaseLock(); this.state = 'busy'; return }
+        if (sameBoot && birth === previous.ownerStart) { await this.releaseLock(); this.state = 'busy'; return }
         await unlink(this.ownerPath)
       }
       const temporary = join(this.endpoint.directory, `owner.${this.instanceId}.tmp`)
       const owner = await open(temporary, 'wx', 0o600)
       try {
-        await owner.writeFile(JSON.stringify({ schemaVersion: 1, pid: process.pid, ownerStart: await processStart(),
+        await owner.writeFile(JSON.stringify({ schemaVersion: 1, pid: process.pid, ownerStart: await processStart(), bootId,
           instanceId: this.instanceId, profileId: this.endpoint.profileId }))
         await owner.sync()
         if (this.closed) throw new Error('IPC disposed during initialization')
@@ -131,7 +135,8 @@ export class MBotIpc extends Service {
       if (stat.size > 4096) throw new Error('Invalid IPC owner descriptor')
       const owner = JSON.parse(await readFile(this.ownerPath, 'utf8'))
       if (owner.schemaVersion !== 1 || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.ownerStart !== 'string'
-        || !/^\d+$/u.test(owner.ownerStart) || typeof owner.instanceId !== 'string' || owner.profileId !== this.endpoint.profileId) throw new Error('Invalid IPC owner descriptor')
+        || !/^\d+$/u.test(owner.ownerStart) || (owner.bootId !== undefined && !validBootId(owner.bootId))
+        || typeof owner.instanceId !== 'string' || owner.profileId !== this.endpoint.profileId) throw new Error('Invalid IPC owner descriptor')
       return owner
     } catch (error) { if (error.code === 'ENOENT') return; throw error }
   }

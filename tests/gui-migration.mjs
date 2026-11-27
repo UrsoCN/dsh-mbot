@@ -10,7 +10,7 @@ const repo = fileURLToPath(new URL('../', import.meta.url))
 const root = await mkdtemp('/tmp/mbot-gui-migration.')
 const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root,
   XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
-  COREPACK_HOME: join(root, 'corepack'), DSH_TELEMETRY_MODE: 'DISABLED', DEEPSEEK_API_KEY: 'local-migration-fixture-key',
+  COREPACK_HOME: join(root, 'corepack'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0', DSH_TELEMETRY_MODE: 'DISABLED', DEEPSEEK_API_KEY: 'local-migration-fixture-key',
   MBOT_MIGRATION_ROOT: root, MBOT_MIGRATION_PACKAGE: join(root, 'dsh/profiles/web/node_modules/dsh-mbot/package.json'),
   GIT_AUTHOR_NAME: 'MBot migration', GIT_COMMITTER_NAME: 'MBot migration', GIT_AUTHOR_EMAIL: 'mbot-tests@example.invalid', GIT_COMMITTER_EMAIL: 'mbot-tests@example.invalid' }
 for (const key of ['MBOT_WS', 'MBOT_RUN_ID', 'DSH_MBOT_RUN_ID', 'DSH_MBOT_PERMIT_TOKEN', 'MBOT_PERMIT_TOKEN']) delete env[key]
@@ -39,7 +39,7 @@ try {
   execFileSync('tar', ['-xf', '-', '-C', oldSource], { input: archive })
   // Reproduce an old loaded Host with current on-disk Bash helpers.
   for (const directory of ['bin', 'lib']) await cp(join(repo, directory), join(oldSource, directory), { recursive: true, force: true })
-  for (const file of ['recovery-proof.js', 'readonly-migration.js', 'native-reply.js', 'recovery-audit.js', 'reply-proof.js', 'native-storage.js']) await cp(join(repo, 'plugin', file), join(oldSource, 'plugin', file))
+  for (const file of ['recovery-proof.js', 'readonly-migration.js', 'native-reply.js', 'recovery-audit.js', 'reply-proof.js', 'native-storage.js', 'turn-state.js', 'recovery.js']) await cp(join(repo, 'plugin', file), join(oldSource, 'plugin', file))
   const oldPack = JSON.parse(await good('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', root], oldSource))[0]
   const oldTarball = join(root, 'legacy.tgz'); await cp(join(root, oldPack.filename), oldTarball)
   const currentPack = JSON.parse(await good('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', root], repo))[0]

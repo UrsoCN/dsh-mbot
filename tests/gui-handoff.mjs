@@ -12,7 +12,7 @@ const linked = join(root, 'linked-package')
 const profile = join(root, 'dsh/profiles/web')
 const env = { ...process.env, DSH_HOME: join(root, 'dsh'), TMPDIR: root,
   XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'),
-  XDG_STATE_HOME: join(root, 'state'), COREPACK_HOME: join(root, 'corepack'), DSH_TELEMETRY_MODE: 'DISABLED',
+  XDG_STATE_HOME: join(root, 'state'), COREPACK_HOME: join(root, 'corepack'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0', DSH_TELEMETRY_MODE: 'DISABLED',
   DEEPSEEK_API_KEY: 'mbot-disposable-hmr-key', MBOT_GUI_HANDOFF_ROOT: root, MBOT_GUI_PACKAGE: join(linked, 'package.json'),
   GIT_AUTHOR_NAME: 'MBot HMR fixture', GIT_COMMITTER_NAME: 'MBot HMR fixture',
   GIT_AUTHOR_EMAIL: 'mbot-tests@example.invalid', GIT_COMMITTER_EMAIL: 'mbot-tests@example.invalid' }

@@ -2,6 +2,7 @@
 // Recovery observes current processes; a pid written in a journal is not liveness proof.
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { validateRecoveryProof } from '../plugin/recovery-proof.js'
+import { currentBootId, validBootId } from '../plugin/recovery.js'
 import { setTimeout as delay } from 'node:timers/promises'
 
 async function start(pid) {
@@ -59,18 +60,28 @@ try {
     const proof = runtimeProof = await validateRecoveryProof(process.argv[5], record)
     if (String(proof.ownerPid) !== process.argv[3] || proof.ownerStart !== process.argv[4]) throw new Error('Runtime recovery proof does not belong to the coordinating Host')
   } else if (record.writerScope !== 'data-subprocesses') throw new Error('Unsupported writer recovery scope')
+  if (record.bootId !== undefined && !validBootId(record.bootId)) throw new Error('Invalid turn journal boot identity')
+  const bootId = await currentBootId()
+  const sameBoot = record.bootId === undefined || record.bootId === bootId
   const permits = new Set([record.token, ...(record.actors ?? []).map(actor => actor.token)])
   const holdsPermit = env => env.some(value => {
     const match = /^(?:MBOT_PERMIT_TOKEN|DSH_MBOT_PERMIT_TOKEN)=(.*)$/u.exec(value)
     return match && permits.has(match[1])
   })
-  for (const [pid, expected, label] of [[record.pid, record.pidStart, 'turn writer'], [record.ownerPid, record.ownerStart, 'owning Host']]) {
-    if (!Number.isSafeInteger(pid) || pid <= 0) continue
-    const live = await start(pid)
-    if (!live || (expected && expected !== live)) continue
-    const confirmed = label === 'owning Host' && (String(pid) === process.argv[3] && live === process.argv[4]
-      || runtimeProof?.mode === 'legacy-readonly')
-    if (!confirmed) throw new Error(`${label} is still present; stop or settle it before recovery (pid ${pid})`)
+  // If the journal recorded a bootId from a previous kernel boot, the original
+  // helper and owning Host processes cannot still be running (PID and /proc
+  // starttime ticks reset on reboot). We still scan live same-UID processes for
+  // any process carrying the permit token, without falsely treating a reused
+  // PID/birth or comparing cross-boot starttime ticks as live original owners.
+  if (sameBoot) {
+    for (const [pid, expected, label] of [[record.pid, record.pidStart, 'turn writer'], [record.ownerPid, record.ownerStart, 'owning Host']]) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue
+      const live = await start(pid)
+      if (!live || (expected && expected !== live)) continue
+      const confirmed = label === 'owning Host' && (String(pid) === process.argv[3] && live === process.argv[4]
+        || runtimeProof?.mode === 'legacy-readonly')
+      if (!confirmed) throw new Error(`${label} is still present; stop or settle it before recovery (pid ${pid})`)
+    }
   }
   for (const name of await readdir('/proc')) {
     if (!/^\d+$/u.test(name) || Number(name) === process.pid) continue
@@ -90,6 +101,9 @@ try {
       // holds the native writer, joins every captured foreground call, and
       // rejects Worker/background/IPC writer contracts. Neither scope grants
       // permits to an already running daemon; the old Host is checked above.
+      // After a real reboot (different bootId), no process from the old boot
+      // survived, and no new permit was issued before this recovery.
+      if (!sameBoot) continue
       if (BigInt(birth) < BigInt(record.pidStart)) continue
       if (runtimeProof?.mode === 'legacy-readonly' && await unrelatedReadonlyBranch(Number(name), birth, record)) continue
       // A freshly exiting subprocess may lose readable environ before its

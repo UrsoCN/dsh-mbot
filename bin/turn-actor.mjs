@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Private turn protocol, invoked while the owning bridge holds botctl.lock.
 // An actor permit is DATA for that turn, never permission to spawn an Agent.
-import { readFile, lstat, realpath, writeFile, rename } from 'node:fs/promises'
+import { readFile, lstat, realpath, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { validateOwnership } from '../plugin/recovery-proof.js'
 import { workerProof } from '../plugin/worker-proof.js'
 import { redactValue } from '../plugin/redact.js'
+import { validateTurnScratch, atomicWriteSync, syncFile } from '../plugin/turn-state.js'
 
 const prepare = process.argv[2] === '--prepare-finalization'
 const verify = prepare || process.argv[2] === '--verify'
@@ -30,18 +31,17 @@ async function safeFile(base, relative, privateMode = false) {
   return readFile(path, 'utf8')
 }
 async function replace(file, data, raw = false) {
-  const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`
-  await writeFile(temp, raw ? data : JSON.stringify(data), { mode: 0o600, flag: 'wx' })
-  await rename(temp, file)
+  await atomicWriteSync(file, raw ? data : JSON.stringify(data), 0o600)
 }
 try {
   if (!verify && !context) request = JSON.parse(await readFile('/dev/stdin', 'utf8'))
-  if (!/^\/tmp\/mbot-turn\.[A-Za-z0-9]+$/u.test(scratch ?? '') || await realpath(workspace) !== workspace) fail('Invalid actor transaction location')
+  if (!scratch || await realpath(workspace) !== workspace) fail('Invalid actor transaction location')
   const directory = await lstat(scratch)
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid() || (directory.mode & 0o777) !== 0o700) fail('Unsafe actor transaction snapshot')
   const ledgerBytes = await safeFile(scratch, 'ledger.json', true)
   const saved = JSON.parse(ledgerBytes)
   const active = JSON.parse(await safeFile(workspace, '.mbot/runs/active-turn.json', true))
+  await validateTurnScratch(saved)
   const header = JSON.parse(await safeFile(scratch, 'header.json', true))
   const token = JSON.parse(await safeFile(scratch, 'token.json', true))
   if (saved.schemaVersion !== 3 || saved.writerScope !== 'agent-runtime' || saved.role !== 'chief'
@@ -138,6 +138,7 @@ try {
     if (request.kind === 'actor-event') {
       if (request.event?.seq !== events.length || typeof request.event.type !== 'string') fail('Worker native event cut changed')
       await writeFile(join(scratch, file), JSON.stringify(request.event) + '\n', { flag: 'a' })
+      await syncFile(join(scratch, file))
       response = { kind: 'recorded', requestId: request.requestId }
     } else {
       const proof = JSON.parse(await safeFile(scratch, `actor-${actor.actorId}.json`, true))

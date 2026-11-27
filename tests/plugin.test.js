@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink, rename } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, access, writeFile, mkdir, symlink, rename, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -1072,6 +1072,88 @@ test('unfinished v1 journal retains legacy failure semantics when recovered by t
   assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '3\n')
   assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
   assert.equal(await readFile(join(ws, '.mbot/failures'), 'utf8'), '3\n')
+})
+
+test('durable turn state survives outside /tmp, validates cross-boot PID reuse, and rejects tampered state paths', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'durable-session', turn: 1, request: 'durable evidence' })
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const record = JSON.parse(await readFile(journalPath, 'utf8'))
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  assert.equal(record.scratchFormatVersion, 1)
+  assert.match(record.bootId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u)
+  assert.ok(!record.scratch.startsWith('/tmp/mbot-turn.'), 'New turn snapshots must live outside volatile /tmp/mbot-turn.*')
+  assert.ok(!record.scratch.startsWith(`${ws}/`), 'Durable state must stay outside the Bot data worktree')
+  assert.equal((await lease.execute('botctl', ['board', 'add', 'survives reboot'])).exitCode, 0)
+  process.kill(record.pid, 'SIGKILL')
+  await lease.child.done
+  const base = git(ws, 'rev-parse', 'HEAD')
+  // 1. Tampering scratchFormatVersion or moving scratch to another path must fail closed.
+  const originalJournal = await readFile(journalPath, 'utf8')
+  const originalLedger = await readFile(join(record.scratch, 'ledger.json'), 'utf8')
+  const badVersion = { ...JSON.parse(originalJournal), scratchFormatVersion: 2 }
+  await writeFile(journalPath, JSON.stringify(badVersion))
+  await writeFile(join(record.scratch, 'ledger.json'), JSON.stringify({ ...JSON.parse(originalLedger), scratchFormatVersion: 2 }))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /incomplete turn journal|unsafe/iu)
+  // 2. Replacing scratch directory permissions with group/other bits must be refused.
+  await writeFile(journalPath, originalJournal)
+  await writeFile(join(record.scratch, 'ledger.json'), originalLedger)
+  await chmod(record.scratch, 0o755)
+  try { await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /unsafe|missing/iu) }
+  finally { await chmod(record.scratch, 0o700) }
+  // 3. Simulate a host reboot where the previous bootId differs AND the old helper PID
+  //    was reused by a live process with matching starttime ticks: recovery must NOT
+  //    false-positive on cross-boot PID reuse, while still rejecting a live permit holder.
+  const currentStat = await readFile(`/proc/${process.pid}/stat`, 'utf8')
+  const currentBirth = currentStat.slice(currentStat.lastIndexOf(')') + 2).trim().split(/\s+/u)[19]
+  const rebooted = { ...JSON.parse(originalJournal), bootId: '00000000-0000-4000-8000-000000000001', pid: process.pid, pidStart: currentBirth }
+  await writeFile(journalPath, JSON.stringify(rebooted))
+  await writeFile(join(record.scratch, 'ledger.json'), JSON.stringify({ ...JSON.parse(originalLedger), bootId: rebooted.bootId, pid: process.pid, pidStart: currentBirth }))
+  // Even across a reboot, a live process carrying the permit token must still be refused.
+  const permitHolder = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'],
+    { env: { ...process.env, MBOT_PERMIT_TOKEN: record.token }, stdio: ['ignore', 'pipe', 'ignore'] })
+  t.after(() => permitHolder.kill('SIGKILL'))
+  const holderExited = new Promise(resolve => permitHolder.once('exit', resolve))
+  await new Promise(resolve => permitHolder.stdout.once('data', resolve))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /permit-bearing process/u)
+  permitHolder.kill('SIGTERM')
+  await holderExited
+  // Once no permit holder exists, cross-boot recovery succeeds cleanly despite PID reuse.
+  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.needed, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.match(await readFile(join(ws, 'BOARD.md'), 'utf8'), /survives reboot/u)
+  await assert.rejects(access(record.scratch))
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+})
+
+test('legacy /tmp/mbot-turn.* snapshots remain readable for pre-R1 journal recovery without migration', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const lease = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'legacy-tmp-reader', turn: 1, request: 'pre-r1 snapshot' })
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const record = JSON.parse(await readFile(journalPath, 'utf8'))
+  lease.child.stdin.end()
+  await lease.child.done
+  // Relocate into a legacy /tmp/mbot-turn.XXXXXX path and strip R1 fields to verify backward reader compatibility.
+  const legacyDir = await mkdtemp('/tmp/mbot-turn.')
+  t.after(() => rm(legacyDir, { recursive: true, force: true }))
+  t.after(() => rm(record.scratch, { recursive: true, force: true }))
+  execFileSync('cp', ['-a', `${record.scratch}/.`, legacyDir])
+  const legacyRecord = { ...record, scratch: legacyDir }
+  delete legacyRecord.scratchFormatVersion
+  delete legacyRecord.bootId
+  await writeFile(join(legacyDir, 'ledger.json'), JSON.stringify({ ...legacyRecord, phase: 'active' }))
+  await writeFile(journalPath, JSON.stringify({ ...legacyRecord, phase: 'abandoned' }))
+  await rm(record.scratch, { recursive: true, force: true })
+  const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+  assert.equal(recovered.kind, 'recovered')
+  assert.equal(recovered.needed, true)
+  await assert.rejects(access(legacyDir))
 })
 
 test('live workspace config is captured per operation and unloading removes tools and commands', async t => {
