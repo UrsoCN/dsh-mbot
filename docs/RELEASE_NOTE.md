@@ -1,5 +1,15 @@
 # 发布说明
 
+## dev：Bot 创建/恢复失败时的 Runtime 死锁修复（未发布）
+
+- 修复失效旧 Bot 阻塞后续管理命令的循环等待：数据目录丢失或 checkpoint 验证失败时，附件初始化的异常清理不能在原生 setup/`agent/created` 回调中等待 `agent.whenIdle()`，否则原生 publication maintenance 与回调互相等待。
+- 失败附件保持业务闸门关闭，只等待自己拥有的查询、flush 和子进程；由原生工厂持有 disposed cause 并完成创建/恢复回滚，保留待办且不释放模型唤醒。已经运行的 Session 仍使用原来的完整写者静止与审计关闭流程。
+- 失败返回真实命令错误，输入框可继续使用，后续 init 可以创建新 Bot；旧登记、预留 Session、Git 和原生历史保留，恢复原数据后沿用同一 Session。已进入旧实现死锁的 Host 需要重启应用修复，历史未结束命令不补造完成证明。
+
+类型、189 项本地 Host/Runtime 检查和 64 组 Bash 回归通过，另 1 项按需真实摘要在默认套件跳过；新增真实 AgentLoop 回归覆盖创建失败的回滚、待办保留、无模型调用、后续初始化和原 Session 恢复。证据 `/tmp/mbot-init-fix-suite.log`；实现边界见 [主会话](main-session.md)。包仍为 0.1.1，不新增发布标签。
+
+源码链接、tarball、Git 和 Web 四类安装验收通过，证据 `/tmp/mbot-init-fix-install.log`，产物 `/tmp/mbot-plugin-install.XdAUJA`。真实 Chromium 在隔离 profile 中验证冷恢复旧 Bot 数据丢失时命令明确失败、输入框清空且可连续提交、随后新 Bot 初始化并自动打开，以及恢复旧数据后沿用原主 Session；刷新、重启、多窗口和既有控制流程也通过。证据 `/tmp/mbot-init-fix-gui.log`，产物 `/tmp/mbot-gui-test.Wkqtb0`。没有调用真实 DeepSeek API，没有改写生产 profile、旧 Bot 数据或原生日志。
+
 ## dev：近期路线排序与数字主体探索补充（规划更新）
 
 - 将恢复证据持久化与跨重启进程身份核验列为首先推进的阶段，再拆 Runtime/建立基准，随后完成 compact、sleep/wake 与最小管理面板；既有 P1/P2 的完整交付范围保留。

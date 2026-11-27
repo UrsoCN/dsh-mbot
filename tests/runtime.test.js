@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile, mkdir, chmod, lstat, symlink, unlink } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, mkdir, chmod, lstat, symlink, unlink, rename } from 'node:fs/promises'
 import { execFileSync, spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -189,6 +189,51 @@ async function app(t, script, options = {}) {
 }
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
+
+test('failed native creation drains attachment work without waiting on its own publication', { timeout: 15000 }, async t => {
+  let failedId, failedAgent
+  const { ctx, ws, bot, requests } = await app(t, () => response('must not run during failed publication'), {
+    persistence: true,
+    beforeRuntime(ctx) {
+      ctx.on('agent/created', ({ agent }) => {
+        if (agent.id !== failedId) return
+        failedAgent = agent
+        agent.followup(message('retain this input when attachment fails'))
+      })
+    },
+  })
+  failedId = `failed-publication-${++sequence}`
+  await ctx.configEditor.edit(ctx.configEditor.entries()[0], current => ({ ...current, registry: {
+    ...current.registry, revision: current.registry.revision + 1,
+    bots: current.registry.bots.map(item => item.botId !== bot.botId ? item : { ...item,
+      binding: { state: 'provisioning', pendingSessionId: failedId, error: null } }),
+  } }))
+  const registry = ctx.mbot.registry(), head = git(ws, 'rev-parse', 'HEAD')
+  const offline = `${ws}.offline`
+  await rename(ws, offline)
+  try {
+    await assert.rejects(ctx.agents.create({ sessionId: failedId, meta: { cwd: ws },
+      agentOptions: { provider: 'runtime-test', model: 'scripted' } }), /Context checkpoint does not match/u)
+    assert.equal(ctx.agents.get(failedId), undefined, 'The native factory must finish rollback')
+    assert.equal(ctx.mbotRuntime.attachments.size, 0)
+    assert.equal(ctx.mbotRuntime.states.has(failedAgent), false)
+    assert.equal(runtimeCells.get(failedAgent).state, undefined, 'Failed attachment keeps no usable Runtime owner')
+    assert.equal(ctx.mbot.active.size, 0, 'Owned checkpoint subprocesses must drain')
+    assert.equal(requests.length, 0, 'Queued input must not start a model during failed publication')
+    const log = await ctx.sessionQuery.readSession(failedId)
+    assert.ok(!log.events.some(event => event.type === 'turn/start'))
+    assert.equal(failedAgent.inbox.nextTurn.length, 1)
+    assert.deepEqual(ctx.mbot.registry(), registry, 'Failure must preserve the reservation and old identity')
+    assert.equal(git(offline, 'rev-parse', 'HEAD'), head)
+    const next = await ctx.mbot.initialize(join(root, `after failed publication ${++sequence}`))
+    assert.equal(next.exitCode, 0, next.stderr)
+  } finally { await rename(offline, ws) }
+  failedId = undefined
+  const retry = await ctx.agents.resume({ resumeSessionId: registry.bots[0].binding.pendingSessionId,
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  assert.equal(ctx.mbotRuntime.managed(retry.agent), true, 'Restored data must permit the same reserved Session to resume')
+  assert.equal(requests.length, 0)
+})
 
 test('missing native backends are isolated per Bot Agent and survive Runtime handoff', { timeout: 30000 }, async t => {
   const { ctx, agent, bot, owner } = await app(t, () => response('scoped backend reply'), {

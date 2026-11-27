@@ -33,6 +33,10 @@ Bot 登记条目仍为 schemaVersion 1，新增可为空的 binding，旧记录�
 
 创建失败后已有数据用 import 或已登记身份的 repair，不反复 init 非空目录。新建及预留中的 Session 设置 Bot/角色标题；已正式绑定的用户标题保持原值。
 
+Runtime 附件初始化失败时，只清理尚未开放业务的附件并等待它拥有的查询、flush 和子进程；原生工厂负责 Agent 创建/恢复的取消与回滚。不能在 setup 或 `agent/created` 回调内调用 `agent.whenIdle()`：原生 publication maintenance 正在等待该回调，会形成循环等待。也不能先以 hook cause 取消它，否则会覆盖原生 disposed cause 并释放待办唤醒。已经完成初始化的 Runtime 关闭仍须等待 Agent、工具、审计及全部 flush 静止。
+
+失效的旧 Bot 数据或 checkpoint 继续拒绝恢复，保留登记、预留 Session 和原生输入；错误应结束命令并释放输入框，后续新 Bot 创建仍可继续。已进入旧版循环等待的 Host 需要重启加载修复，热更新不能解除原来的等待；不要删除旧原生日志或伪造 `command/done` 来清除历史中的运行卡片。
+
 ## 并发与边界
 
 Host 的管理调用串行；跨进程使用现有 Bot `.mbot/lock`，与数据 turn/headless 写者互斥。拿不到锁报告 busy，不修改登记或创建实体；取消/关闭不会在原生 API 尚未结束时提前放锁。ConfigEditor 重读最新 profile，按具体 Bot 快照核实每次更新，独立的选择/设置编辑保留。

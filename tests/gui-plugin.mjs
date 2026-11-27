@@ -2,7 +2,7 @@
 // Supply MBOT_PLAYWRIGHT_MODULE and PLAYWRIGHT_BROWSERS_PATH for /tmp installations.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -82,6 +82,17 @@ try {
   async function submit(line) {
     const before = (await observed()).filter(row => row.event.type === 'command/done').length
     const input = page.locator('[contenteditable=true]')
+    // Keyless-profile onboarding may appear after navigation. Use its real
+    // controls, then require pointer focus so a blocked composer cannot pass
+    // via programmatic fill behind an overlay.
+    for (let attempt = 0; ; attempt++) {
+      try { await input.click({ timeout: 2000 }); break }
+      catch (error) {
+        const dismiss = page.getByRole('dialog').getByRole('button', { name: /^(关闭|继续|稍后配置)$/u }).first()
+        if (attempt >= 3 || !await dismiss.isVisible()) throw error
+        await dismiss.click()
+      }
+    }
     await input.fill(line)
     await input.press('Enter')
     const done = await until(async () => {
@@ -204,8 +215,37 @@ try {
   assert.ok(events.some(event => event.type === 'command/run'))
   assert.ok(events.some(event => event.type === 'command/done'))
   assert.ok(events.every(event => !['user/message', 'assistant/message', 'turn/start', 'llm/request'].includes(event.type)), 'Control commands must not send model content or start turns')
+  // A cold old Bot whose data went missing must report failure and release the
+  // command/composer, rather than block every subsequent registry operation.
+  await page.goto(`${server.url}#mbot-session=${originalId}`)
+  await page.locator('[contenteditable=true]').waitFor()
+  server.child.kill('SIGINT')
+  await server.child.finished
+  const offline = `${workspace}.offline`
+  await rename(workspace, offline)
+  try {
+    server = await host()
+    await page.goto(`${server.url}#mbot-session=${originalId}`)
+    await page.locator('[contenteditable=true]').waitFor()
+    const refused = await submit(`/mbot open ${firstBotId}`)
+    assert.ok(refused.includes('Context checkpoint does not match native/Git evidence'), refused)
+    assert.equal(await commandRows.last().getAttribute('data-state'), 'error')
+    assert.equal(await page.locator('[contenteditable=true]').innerText(), '', 'Failed command must release and clear the composer')
+    const newPath = join(root, '文档', 'after missing old Bot')
+    const created = await submit(`/mbot init ${newPath}`)
+    assert.ok(created.includes(`Initialized ${newPath}`), created)
+    const newMain = /^Main Session: (session-[0-9a-f-]+)$/mu.exec(created)[1]
+    assert.ok((await submit('/mbot status')).includes(`Main Session: ${newMain}`))
+    assert.equal((await observed()).filter(row => row.event.type === 'command/done').at(-1).sessionId, newMain)
+    assert.ok((await submit('/mbot list')).includes(firstBotId), 'Missing data must retain the old Bot identity')
+    assert.equal(await page.locator('[contenteditable=true]').innerText(), '')
+    await page.screenshot({ path: join(root, 'init-after-missing-old-bot.png'), fullPage: true })
+  } finally { await rename(offline, workspace) }
+  await submit(`/mbot open ${firstBotId}`)
+  assert.ok((await submit('/mbot status')).includes(`Main Session: ${mainId}`), 'Restored data must resume the original main Session')
+  assert.ok((await observed()).every(row => !['user/message', 'assistant/message', 'turn/start', 'llm/request'].includes(row.event.type)))
   assert.deepEqual(errors, [])
-  console.log('GUI PASS: tarball/init-auto-main/import/list/select/open/repair/bound-routing/original-session/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/deep-link/no-model')
+  console.log('GUI PASS: tarball/init-auto-main/import/list/select/open/repair/bound-routing/original-session/profile-isolation/status/error/skip/multiple-tabs/reload/host-restart/deep-link/missing-old-bot/failed-command-composer/new-bot-after-failure/same-session-retry/no-model')
 } finally {
   await browser?.close()
   for (const child of processes) child.kill('SIGINT')

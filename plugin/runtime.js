@@ -388,13 +388,29 @@ class ManagedSession {
     return seq
   }
 
+  async drainOperations() {
+    await this.pending.catch(() => {})
+    await this.messageOperations.catch(() => {})
+    await this.contextOperations.catch(() => {})
+  }
+
+  async abortAttachment() {
+    if (!this.initializing || this.current?.lease || this.current?.calls.size) throw new Error('Cannot discard an attachment with managed writers')
+    this.closing = true
+    // Native setup and agent/created run inside publication maintenance.
+    // whenIdle() would wait for the callback that is awaiting this rollback.
+    // The initialization gate prevents managed turns; join only our owned
+    // operations here and let the native factory drain its failed publication.
+    // Its disposed cause must also own cancellation, suppressing queued wakes.
+    await this.drainOperations()
+    if (this.current?.lease || this.current?.calls.size) throw new Error('Managed writers appeared during attachment rollback')
+  }
+
   async close() {
     this.closing = true
     this.agent.cancel({ kind: 'hook', reason: 'MBot Runtime disposed' }, { keepInbox: true })
     await this.agent.whenIdle()
-    await this.pending.catch(() => {})
-    await this.messageOperations.catch(() => {})
-    await this.contextOperations.catch(() => {})
+    await this.drainOperations()
     if (this.agent.status !== 'idle' || this.current?.calls.size || this.current?.lease && !this.current.lease.transportEnded) throw new Error('Managed Session writers have not drained for Runtime handoff')
   }
 }
@@ -580,7 +596,7 @@ export class MBotRuntime extends Service {
     } catch (error) {
       // Keep the gates closed while any event/message operations from this
       // failed attachment finish; a failed drain remains a failed handoff.
-      await state.close()
+      await state.abortAttachment()
       this.states.delete(agent)
       if (cell.state === state) cell.state = undefined
       throw error
