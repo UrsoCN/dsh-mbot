@@ -41,3 +41,5 @@ Host proof 存在 /tmp 的 700 目录/600 文件中，并在提交和结算前�
 - `npm run test:gui-migration` 从 bcec931 构造真实旧 Host 包，配合更新后的 Bash 资源与本地 adapter，复现旧 IPC/旧请求头及验收失败；验证官方只读 handle、dry run、独立受保护进程排除、Host 后代拒绝、原 Host 存活时只提交一次、写入/Bash 回合拒绝、安装当前版本后同一 Session 继续对话。没有调用真实 DeepSeek API。
 
 证据：`/tmp/mbot-readonly-migration-suite.log`、`/tmp/mbot-plugin-install.yB4zbm`、`/tmp/mbot-gui-migration.jLfDQP`、`/tmp/mbot-gui-runtime.t3NoPL`。
+
+本地原始反馈中的旧 journal 已按相同入口恢复；实际 Git 审计 completed、无违规、计数 0、工作树干净，只新增 transcript/meta，PAUSED 保留。运行中旧 Host 的其他会话与服务保留，实际续聊的 Runtime 加载另行核验。证据：`/tmp/mbot-original-migration-final-check.json`、`/tmp/mbot-original-migration-result.json`。

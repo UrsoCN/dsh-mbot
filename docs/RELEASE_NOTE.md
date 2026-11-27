@@ -6,6 +6,8 @@
 - cold Host recover 支持相同旧只读证明。迁移记录原生 cut/hash 和调用指纹，保持 PAUSED；独立迁移不修改旧 Runtime 的内存错误，加载新版本后使用同一 Session 继续对话，无 messages 的旧头不生成新回复证明。
 - 43 项 Host、70 项 Runtime、类型、64 组 Bash、四类安装及两套 Chromium 验收通过；旧版实际包验证受保护独立进程排除、Host 后代拒绝、只提交一次、拒绝写者、升级及对话。没有调用真实 DeepSeek API。详见 [旧回合迁移](legacy-migration.md)。
 
+作者本地原始旧 journal 已使用正式入口恢复：completed、无违规、故障计数 0，只新增两个审计文件，保留 PAUSED；证据在 `/tmp/mbot-original-migration-result.json`。原生会话和其他 Host 服务保留，旧 Runtime 的内存错误与实际续聊仍需安全加载/核验。
+
 非只读旧契约、缺失日志/其他写者、Worker、compact/睡眠、IM/peer/outbox 和管理面板继续在 TODO；包仍为 0.1.1，未打新 tag。
 
 ## dev：前台 Runtime/Agent 中断恢复（未发布）

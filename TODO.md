@@ -19,6 +19,7 @@ Host 的 turn 事务桥、数据工具 permit 和遗留数据 turn 恢复已实�
 - [ ] 在已交付 runtime/stop 与原生保留待办取消的基础上补睡眠/唤醒生命周期，并与 compact/checkpoint 事务绑定
 - [ ] 在已验证的前台 Runtime/Agent 恢复基础上接齐 Worker/PTC/IPC 写者及 checkpoint 静止协议；在已验收核心只读旧回合迁移上补非只读/未知旧契约、原生日志/原所有者丢失的迁移和恢复，不能用前台契约或 data-subprocesses 的核实替代其他写者证明
 - [ ] 实现 compact/sleep/wake 闸门与 memoryCommit/contextEpoch/sourceCut checkpoint；睡眠继续接收消息，失败可恢复，主 Session ID 稳定；未接齐上下文/准入/护栏前不开放不受控主会话业务执行
+- [ ] 补真实模块替换下 Agent-owned 闸门与 Runtime 状态的版本化交接、插件级安全重载及失败回退；不丢失旧 lease/Inbox，不因代码更新叠加不可接管的旧闸门，不以全 Host 重启代替核实其他插件写者
 - [ ] 在列表/管理页主动检查缺失/归档实体，显示修复入口；已完成调用 Session 路由、持久绑定与 open/repair，继续验收多 Host writer-held、实体意外返回与故障重启
 - [ ] Worker 保持 fresh、深度 1、任务文件交接；Dreaming 独立；恢复数据仓库不要求原 DSH Session 仍存在
 
