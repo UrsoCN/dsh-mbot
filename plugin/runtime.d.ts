@@ -96,6 +96,14 @@ export interface ConversationMailbox {
   receipt(requestId: string): Promise<(ConversationDeliveryReceipt & { result: MessageResult<ConversationVerifiedReply> }) | undefined>
   dispose(): void
 }
+export interface DomainDreamCheckpoint {
+  schemaVersion: 1; scope: ConversationViewScope; maintenanceId: string; reportHash: string
+  cursor: { schemaVersion: 1; scopeHash: string; commit: string; meta: string; turn: number; runId: string;
+    index: number; callId: string; knowledgeVersion: string; sourceHash: string }
+}
+export type DomainDreamResult = { kind: 'empty'; more: false } | {
+  kind: 'committed'; maintenanceId: string; commit: string; checkpoint: DomainDreamCheckpoint; more: boolean
+}
 export declare class MBotRuntime extends Service {
   static inject: string[]
   static Config: typeof Config
@@ -124,6 +132,8 @@ export declare class MBotRuntime extends Service {
   settled(agent: Agent): Promise<void>
   /** Run audited manual compaction under BotCoordinator barrier, Bot data lock & maintenance journal. */
   compact(agent: Agent, options?: { signal?: AbortSignal; sourceCommandId?: string }): Promise<{ kind: 'compacted'; maintenanceId: string; compacted: boolean; memoryCommit: string; knowledgeVersion: string; compactionId?: string; shadowedCount?: number; shadowedTokenCount?: number; summarySeq?: number; proofs: CompactionProof[] }>
+  /** Trusted owner maintenance for an attached domain; never activates reserved business admission. */
+  dream(agent: Agent, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<DomainDreamResult>
   /** Staged sleep: barrier -> cutoff -> Dreaming -> optional compact -> durable sleeping state. */
   sleep(botId: string, options?: { signal?: AbortSignal; skipDream?: boolean; compact?: boolean }): Promise<{ kind: 'slept'; alreadySleeping: boolean; botId: string; maintenanceId: string; sessionId: string | null; cutoffHead: string; dreamCommit: string | null; dreamSkipped: boolean; compacted: boolean; knowledgeVersion: string }>
   /** Wake a sleeping Bot while retaining its original main Session ID. */
@@ -143,6 +153,9 @@ declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap {
   'plugin:mbot/context-snapshot': ContextCheckpoint['snapshot']
   'plugin:mbot/compact-input': CompactionProof['input']
   'plugin:mbot/compact-output': NonNullable<CompactionProof['output']>
+  'plugin:mbot/domain-dream-input': { schemaVersion: 1; maintenanceId: string; scope: ConversationViewScope; head: string; captureHash: string; requestHash: string }
+  'plugin:mbot/domain-dream-output': { schemaVersion: 1; maintenanceId: string; captureHash: string; requestHash: string; planHash: string; rawOutputHash: string; usage: null | { inputTokens?: number; outputTokens?: number; totalTokens?: number } }
+  'plugin:mbot/domain-dream-result': { schemaVersion: 1; maintenanceId: string; outcome: 'committed' | 'aborted'; commit?: string; checkpointHash?: string }
 } }
 declare module '@deepseek-ai/dsh-llm/types' {
   interface LlmRequestPurposeMap { 'mbot-compaction': true; 'mbot-domain-dream': true }

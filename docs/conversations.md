@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、读工具、本域候选与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；原生提示/工具与历史隔离已接线并通过内部模型夹具验收。公开准入、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、读工具、本域候选与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；原生提示/工具与历史隔离已接线并通过内部模型夹具验收。可信 Host 的独立域 Dreaming 维护已接通，公开准入、域激活、适配器、摘要及 sleep/wake 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -97,7 +97,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。内部域事务通过下述 context snapshot v2 将知识版本封存到原生/Git 证明；单独的视图检查仍不构成事务证明。既有私人主 Session 的知识与快照保留 v1。
 
-`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。内部数据桥已提供脱敏/预算检查后的固定快照读取，下述原生工具复用同一快照；公开准入、独立域 Dreaming 与摘要/维护接齐之前，公开域闸门继续拒绝执行。
+`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。内部数据桥已提供脱敏/预算检查后的固定快照读取，下述原生工具复用同一快照；公开准入、域摘要与 sleep/wake 接齐之前，公开域闸门继续拒绝执行。
 
 ## 内部域事务与 checkpoint
 
@@ -110,7 +110,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 - 原生 `plugin:mbot/context-snapshot` 的 schemaVersion 2 绑定持久 conversationId、knowledge v2、原生有序来源 cut/Inbox 输入和前序 checkpoint。同一次 Git 审计封存域身份与 context；成功域回合不得没有 snapshot，已捕获的失败/取消回合也不能删掉证明或降为私人 v1。
 - 恢复要求 Host 原生所有权核验及 `recorded-domain-v1` proof，检查 registry 域归属、原 journal/私有 ledger/context hash、原生事件和 Git 审计；使用原始受限 guard，保持单次提交/结算与 PAUSED，不运行模型。Runtime 重载后可恢复 checkpoint，输入继续留在同一 reserved Session 的 Inbox。
 
-域回复使用独立 conversationMailbox，不能改用 ownerMailbox。当前不支持实际 IM/peer/outbox、独立域 Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
+域回复使用独立 conversationMailbox，不能改用 ownerMailbox。可信 Host 可调用独立域 Dreaming 维护服务；当前不支持实际 IM/peer/outbox、域 Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
 
 ## 域候选事务
 
@@ -122,9 +122,9 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 原生 context snapshot v2 带 `candidateVersion:1`，私有 snapshot、journal、工具 schema 与 Git 审计须一致；删除候选审计或降成 v4 不能绕过原生证明。checkpoint、reply 查询和恢复都从原审计 commit 读取候选 blob，重算原生来源，不用当前工作树替代。新恢复使用 `recorded-domain-candidates-v1` proof，不能复用 v4 的只读证明；提交中断保持单次结算与 PAUSED，取消保持故障计数。
 
-候选是待审查建议。文件留存不证明回合成功，也不证明内容真实；失败/取消回合可保留已验证候选并明确保留原 outcome，后续独立域 Dreaming 只自动接收完成回合，其他状态须复核。当前没有域候选消费/记忆合并入口，也不直接改 MEMORY/wiki 或知识版本。私人 Dreaming 排除域 transcript（含旧 pending）且不扫描候选目录；分类依据原始添加 commit 的审计，当前 metadata 改写不能扩大可见域。
+候选是待审查建议。文件留存不证明回合成功，也不证明内容真实；失败/取消回合可保留已验证候选并明确保留原 outcome，后续独立域 Dreaming 只自动接收完成回合，其他状态须复核。普通候选工具不直接改 MEMORY/wiki 或知识版本；消费和记忆合并仅由独立域 Dreaming 维护事务执行。私人 Dreaming 排除域 transcript（含旧 pending）且不扫描候选目录；分类依据原始添加 commit 的审计，当前 metadata 改写不能扩大可见域。
 
-公开域仍为 reserved，候选流程只在内部原生夹具中接通。[独立域 Dreaming](domain-dreaming.md) 已实现完成候选的原生/Git 取材、增量预算和逐行写集校验，尚不调用模型或写入记忆。持久 Dreaming、摘要、sleep/wake 和维护恢复完成后，才联合验收实体激活。
+公开域仍为 reserved，候选流程只在内部原生夹具中接通。[独立域 Dreaming](domain-dreaming.md) 已实现完成候选取材、无工具模型、持久逐行写集/消费审计和中断恢复。域摘要、sleep/wake、所有者域命令和公开准入接齐后，才联合验收实体激活。
 
 ## 原生提示、读工具与历史隔离
 
@@ -136,7 +136,7 @@ DSH `0.2.2-rc.5` 在原生 step 内再次执行 `refreshContext`，仅过滤 ass
 
 历史 user/assistant/tool 事件须来自本轮原生记录或已经 Git/context 联合验证的回合；不收养预先写入的私人历史，也不继承父 Session。旧派生系统/运行上下文通过原生 surface replacement 退役，原始日志保留。恢复时从 snapshot 捕获的 Inbox cut 取原消息并验 hash；准入失败而尚无 user/message 的回合也能验证，展示消息不能替代原输入字节。准备阶段失败保留未派发输入；最终模型检查发生在原生派发后时，保留真实失败终态，不伪造 queued 状态。
 
-当前测试夹具只在测试内接入内部 `openTurn` 并放行内存测试状态，使用真实原生 Agent、工具、审计、持久化与公开恢复接口验证链路；持久 registry 始终为 reserved。该夹具不构成公开激活接口。域 compaction 明确拒绝，域维护仍待独立契约。
+当前测试夹具只在测试内接入内部 `openTurn` 并放行内存测试状态，使用真实原生 Agent、工具、审计、持久化与公开恢复接口验证链路；持久 registry 始终为 reserved。该夹具不构成公开激活接口。域 compaction 明确拒绝；可信 Host 的 `runtime.dream` 使用独立维护契约，不放行普通业务闸门。
 
 ## 持久化、执行与退役
 

@@ -19,6 +19,7 @@ import { registerDomainBotctl } from './domain-tools.js'
 import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
 import { sleepBot, wakeBot, recoverSleepMaintenance, botOverview } from './sleep.js'
 import { readMaintenanceJournal } from './maintenance-journal.js'
+import { runDomainDream, recoverDomainDream } from './domain-dream.js'
 import { botSessionIds, conversationForSession } from './conversations.js'
 
 export const name = 'mbot-runtime'
@@ -89,6 +90,7 @@ export class MBotRuntime extends Service {
   close() {
     if (this.shutdown) return this.shutdown
     this.closed = true
+    for (const controller of this.domainDreamControllers ?? []) controller.abort(new Error('MBot Runtime disposed during domain maintenance'))
     const states = [...this.states.values()]
     const completion = Promise.withResolvers()
     this.shutdown = completion.promise
@@ -332,6 +334,8 @@ export class MBotRuntime extends Service {
   async coordinateRecovery(bot, journal, options = {}) {
     if (this.closed || !this.ready) throw new Error('MBot Runtime is not ready for recovery')
     if (journal) return recoverRuntime(this, bot, journal, options)
+    const dreamRecovered = await recoverDomainDream(this, bot, options)
+    if (dreamRecovered) return dreamRecovered
     const repaired = await repairNativeReceipt(this, bot, options)
     if (repaired) return repaired
     const compactRecovered = await recoverMaintenanceCompaction(this, bot, options)
@@ -346,6 +350,9 @@ export class MBotRuntime extends Service {
     if (!cell) throw new Error('Session is not managed by the active MBot Runtime')
     return runManualCompaction(this, agent, cell, options)
   }
+
+  /** Owner maintenance only; does not activate an additional conversation. */
+  async dream(agent, options = {}) { return runDomainDream(this, agent, options) }
 
   /** Staged sleep: barrier -> cutoff -> Dreaming -> optional compact -> durable sleeping state. */
   async sleep(botId, options = {}) {

@@ -76,6 +76,15 @@
 - Node 24.9.0 完整回归通过：263 项 Host/Runtime 通过、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-dream-full.log`）。补充链接标签和脱敏原文预算检查后，类型与 8 项专项通过（`/tmp/dsh-mbot-domain-dream-final-scope.log`）。早期专项中将展示卡片缺失误判为必须拒绝，以及测试清单重复列入同一文档的问题均已修正；保留 `/tmp/dsh-mbot-domain-dream-scope.log` 和 `scope2.log`。
 - 四类安装全部通过，实际包内执行取材/请求构造/计划校验，并确认没有写入工作树（`/tmp/mbot-plugin-install.LUBZve`、`/tmp/dsh-mbot-domain-dream-install2.log`）。首次 tarball 夹具因局部 `readFile` 遮蔽顶层导入失败，修正测试后重跑矩阵，保留 `/tmp/mbot-plugin-install.kgcsPh`。361 条本地文档链接、包资源、Node/Bash 语法及 `git diff --check` 通过。没有新增 GUI 流程，本阶段未运行 Chromium、真实 API 或 R5。
 
+### 域 Dreaming 持久维护与恢复
+
+- 新增可信 Host `runtime.dream(agent)`：原生维护生命周期与 BotCoordinator 屏障内执行隔离、无工具的辅助模型；输入/输出/用量在原生 Session 标记并 flush，模型正常结束后才接受逐行计划。域仍为 reserved，公开域命令、实体准入、摘要及 sleep/wake 联合流程保留在 TODO。
+- 持锁 helper 保存工作树外维护 journal v2、完整阶段快照和明确 commit intent；工作树持久标记阻止 Host/CLI mutation/run/dream/resume 绕过。按原权限写入、fsync/rename，私有 Git index 同次提交本域记忆、报告和消费 checkpoint，记录知识版本前后值；Git 写子进程继承两把锁。
+- 恢复重建原生/Git 来源、消费链、模型计划和完整派生写集；未持久计划只中止，已保存计划不重调模型，已提交只补原生回执/flush 与结算。支持真实部分写入、Runtime 卸载/模块交接、Git 引用更新前后 SIGKILL 和整个 Host 崩溃后同原生 Session 冷恢复。篡改、未知修改、未退出写者和缺失证明均拒绝并保留现场。契约见 [独立域 Dreaming](docs/domain-dreaming.md)。
+- Node 24.9.0 完整 Host/Runtime 首轮为 279 项通过、1 项真实 API 跳过、1 项旧域恢复测试被短命 `/proc` 进程拒绝。确认 PID 已退出后专项复验通过，核对原失败现场 HEAD/工作树/journal 未变；64 组 Bash 另行全部通过。日志 `/tmp/dsh-mbot-domain-maintenance-full.log`、`/tmp/dsh-mbot-domain-maintenance-regression-retry.log`、`/tmp/dsh-mbot-domain-maintenance-bash.log`，现场摘要 `/tmp/dsh-mbot-domain-maintenance-refusal.json`。没有放宽生产写者核验。
+- 实际安装暴露夹具原生消息缺 `stream`、独立 helper 无法按 Host loader 解析 DSH peer，以及探针缺 `sessionQuery` inject，均已修正。helper 通过既有固定版本 SDK 定位器加载官方 `foldSurface`，不执行用户 profile；四类安装已通过（`/tmp/mbot-plugin-install.IFg3pP`）。前三次失败产物 `/tmp/mbot-plugin-install.IqmaEs`、`/tmp/mbot-plugin-install.YDZAxd`、`/tmp/mbot-plugin-install.VJDDjd` 保留。
+- 最后复核补齐基线 `write-tree/status` 子进程的双锁继承，恢复 helper 退出也纳入原生维护生命周期；类型与 22 项域专项通过（`/tmp/dsh-mbot-domain-maintenance-final-scope2.log`），覆盖孤立索引写入和引用更新期间恢复拒绝、退出后单次结算。最终源码/tarball/Git/Web tarball 四类安装复验通过（`/tmp/mbot-plugin-install.XGLNtM`、`/tmp/dsh-mbot-domain-maintenance-install-final.log`）。362 条文档链接、包资源、语法及 `git diff --check` 通过。本阶段没有新增命令/UI，未运行 Chromium、真实 API 或 R5。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

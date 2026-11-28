@@ -52,6 +52,8 @@ import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/c
 import { domainCandidateToolSchema, domainToolSchema, registerDomainBotctl } from '../plugin/domain-tools.js'
 import { captureDomainDream } from '../plugin/domain-dream-source.js'
 import { domainDreamRequest, validateDomainDreamPlan } from '../plugin/domain-dream-plan.js'
+import { readMaintenanceJournal } from '../plugin/maintenance-journal.js'
+import { restoreDreamCheckpoint, dreamCheckpointPath, dreamReportPath, dreamResultType } from '../plugin/domain-dream-audit.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -425,6 +427,343 @@ test('domain Dreaming validates attributed line edits without granting private o
   const changedCapture = structuredClone(capture); changedCapture.input.documents[0].writable = true
   await assert.rejects(validateDomainDreamPlan(f.ws, changedCapture, JSON.stringify(raw)), /captured input changed/u)
   assert.equal(git(f.ws, 'status', '--porcelain'), '')
+})
+
+function dreamProposal(request) {
+  const input = JSON.parse(request.messages[1].content[0].text)
+  const document = input.documents.find(item => item.kind === 'memory' && item.writable)
+  return JSON.stringify({ decisions: input.sources.map(source => ({ sourceId: source.id, action: 'merge', reason: 'Retain attributed suggestion for review' })),
+    changes: [{ path: document.path, baseHash: document.textHash, edits: [{ startLine: 1, deleteCount: 0,
+      lines: input.sources.map(source => `Candidate (unconfirmed): ${source.text}`), sourceIds: input.sources.map(source => source.id), reason: 'Keep existing memory and attribution' }] }], report: 'Candidates remain unconfirmed.' })
+}
+
+test('domain maintenance commits isolated memory, report and authenticated cursor once across multiple rounds', { timeout: 60000 }, async t => {
+  let normal = 0
+  const f = await domainNativeFixture(t, request => request.purpose === 'mbot-domain-dream' ? response(dreamProposal(request))
+    : ++normal % 2 ? response('', { name: 'botctl', args: { action: 'remember', text: `Suggestion ${normal}` } }) : response('remembered'))
+  const { ctx, ws, agent, requests, scope, policy } = f
+  let last
+  for (const id of ['one', 'two']) {
+    await f.mailbox().send({ requestId: id, text: 'please remember' }); await settle(ctx, agent)
+    const head = git(ws, 'rev-parse', 'HEAD'), mode = (await lstat(join(ws, policy.memory[0]))).mode & 0o777
+    const result = await ctx.mbotRuntime.dream(agent)
+    assert.equal(result.kind, 'committed'); assert.equal(result.more, false)
+    assert.equal(git(ws, 'rev-parse', 'HEAD^'), head)
+    assert.equal(git(ws, 'status', '--porcelain'), '')
+    assert.equal((await lstat(join(ws, policy.memory[0]))).mode & 0o777, mode)
+    const log = await ctx.sessionQuery.readSession(agent.id)
+    const checkpoint = await restoreDreamCheckpoint(ws, scope, 'chief', log, result.commit)
+    assert.deepEqual(checkpoint, result.checkpoint)
+    const report = JSON.parse(await readFile(join(ws, dreamReportPath(scope, result.maintenanceId)), 'utf8'))
+    assert.deepEqual(report.previous, last?.checkpoint ?? null)
+    assert.equal(report.capture.input.sources.length, 1)
+    assert.equal(log.events.filter(event => event.type === dreamResultType && event.data.maintenanceId === result.maintenanceId).length, 1)
+    assert.equal(await readMaintenanceJournal(ws), null)
+    await assert.rejects(readFile(join(ws, '.mbot/runs/maintenance.json')), { code: 'ENOENT' })
+    const count = requests.length
+    assert.deepEqual(await ctx.mbotRuntime.dream(agent), { kind: 'empty', more: false })
+    assert.equal(requests.length, count); assert.equal(git(ws, 'rev-parse', 'HEAD'), result.commit)
+    last = result
+  }
+  const dreams = requests.filter(request => request.purpose === 'mbot-domain-dream')
+  assert.equal(dreams.length, 2)
+  for (const request of dreams) {
+    assert.equal(request.messages.length, 2); assert.equal(request.tools, undefined)
+    assert.ok(!JSON.stringify(request).includes('PRIVATE_'))
+  }
+  assert.ok(JSON.stringify(requests.findLast(request => !request.purpose || request.purpose !== 'mbot-domain-dream')).includes('Suggestion 1'))
+  assert.match(await readFile(join(ws, 'MEMORY.md'), 'utf8'), /PRIVATE_MEMORY_CANARY/u)
+  await writeFile(join(ws, dreamCheckpointPath(scope)), JSON.stringify({ ...last.checkpoint, cursor: null }))
+  git(ws, 'add', '.'); git(ws, 'commit', '-m', 'human: invalid checkpoint edit')
+  await assert.rejects(ctx.mbotRuntime.dream(agent), /changed after|contradicts/u)
+})
+
+async function domainDreamFixture(t, dream = request => response(dreamProposal(request))) {
+  let normal = 0
+  const f = await domainNativeFixture(t, (request, _count, ctx) => request.purpose === 'mbot-domain-dream' ? dream(request, ctx)
+    : ++normal === 1 ? response('', { name: 'botctl', args: { action: 'remember', text: 'Domain candidate for maintenance recovery' } }) : response('recorded'))
+  await f.mailbox().send({ requestId: 'maintenance-source', text: 'keep this candidate' }); await settle(f.ctx, f.agent)
+  return f
+}
+
+function interruptDomainWriter(ctx, operation) {
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  ctx.subprocess.spawn = spec => {
+    const child = spawn(spec)
+    if (spec.argv[0].endsWith('/bin/mbot-maintenance') && spec.argv.at(-1) === 'begin') {
+      const write = child.stdin.write.bind(child.stdin)
+      child.stdin.write = (data, callback) => {
+        if (JSON.parse(data).kind === operation) { child.terminate(); queueMicrotask(() => callback(new Error('fixture disconnected writer'))); return false }
+        return write(data, callback)
+      }
+    }
+    return child
+  }
+  return () => { ctx.subprocess.spawn = spawn }
+}
+
+test('domain maintenance aborts malformed output and cancellation without consuming candidates', { timeout: 60000 }, async t => {
+  for (const kind of ['invalid', 'cancel']) await t.test(kind, async t => {
+    const entered = Promise.withResolvers(), cancellation = new AbortController()
+    const f = await domainDreamFixture(t, async request => {
+      entered.resolve()
+      if (kind === 'cancel') await delay(30000, undefined, { signal: request.signal })
+      return response('invalid JSON')
+    })
+    const base = git(f.ws, 'rev-parse', 'HEAD')
+    const pending = f.ctx.mbotRuntime.dream(f.agent, { signal: cancellation.signal })
+    const refused = assert.rejects(pending)
+    await entered.promise
+    if (kind === 'cancel') cancellation.abort(new Error('user cancelled'))
+    await refused
+    assert.equal(git(f.ws, 'rev-parse', 'HEAD'), base); assert.equal(git(f.ws, 'status', '--porcelain'), '')
+    assert.equal(await readMaintenanceJournal(f.ws), null)
+    const capture = await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: await f.ctx.sessionQuery.readSession(f.agent.id) })
+    assert.equal(capture.input.sources.length, 1)
+    await assert.rejects(readFile(join(f.ws, dreamCheckpointPath(f.scope))), { code: 'ENOENT' })
+    assert.equal((await f.ctx.sessionQuery.readSession(f.agent.id)).events.filter(event => event.type === dreamResultType && event.data.outcome === 'aborted').length, 1)
+  })
+})
+
+test('domain maintenance recovers durable plans and committed results after writer loss and Runtime reload', { timeout: 90000 }, async t => {
+  for (const stop of ['start', 'commit', 'finish']) await t.test(stop, async t => {
+    const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+    const base = git(ws, 'rev-parse', 'HEAD'), restore = interruptDomainWriter(ctx, stop)
+    await assert.rejects(ctx.mbotRuntime.dream(agent), /disconnected/u)
+    restore()
+    const journal = await readMaintenanceJournal(ws), calls = f.requests.length
+    assert.equal(journal.record.phase, { start: 'prepared', commit: 'planned', finish: 'committed' }[stop])
+    const before = git(ws, 'rev-parse', 'HEAD')
+    for (const [program, args] of [['botctl', ['remember', 'forbidden']], ['mbot', ['resume']], ['mbot', ['dream']]]) {
+      const result = await ctx.mbot.execute(program, args, { botId: bot.botId })
+      assert.notEqual(result.exitCode, 0); assert.match(result.stderr, /maintenance/u)
+    }
+    const cell = runtimeCells.get(agent), proof = cell.domainDreamProof
+    await assert.rejects(ctx.mbotRuntime.dream(agent), /requires recovery/u)
+    assert.equal(cell.domainDreamProof, proof)
+    delete cell.domainDreamProof
+    await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /drained ownership proof/u)
+    cell.domainDreamProof = proof
+    await f.owner.dispose(); await ctx.plugin(runtime, { workers: false })
+    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    assert.equal(recovered.domainDreamRecovered, true)
+    assert.equal(f.requests.length, calls)
+    assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), stop === 'start' ? '0' : '1')
+    if (stop === 'finish') assert.equal(git(ws, 'rev-parse', 'HEAD'), before)
+    assert.equal(git(ws, 'status', '--porcelain'), '')
+    assert.equal(await readMaintenanceJournal(ws), null)
+    const results = (await ctx.sessionQuery.readSession(agent.id)).events.filter(event => event.type === dreamResultType)
+    assert.equal(results.length, 1); assert.equal(results[0].data.outcome, stop === 'start' ? 'aborted' : 'committed')
+    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed, false)
+  })
+})
+
+test('domain maintenance preserves unknown changes and refuses forged derived writes during recovery', { timeout: 60000 }, async t => {
+  const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+  const restore = interruptDomainWriter(ctx, 'commit')
+  await assert.rejects(ctx.mbotRuntime.dream(agent)); restore()
+  const journal = await readMaintenanceJournal(ws), originalJournal = await readFile(journal.file, 'utf8')
+  const path = join(journal.record.directory, `${journal.record.stateHash}.json`), state = JSON.parse(await readFile(path, 'utf8'))
+  const tampered = structuredClone(state); tampered.writes[0].text = 'forged memory without matching model or source'
+  const hash = contextHash(tampered), forged = join(journal.record.directory, `${hash}.json`)
+  await writeFile(forged, JSON.stringify(tampered) + '\n', { mode: 0o600 })
+  await writeFile(journal.file, JSON.stringify({ ...journal.record, stateHash: hash }))
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /derived write set changed/u)
+  await writeFile(journal.file, originalJournal)
+  const privatePath = join(ws, 'MEMORY.md'), privateBytes = await readFile(privatePath)
+  await writeFile(privatePath, 'unknown concurrent writer')
+  const head = git(ws, 'rev-parse', 'HEAD')
+  await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /worktree differs/u)
+  assert.equal(await readFile(privatePath, 'utf8'), 'unknown concurrent writer')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  await writeFile(privatePath, privateBytes)
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).domainDreamRecovered, true)
+  assert.equal(f.requests.filter(request => request.purpose === 'mbot-domain-dream').length, 1)
+})
+
+test('domain maintenance reuses the committed audit after native receipt flush failure', { timeout: 30000 }, async t => {
+  const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  let fail = true
+  ctx.sessions.flush = async session => {
+    const log = await ctx.sessionQuery.readSession(agent.id)
+    if (session.id === agent.id && fail && log.events.some(event => event.type === dreamResultType)) {
+      fail = false; throw new Error('fixture domain receipt flush failure')
+    }
+    return flush(session)
+  }
+  await assert.rejects(ctx.mbotRuntime.dream(agent), /flush/u)
+  ctx.sessions.flush = flush
+  const head = git(ws, 'rev-parse', 'HEAD'), count = f.requests.length
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).domainDreamRecovered, true)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head); assert.equal(f.requests.length, count)
+  assert.equal((await ctx.sessionQuery.readSession(agent.id)).events.filter(event => event.type === dreamResultType).length, 1)
+})
+
+test('domain maintenance recovers SIGKILL before and after the Git ref update', { timeout: 90000 }, async t => {
+  for (const phase of ['commit-tree', 'update-ref']) await t.test(phase, async t => {
+    const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+    const base = git(ws, 'rev-parse', 'HEAD'), shim = await mkdtemp(join(root, 'dream-git-crash.'))
+    await writeFile(join(shim, 'git'), `#!/bin/sh\ncrash=0\nfor arg do [ "$arg" != ${phase} ] || crash=1; done\n/usr/bin/git "$@" || exit $?\nif [ "$crash" = 1 ]; then kill -KILL "$PPID"; exit 143; fi\n`)
+    await chmod(join(shim, 'git'), 0o700)
+    const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+    ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot-maintenance') && spec.argv.at(-1) === 'begin'
+      ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
+    await assert.rejects(ctx.mbotRuntime.dream(agent), /disconnected|writer/u)
+    ctx.subprocess.spawn = spawn
+    const head = git(ws, 'rev-parse', 'HEAD'), count = f.requests.length
+    assert.equal((await readMaintenanceJournal(ws)).record.phase, phase === 'commit-tree' ? 'applying' : 'committing')
+    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).domainDreamRecovered, true)
+    assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+    if (phase === 'update-ref') assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+    assert.equal(f.requests.length, count); assert.equal(git(ws, 'status', '--porcelain'), '')
+    assert.equal((await ctx.sessionQuery.readSession(agent.id)).events.filter(event => event.type === dreamResultType).length, 1)
+  })
+})
+
+test('domain maintenance joins model cancellation on Runtime unload and retains late Inbox bytes', { timeout: 30000 }, async t => {
+  const entered = Promise.withResolvers(), cancelled = Promise.withResolvers(), release = Promise.withResolvers()
+  t.after(() => release.resolve())
+  const f = await domainDreamFixture(t, async request => {
+    entered.resolve()
+    await new Promise(resolve => request.signal.aborted ? resolve() : request.signal.addEventListener('abort', resolve, { once: true }))
+    cancelled.resolve(); await release.promise
+    return response(dreamProposal(request))
+  })
+  const { ctx, ws, agent } = f, base = git(ws, 'rev-parse', 'HEAD')
+  const dreaming = ctx.mbotRuntime.dream(agent), refused = assert.rejects(dreaming)
+  await entered.promise
+  const late = message('late maintenance inbox is preserved')
+  agent.inbox.splice('next-turn', 0, 0, [late]); await ctx.sessions.flush(agent.session)
+  let closed = false
+  const closing = f.owner.dispose().then(() => { closed = true })
+  await cancelled.promise; await delay(25)
+  assert.equal(closed, false); assert.ok(await readMaintenanceJournal(ws))
+  release.resolve(); await refused; await closing
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base); assert.equal(await readMaintenanceJournal(ws), null)
+  await ctx.plugin(await replacementRuntime(), { workers: false })
+  assert.deepEqual(agent.inbox.nextTurn, [late])
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+})
+
+test('domain maintenance retains both data locks in an orphaned Git writer until it exits', { timeout: 60000 }, async t => {
+  for (const phase of ['write-tree', 'update-ref']) await t.test(phase, async t => {
+    const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+    const shim = await mkdtemp(join(root, 'dream-orphan.')), released = join(shim, 'release'), started = join(shim, 'started')
+    t.after(() => writeFile(released, 'release'))
+    await writeFile(join(shim, 'git'), `#!/bin/sh
+crash=0
+for arg do [ "$arg" != ${phase} ] || crash=1; done
+if [ "$crash" = 1 ] && [ -e "$DREAM_TEST_MARKER" ]; then
+  export DREAM_TEST_HELPER=$PPID
+  exec /usr/bin/setsid /bin/sh -c '
+    printf "%s" "$$" > "$DREAM_TEST_STARTED"
+    kill -KILL "$DREAM_TEST_HELPER"
+    while [ ! -e "$DREAM_TEST_RELEASE" ]; do /usr/bin/sleep 0.02; done
+    exec /usr/bin/git "$@"
+  ' dream-orphan "$@"
+fi
+exec /usr/bin/git "$@"
+  `)
+    await chmod(join(shim, 'git'), 0o700)
+    // The official subprocess owner normally reaps the whole cgroup. Use a raw
+    // process in this fixture to exercise the fallback flock proof independently.
+    const originalSpawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+    ctx.subprocess.spawn = spec => {
+      if (!spec.argv[0].endsWith('/bin/mbot-maintenance') || spec.argv.at(-1) !== 'begin') return originalSpawn(spec)
+      const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ...spec.env, PATH: `${shim}:${spec.env.PATH}`, DREAM_TEST_STARTED: started, DREAM_TEST_RELEASE: released,
+          DREAM_TEST_MARKER: join(ws, '.mbot/runs/maintenance.json') } })
+      let stderr = ''
+      child.stderr.on('data', bytes => { stderr += bytes })
+      const done = new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', exitCode => resolve({ exitCode })) })
+      return { stdin: child.stdin, stdout: child.stdout, done, collected: { stderr: { readFrom: () => ({ text: stderr }) } },
+        terminate: () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM') }, waitForExit: () => done }
+    }
+    const base = git(ws, 'rev-parse', 'HEAD')
+    await assert.rejects(ctx.mbotRuntime.dream(agent)); ctx.subprocess.spawn = originalSpawn
+    const pid = (await readFile(started, 'utf8')).trim()
+    await assert.rejects(ctx.mbot.recoverTurn({ botId: bot.botId }), /lock is busy/u)
+    assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+    await writeFile(released, 'release')
+    const deadline = Date.now() + 5000
+    for (;;) {
+      try {
+        const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+        if (stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/u)[0] === 'Z') break
+      } catch (error) { if (error.code === 'ENOENT') break; throw error }
+      if (Date.now() > deadline) throw new Error('Git writer has not exited')
+      await delay(20)
+    }
+    assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).domainDreamRecovered, true)
+    assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), phase === 'update-ref' ? '1' : '0')
+  })
+})
+
+test('domain maintenance survives a real Host SIGKILL and cold native Session resolve without another model call', { timeout: 60000 }, async t => {
+  const f = await domainDreamFixture(t), base = git(f.ws, 'rev-parse', 'HEAD')
+  const config = join(root, `dream-cold-${++sequence}.json`), storage = join(root, `dream-native-${sequence}`)
+  await writeFile(config, JSON.stringify({ workspace: f.ws, registry: f.ctx.mbot.registry(), seed: (await f.ctx.sessionQuery.readSession(f.agent.id)).events }))
+  const run = mode => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./domain-dream-host.mjs', import.meta.url)), mode, config, storage], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = '', ready
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Cold Dreaming Host timed out: ${stderr}`)) }, 15000)
+    t.after(() => { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') })
+    child.stderr.on('data', data => { stderr += data })
+    child.stdout.on('data', data => {
+      stdout += data
+      const line = stdout.split('\n').find(line => line.startsWith('DREAM_READY '))
+      if (!ready && line && stdout.includes(line + '\n')) {
+        ready = JSON.parse(line.slice('DREAM_READY '.length)); child.kill('SIGKILL')
+      }
+    })
+    child.on('error', reject)
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer)
+      if (signal !== 'SIGKILL' || !ready) reject(new Error(`Cold Dreaming Host exited ${code}/${signal}: ${stderr}`))
+      else resolve(ready)
+    })
+  })
+  const first = await run('create')
+  const deadline = Date.now() + 5000
+  for (;;) {
+    try {
+      const stat = await readFile(`/proc/${first.record.ownerPid}/stat`, 'utf8')
+      if (stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/u)[0] === 'Z') break
+    } catch (error) { if (error.code === 'ENOENT') break; throw error }
+    if (Date.now() > deadline) throw new Error('Original maintenance writer has not exited')
+    await delay(20)
+  }
+  const second = await run('resume')
+  assert.equal(first.requests, 1); assert.equal(second.requests, 0)
+  assert.equal(second.result.domainDreamRecovered, true)
+  assert.equal(second.sessionId, f.agent.id); assert.equal(second.state, 'reserved')
+  assert.deepEqual(second.pendingIds, [first.pendingId])
+  assert.equal(git(f.ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+  assert.equal(await readMaintenanceJournal(f.ws), null)
+})
+
+test('domain maintenance resumes a real partial memory write after SIGKILL', { timeout: 30000 }, async t => {
+  const f = await domainDreamFixture(t), { ctx, ws, bot, agent } = f
+  const shim = await mkdtemp(join(root, 'dream-partial.')), hook = join(shim, 'crash.mjs')
+  await writeFile(hook, "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';\nconst rename = fs.renameSync;\nfs.renameSync = (from, to) => { const result = rename(from, to); if (to.includes('/memory/conversations/') && to.endsWith('/MEMORY.md')) process.kill(process.pid, 'SIGKILL'); return result };\nsyncBuiltinESMExports();\n")
+  await writeFile(join(shim, 'node'), '#!/bin/sh\nexec "$DREAM_TEST_NODE" --import "$DREAM_TEST_HOOK" "$@"\n')
+  await chmod(join(shim, 'node'), 0o700)
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot-maintenance') && spec.argv.at(-1) === 'begin'
+    ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}`, DREAM_TEST_NODE: process.execPath, DREAM_TEST_HOOK: hook } }) : spawn(spec)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  await assert.rejects(ctx.mbotRuntime.dream(agent)); ctx.subprocess.spawn = spawn
+  assert.equal((await readMaintenanceJournal(ws)).record.phase, 'applying')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  assert.match(await readFile(join(ws, f.policy.memory[0]), 'utf8'), /Candidate \(unconfirmed\)/u)
+  await assert.rejects(readFile(join(ws, dreamCheckpointPath(f.scope))), { code: 'ENOENT' })
+  const calls = f.requests.length
+  assert.equal((await ctx.mbot.recoverTurn({ botId: bot.botId })).domainDreamRecovered, true)
+  assert.equal(f.requests.length, calls)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(ws, 'status', '--porcelain'), '')
 })
 
 test('domain native candidate upgrade preserves audited v4 history and replaces the tool declaration', { timeout: 30000 }, async t => {

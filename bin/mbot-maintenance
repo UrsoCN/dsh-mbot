@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Host-only maintenance writer. This process retains both lock descriptors.
+set -Eeuo pipefail
+umask 077
+shopt -s nullglob globstar
+MBOT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
+for library in config ws lint board guard permit; do source "$MBOT_ROOT/lib/$library.sh"; done
+[[ $# == 3 && $1 == -C && ( $3 == begin || $3 == recover ) ]] || { mbot_error 'Host maintenance requires -C workspace begin|recover'; exit 2; }
+[[ ! -v MBOT_RUN_ID && ! -v MBOT_PERMIT_TOKEN ]] || { mbot_error 'running tools cannot enter maintenance'; exit 1; }
+MBOT_CLI_WS=$2
+mbot_load_workspace
+exec 8>> "$(mbot_path .mbot/lock)"
+flock -n 8 || { mbot_error 'Bot data lock is busy'; exit 1; }
+exec 9>> "$(mbot_path .mbot/botctl.lock)"
+flock -n 9 || { mbot_error 'Bot tool lock is busy'; exit 1; }
+[[ ! -e $(mbot_turn_ledger) ]] || { mbot_error 'turn recovery must precede maintenance'; exit 1; }
+if [[ $3 == begin ]]; then
+  mbot_require_no_turn
+  [[ ! -e $(mbot_path .mbot/PAUSED) ]] || { mbot_error 'workspace is PAUSED'; exit 1; }
+  mbot_lint >/dev/null
+fi
+exec node "$MBOT_ROOT/bin/domain-maintenance.mjs" "$MBOT_WS" "$3" \
+  "$MBOT_DREAM_MAX_BYTES" "$MBOT_MEMORY_MAX_LINES" "$MBOT_MEMORY_MAX_CHARS" "$MBOT_SOUL_MAX_CHARS" "$MBOT_WIKI_MAX_LINES" "$MBOT_TIMEOUT"

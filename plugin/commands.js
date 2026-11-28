@@ -109,6 +109,7 @@ export function apply(ctx) {
             const result = await ctx.mbot.recoverTurn({ ...options, ...(command.argv[1] ? { botId: command.argv[1] } : {}) })
             return { kind: 'success', text: result.receiptRepaired ? 'Native audit receipt repaired; no new Git commit. Review /mbot runtime.'
               : result.sleepRecovered ? 'Interrupted sleep maintenance recovered and verified. Review /mbot runtime.'
+              : result.domainDreamRecovered ? 'Interrupted domain Dreaming recovered and verified. Review /mbot runtime.'
               : result.maintenanceRecovered ? 'Interrupted maintenance compaction recovered and verified. Review /mbot runtime.'
               : result.needed === false ? 'No managed turn needs recovery.' : 'Turn recovered and audited. Review /mbot status, then /mbot resume.' }
           }

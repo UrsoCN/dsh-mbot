@@ -44,10 +44,19 @@ export async function readMaintenanceJournal(workspace, env = process.env) {
     throw new Error('Unsafe maintenance journal file')
   }
   const parsed = JSON.parse(await readFile(file, 'utf8'))
-  if (!parsed || parsed.schemaVersion !== maintenanceSchemaVersion || parsed.workspace !== workspace
-    || !['compact', 'sleep'].includes(parsed.kind)
+  const domain = parsed?.schemaVersion === 2 && parsed.kind === 'domain-dream'
+  if (!parsed || (!domain && parsed.schemaVersion !== maintenanceSchemaVersion) || parsed.workspace !== workspace
+    || !(domain || ['compact', 'sleep'].includes(parsed.kind))
     || (parsed.bootId !== undefined && !validBootId(parsed.bootId))) {
     throw new Error('Invalid maintenance journal record')
+  }
+  if (domain && (!['prepared', 'running', 'planned', 'applying', 'committing', 'committed', 'aborting', 'aborted', 'settled'].includes(parsed.phase)
+    || !/^dream-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(parsed.maintenanceId ?? '')
+    || !/^[a-f0-9]{64}$/u.test(parsed.stateHash ?? '') || typeof parsed.directory !== 'string'
+    || typeof parsed.botId !== 'string' || !parsed.botId || typeof parsed.sessionId !== 'string' || !parsed.sessionId
+    || !Number.isSafeInteger(parsed.ownerPid) || parsed.ownerPid < 1 || !/^[0-9]+$/u.test(parsed.ownerStart ?? '') || !validBootId(parsed.bootId)
+    || !Number.isSafeInteger(parsed.host?.pid) || parsed.host.pid < 1 || !/^[0-9]+$/u.test(parsed.host.start ?? '') || !validBootId(parsed.host.bootId))) {
+    throw new Error('Invalid domain maintenance journal record')
   }
   return { file, record: parsed }
 }
@@ -79,7 +88,9 @@ export async function isMaintenanceOwnerLive(record) {
   if (!record?.ownerPid || !record.ownerStart) return false
   if (record.bootId && record.bootId !== await currentBootId()) return false
   try {
-    return (await processStart(record.ownerPid)) === record.ownerStart
+    const stat = await readFile(`/proc/${record.ownerPid}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/u)
+    return fields[0] !== 'Z' && fields[19] === record.ownerStart
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'ESRCH') return false
     throw error

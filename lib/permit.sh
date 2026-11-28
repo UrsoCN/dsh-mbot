@@ -6,6 +6,7 @@ mbot_turn_ledger() { mbot_path .mbot/runs/active-turn.json; }
 # New managed callers carry a permit and must never fall back after it expires.
 mbot_check_permit() {
   local mutation=$1 file scratch
+  if [[ $mutation == 1 || -v MBOT_RUN_ID ]]; then mbot_require_no_maintenance; fi
   unset MBOT_ACTOR_ID MBOT_ACTOR_TASK MBOT_DOMAIN_SCRATCH
   file=$(mbot_turn_ledger)
   if [[ -v MBOT_PERMIT_TOKEN ]]; then
@@ -53,6 +54,13 @@ mbot_require_no_turn() {
   local file
   file=$(mbot_turn_ledger)
   [[ ! -e $file && ! -L $file ]] || { mbot_error 'managed turn is active or needs recovery; inspect active-turn.json'; return 1; }
+  mbot_require_no_maintenance
+}
+
+mbot_require_no_maintenance() {
+  local file
+  file=$(mbot_path .mbot/runs/maintenance.json)
+  [[ ! -e $file && ! -L $file ]] || { mbot_error 'Host maintenance is active or needs recovery; use /mbot recover'; return 1; }
 }
 
 # Recheck assignment under botctl.lock. A new owner/state invalidates old work.

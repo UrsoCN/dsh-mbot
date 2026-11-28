@@ -59,7 +59,7 @@ npm run bench:runtime
 
 域模型测试覆盖固定视图、多轮知识更新、Runtime 重载、提交失败恢复、私人 canary、迟到 required context、scope-local 冲突、准备阶段改写、未审计历史、额外工具和审批拒绝。安装矩阵另核对域工具的实际 schema 及私人工具不可见；GUI 继续验证公开 reserved 拒绝路径。
 
-域 Dreaming 的取材与计划校验使用真实原生 Agent/内部桥夹具，覆盖完成候选筛选、来源 cut、增量位置、脱敏、预算和跨域写集拒绝；目前只构造辅助请求，没有模型执行或维护提交入口。阶段契约见 [独立域 Dreaming](docs/domain-dreaming.md)。
+域 Dreaming 使用真实原生 Agent/内部候选桥夹具；可信 Host `ctx.mbotRuntime.dream(agent)` 执行独立模型请求、持锁 helper 写集与消费审计，`/mbot recover` 复用持久计划或结算既有提交。覆盖取消、Runtime 卸载、Git/Host SIGKILL、原生 flush、部分写入、孤立 Git 写者和篡改拒绝；安装矩阵实际调用包内服务并验证幂等。公开域准入、所有者域命令、摘要和 sleep/wake 仍待接线。契约见 [独立域 Dreaming](docs/domain-dreaming.md)。
 
 `bench:runtime` 测量 100/300/1000 轮恢复、Worker 事件与 ignored 快照；`--quick` 供 CI 冒烟。数据及局限见 [Runtime 架构与基准](docs/runtime-architecture.md)。仓库已配置 `.github/workflows/ci.yml`：Node 24.9.0 / 24 各执行串行回归与四种安装模式，安装任务显式准备 DSH `0.2.2-rc.5` 和 pnpm `12.23.0`，失败保留日志。随包镜像见 [ops/ci.yml.example](ops/ci.yml.example)，兼容范围与发布核对见 [发布检查](docs/plugin-standard-review.md)。R5 基准暂缓，不纳入本次 CI。
 

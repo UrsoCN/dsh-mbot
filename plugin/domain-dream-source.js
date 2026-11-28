@@ -1,6 +1,7 @@
 // Host-only Dreaming input capture. No model, worktree mutation or cursor write.
 import { isDeepStrictEqual } from 'node:util'
-import { foldSurface } from '@deepseek-ai/dsh-session'
+import { pathToFileURL } from 'node:url'
+import { nativeSdk } from './native-storage.js'
 import { readContextEvidence } from './context-restore.js'
 import { contextSnapshotType, verifyContextCut } from './context-state.js'
 import { contextHash, contentHash, freezeContext } from './context-hash.js'
@@ -10,6 +11,18 @@ import { validateDomainScope } from './domain-contract.js'
 import { parseCandidates } from './domain-candidates.js'
 import { redactValue } from './redact.js'
 import { validateDomainBudgets } from './domain-budget.js'
+
+// DSH's installed plugin peers are resolved by its Host loader. A standalone
+// maintenance helper uses the verified SDK beside the installed dsh executable.
+// Import official foldSurface; never replace native semantics with a local fold.
+let sessionSdk
+async function nativeSessionSdk() {
+  return sessionSdk ??= import('@deepseek-ai/dsh-session').catch(async error => {
+    if (error.code !== 'ERR_MODULE_NOT_FOUND' || !error.message.includes("package '@deepseek-ai/dsh-session'")) throw error
+    const sdk = await nativeSdk()
+    return import(pathToFileURL(sdk.resolve('@deepseek-ai/dsh-session')).href)
+  })
+}
 
 export const domainDreamLimits = Object.freeze({ inputBytes: 64000, outputBytes: 131072,
   memoryLines: 150, memoryChars: 3000, soulChars: 5000, wikiLines: 200 })
@@ -57,6 +70,7 @@ export async function captureDomainDream(workspace, { scope: inputScope, role, l
   validateDomainBudgets(view.documents, budget)
   const restored = await readContextEvidence(workspace, { botId: scope.botId, log, conversation: scope },
     { head: view.head, requireSettled: true, includeAudits: true })
+  const { foldSurface } = await nativeSessionSdk()
   for (const reference of restored.snapshots) {
     const event = log.events[reference.seq]
     if (event?.type !== contextSnapshotType || contextHash(event.data) !== reference.hash) throw new Error('Dreaming context snapshot changed')

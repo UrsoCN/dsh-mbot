@@ -41,7 +41,7 @@ unset MBOT_WS MBOT_RUN_ID MBOT_BOT DEEPSEEK_API_KEY
 cd "$root"
 npm pack "$repo" --json --ignore-scripts --pack-destination "$root" --cache "$root/npm-cache" > "$root/pack.json"
 tarball=$root/$(jq -r '.[0].filename' "$root/pack.json")
-jq -e '.[0].files | any(.path=="DESIGN.md") and any(.path=="PLUGIN.md") and any(.path=="RELEASE_NOTE.md") and any(.path=="TODO.md") and any(.path=="docs/README.md") and any(.path=="docs/archive/0.1-acceptance.md") and any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="bin/turn-state.mjs" and (.mode / 64 | floor % 2)==1) and any(.path=="plugin/turn-state.js") and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and any(.path=="plugin/removal.js") and any(.path=="bin/turn-actor.mjs") and any(.path=="plugin/actor-lease.js") and any(.path=="plugin/workers.js") and any(.path=="plugin/worker-proof.js") and any(.path=="plugin/runtime-cells.js") and any(.path=="plugin/gate-driver.js") and any(.path=="plugin/conversation-session.js") and any(.path=="plugin/bot-coordinator.js") and any(.path=="plugin/mailbox-facade.js") and any(.path=="plugin/runtime-recovery.js") and any(.path=="plugin/recovery-proof.js") and any(.path=="plugin/recovery-audit.js") and any(.path=="plugin/native-reply.js") and any(.path=="bin/turn-runtime-recovery.mjs") and any(.path=="bin/botctl-migrate.mjs") and any(.path=="plugin/readonly-migration.js") and any(.path=="plugin/native-storage.js") and any(.path=="plugin/compaction.js") and any(.path=="plugin/compaction-data.js") and any(.path=="plugin/maintenance-journal.js") and any(.path=="plugin/sleep.js") and any(.path=="docs/managed-compaction.md") and any(.path=="docs/sleep-wake.md") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
+jq -e '.[0].files | any(.path=="DESIGN.md") and any(.path=="PLUGIN.md") and any(.path=="RELEASE_NOTE.md") and any(.path=="TODO.md") and any(.path=="docs/README.md") and any(.path=="docs/archive/0.1-acceptance.md") and any(.path=="templates/workspace/gitignore") and any(.path=="templates/workspace/.mbot/config") and any(.path=="plugin/index.d.ts") and any(.path=="plugin/client.js") and any(.path=="plugin/client.d.ts") and any(.path=="bin/mbot-turn" and (.mode / 64 | floor % 2)==1) and any(.path=="bin/turn-state.mjs" and (.mode / 64 | floor % 2)==1) and any(.path=="plugin/turn-state.js") and any(.path=="lib/permit.sh") and any(.path=="plugin/turn.d.ts") and any(.path=="lib/turn-recovery.sh") and any(.path=="bin/turn-writers.mjs") and any(.path=="bin/turn-snapshot.mjs") and any(.path=="bin/botctl-host.mjs") and any(.path=="plugin/ipc.js") and any(.path=="plugin/ipc.d.ts") and any(.path=="plugin/ipc-protocol.js") and any(.path=="lib/turn-outcome.jq") and any(.path=="bin/turn-reply.mjs") and any(.path=="bin/turn-receipt.mjs") and any(.path=="plugin/reply-proof.js") and any(.path=="plugin/receipts.js") and any(.path=="plugin/removal.js") and any(.path=="bin/turn-actor.mjs") and any(.path=="plugin/actor-lease.js") and any(.path=="plugin/workers.js") and any(.path=="plugin/worker-proof.js") and any(.path=="plugin/runtime-cells.js") and any(.path=="plugin/gate-driver.js") and any(.path=="plugin/conversation-session.js") and any(.path=="plugin/bot-coordinator.js") and any(.path=="plugin/mailbox-facade.js") and any(.path=="plugin/runtime-recovery.js") and any(.path=="plugin/recovery-proof.js") and any(.path=="plugin/recovery-audit.js") and any(.path=="plugin/native-reply.js") and any(.path=="bin/turn-runtime-recovery.mjs") and any(.path=="bin/botctl-migrate.mjs") and any(.path=="plugin/readonly-migration.js") and any(.path=="plugin/native-storage.js") and any(.path=="plugin/compaction.js") and any(.path=="plugin/compaction-data.js") and any(.path=="bin/mbot-maintenance" and (.mode / 64 | floor % 2)==1) and any(.path=="bin/domain-maintenance.mjs") and any(.path=="plugin/domain-dream.js") and any(.path=="plugin/domain-dream-transaction.js") and any(.path=="plugin/domain-dream-audit.js") and any(.path=="plugin/maintenance-files.js") and any(.path=="plugin/maintenance-journal.js") and any(.path=="plugin/sleep.js") and any(.path=="docs/managed-compaction.md") and any(.path=="docs/sleep-wake.md") and all(.path != ".env" and (.path | startswith("node_modules/") | not))' "$root/pack.json" >/dev/null
 # A committed package tree tests Git installation without linking developer node_modules.
 mkdir "$root/git-source"
 tar -xzf "$tarball" -C "$root/git-source" --strip-components=1
@@ -55,7 +55,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
-export const inject = ['mbot', 'mbotRuntime', 'mbotIpc', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit', 'subprocess']
+export const inject = ['mbot', 'mbotRuntime', 'mbotIpc', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit', 'subprocess', 'sessionQuery']
 export function apply(ctx) { void setImmediate().then(() => probe(ctx)) }
 // /proc can lose an unrelated process between listing and inspection. Retry
 // only a verified exit, preserving evidence and re-entering the public API.
@@ -206,7 +206,7 @@ async function probe(ctx) {
       previous: { schemaVersion: 1, snapshotHash: domainMeta.runtime.context.snapshotHash, knowledgeVersion: view.knowledge.version, contextEpoch: 1, commit: domainResult.head },
       sourceCut: { throughSeq: session.seq - 1, events: contextReferences([]) }, input: [{ messageId: candidateUser.id, hash: contextHash(candidateUser) }] })
     const candidateArguments = JSON.stringify({ action: 'remember', text: 'Installed per-domain candidate' })
-    session.append('assistant/message', { turn: 2, step: 1,
+    session.append('assistant/message', { turn: 2, step: 1, stream: [],
       message: createAssistantMessage({ content: [{ type: 'tool-call', id: 'installed-candidate', name: 'botctl', arguments: candidateArguments }], source: { provider: 'fixture', model: 'fixture' } }) }, { surfaceOp: 'append' })
     const candidateCall = session.append('tool/call', { turn: 2, step: 1, callId: 'installed-candidate', name: 'botctl', arguments: candidateArguments })
     for (const event of session.snapshotEvents().filter(event => event.seq >= candidateStart.seq)) await candidateLease.record(event)
@@ -259,8 +259,22 @@ async function probe(ctx) {
     assert.equal((await ctx.mbotRuntime.status(domainAgent)).state, 'reserved')
     domainMailbox.dispose()
     let runtimeCalls = 0
+    let dreamCalls = 0
     class InstalledAdapter extends LlmAdapter {
+      async resolveModel(provider, model) { return { provider, id: model, name: model, context: { contextWindow: 16384 } } }
       async *stream(request) {
+        if (request.purpose === 'mbot-domain-dream') {
+          dreamCalls++
+          const input = JSON.parse(request.messages[1].content[0].text)
+          const document = input.documents.find(item => item.kind === 'memory' && item.writable)
+          const proposal = { decisions: input.sources.map(source => ({ sourceId: source.id, action: 'merge', reason: 'Keep installation suggestion attributed' })),
+            changes: [{ path: document.path, baseHash: document.textHash, edits: [{ startLine: 1, deleteCount: 0,
+              lines: ['Installation candidate (unconfirmed).'], sourceIds: input.sources.map(source => source.id), reason: 'Add only within published domain' }] }], report: 'Installed maintenance transaction.' }
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: JSON.stringify(proposal) } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
         // The full Harness also makes auxiliary title requests. They are
         // served locally and are not conversation steps or data writers.
         if (request.purpose) {
@@ -279,6 +293,19 @@ async function probe(ctx) {
       }
     }
     ctx.llm.registerAdapter(['mbot-installation'], new InstalledAdapter())
+    const dreaming = (await ctx.agents.create({ sessionId: conversation.sessionId,
+      seed: session.snapshotEvents(), meta: { cwd: bot.workspacePath, isSeeded: false },
+      agentOptions: { provider: 'mbot-installation', model: 'scripted' } })).agent
+    await ctx.mbotRuntime.attach(dreaming, { botId: bot.botId })
+    dreaming.model.select({ provider: 'mbot-installation', model: 'scripted' })
+    const dream = await ctx.mbotRuntime.dream(dreaming)
+    assert.equal(dream.kind, 'committed')
+    assert.match(await readFile(`${bot.workspacePath}/${target.path}`, 'utf8'), /Installation candidate/u)
+    const { restoreDreamCheckpoint } = await installed('plugin/domain-dream-audit.js')
+    assert.deepEqual(await restoreDreamCheckpoint(bot.workspacePath, view.knowledge.scope, 'chief', await ctx.sessionQuery.readSession(dreaming.id), dream.commit), dream.checkpoint)
+    assert.deepEqual(await ctx.mbotRuntime.dream(dreaming), { kind: 'empty', more: false })
+    assert.equal(dreamCalls, 1)
+    assert.equal((await ctx.mbotRuntime.status(dreaming)).state, 'reserved')
     const managed = native ? await ctx.get('sessionController').resolveAgent(bound.mainSessionId)
       : await ctx.agents.create({ sessionId: `installation-${randomUUID()}`, meta: { cwd: ctx.mbot.workspace() },
         agentOptions: { provider: 'mbot-installation', model: 'scripted' },

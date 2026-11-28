@@ -67,6 +67,8 @@ if (contextSnapshot.schemaVersion === 2) {
   void privateKnowledgeVersion
 }
 const compactedResult = ctx.mbotRuntime.compact(managedAgent)
+const dreamedResult: Promise<runtime.DomainDreamResult> = ctx.mbotRuntime.dream(managedAgent, { timeoutMs: 30000 })
+void dreamedResult
 void compactedResult
 const sleptResult = ctx.mbotRuntime.sleep('example', { skipDream: true, compact: false })
 const wokenResult = ctx.mbotRuntime.wake('example')

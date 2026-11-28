@@ -5,6 +5,8 @@ import { operationalSource } from './messages.js'
 import { managedCompaction } from './compaction.js'
 import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
 import { domainPresentation, maskForeignDomainContexts, validateDomainStep, validateDomainSurface, validateDomainRequest } from './domain-context.js'
+import { lstatSync } from 'node:fs'
+import { join } from 'node:path'
 
 export const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit', 'apply_patch', 'glob', 'grep',
   'web_search', 'web_fetch', 'ask_user_question', 'session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
@@ -20,6 +22,10 @@ export function requireState(cell, { allowMaintenance = false } = {}) {
   if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
   if (cell.state.conversation?.state === 'reserved') throw new Error('Reserved conversation requires memory and tool visibility filtering before execution')
   if (cell.state.runtime.recoveries.has(cell.state.botId)) throw new Error('Bot recovery is in progress; accepted input stays in the native Inbox')
+  let pendingMaintenance = false
+  try { lstatSync(join(cell.state.agent.session.header.cwd, '.mbot/runs/maintenance.json')); pendingMaintenance = true }
+  catch (error) { if (error.code !== 'ENOENT') throw error }
+  if (pendingMaintenance) throw new Error('Bot maintenance is active or needs recovery; accepted input stays in the native Inbox')
   if (!allowMaintenance && cell.state.runtime.coordinator?.isSleeping(cell.state.botId)) throw new Error('Bot is sleeping; accepted input stays in the native Inbox until /mbot wake')
   if (!allowMaintenance && cell.state.runtime.coordinator?.isBlocked(cell.state.botId)) throw new Error('Bot maintenance is in progress; accepted input stays in the native Inbox')
   if (cell.state.runtime.ctx.mbot.registry().retiredBots.some(entry => entry.bot.botId === cell.state.botId)) throw new Error('This Bot was removed; its old managed Session is retired')
@@ -56,6 +62,13 @@ export function installGates(agent, cell) {
   on('llm/stream', (options, next) => {
     if (options.sessionId !== agent.id) return next()
     const state = cell.state
+    if (options.purpose === 'mbot-domain-dream') {
+      if (!state?.domainScope || state.runtime.closed || state.closing || !cell.activeDomainDream
+        || !cell.domainDreamRequests?.has(options) || state.runtime.coordinator.maintenanceState(state.botId) !== 'domain-dream') {
+        throw new Error('Domain Dreaming request has no active maintenance owner')
+      }
+      return next()
+    }
     if (options.purpose === 'compaction' || options.purpose === 'mbot-compaction') {
       const allowMaintenance = Boolean(cell.activeMaintenanceCompaction)
       if (state?.domainScope) throw new Error('Domain compaction requires its own managed maintenance contract')
