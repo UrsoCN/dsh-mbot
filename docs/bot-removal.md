@@ -1,6 +1,6 @@
-# Bot 注销与旧 Session 退役（dev）
+# Bot 注销与旧 Session 退役
 
-本阶段属于未发布的 dev，包仍为 0.1.1。Bot 身份、Git 数据目录和 DSH 工作区是独立对象；删除原生工作区不自动删除 Bot，仍可显式修复或注销。注销不删除用户文件、Session 历史、Inbox、审计提交或恢复 journal。
+当前基线 `0.2.0-rc.1`。Bot 身份、Git 数据目录和 DSH 工作区是独立对象；删除原生工作区不自动删除 Bot，仍可显式修复或注销。注销不删除用户文件、Session 历史、Inbox、审计提交或恢复 journal。
 
 ## 使用
 

@@ -1,6 +1,6 @@
-# dev：所有者消息准入与原生收据
+# 所有者消息准入与原生收据
 
-2026-11-27。本阶段提供可信 Host 的所有者私聊入口，复用实际主 Session、DSH Inbox 与事件存储。它是 [统一门面设计](session-runtime.md) 的基础；[本地 CLI IPC](host-ipc.md) 已在后续阶段接入；真实 IM、独立 Bot 通信、隔离 conversation、回复 outbox 和 sleep/wake 尚未实现。包仍为 0.1.1，这些属于未发布的 dev。
+当前基线 `0.2.0-rc.1`。可信 Host 的所有者私聊入口复用实际主 Session、DSH Inbox 与事件存储，已接入 [本地 CLI IPC](host-ipc.md) 和 [sleep/wake](sleep-wake.md)。真实 IM、独立 Bot 通信、隔离 conversation 与回复 outbox 尚未开放；入口设计见 [Session Runtime](session-runtime.md)。
 
 ## 宿主能力与身份边界
 
@@ -59,11 +59,13 @@ flush/来源/租约准入失败且未执行的输入返回唯一原生 Inbox，�
 
 缺失 requestId 查询返回 undefined；跨回复路线查询和已检测的请求冲突拒绝。返回原 requestId、rpcId、MessageId、botId、对话键和已绑定回复路线，调用方可精确关联；当前没有向 IM 发送回复或广播的实现。
 
-`ended` 不证明 guard/Git 审计成功：Agent 可能已经空闲，Host 仍在验收/提交。用 [Runtime 审计状态](runtime-feedback.md) 查看事务结果；dev 的 [请求结果](request-replies.md) 已交叉核验原生事件/journal/Git 并提供稳定回答信封，不能把展示事件当提交证明。外部平台副作用/回复 exactly-once 不在这里承诺。
+`ended` 不证明 guard/Git 审计成功：Agent 可能已经空闲，Host 仍在验收/提交。用 [Runtime 审计状态](runtime-feedback.md) 查看事务结果；[请求结果](request-replies.md) 已交叉核验原生事件/journal/Git 并提供稳定回答信封，不能把展示事件当提交证明。外部平台副作用/回复 exactly-once 不在这里承诺。
 
-DSH 0.2.2-rc.5 没有公开的仅唤醒接口。对于持久化失败后停在 Inbox 的输入，同 ID 重试只确认并复用原消息；下一条新 followup 会恢复 FIFO 消费。不会通过创建第二个 Agent、访问私有 wakeDriver 或合成空业务消息来唤醒。独立 wake 与睡眠/checkpoint 的可靠恢复仍在 TODO；进程崩溃留下 agent-runtime journal 也仍需后续恢复协议，不能用数据 recover 或删除 journal 绕过。
+DSH 0.2.2-rc.5 没有公开的仅唤醒接口。对于持久化失败后停在 Inbox 的输入，同 ID 重试只确认并复用原消息；下一条新 followup 会恢复 FIFO 消费。不会通过创建第二个 Agent、访问私有 wakeDriver 或合成空业务消息来唤醒。Bot 的 sleep/wake 与维护恢复已由 [持久阶段 journal](sleep-wake.md) 接入；它与这里的同 ID 消息重试有不同语义。agent-runtime 中断沿 [Host 协调恢复](runtime-recovery.md) 核验，不能用数据 recover 或删除 journal 绕过。
 
 ## 验证
+
+以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。
 
 - 39 项 Host/Cordis、30 项真实 Agent Runtime、类型及 64 组 Bash 回归通过。新增覆盖并发同 ID、调用后字节变更、回复路线/来源篡改、Web/owner FIFO、steer 审计关联、flush 前不调用模型、投递不确定、信封版本/指纹篡改、停止/队列取消、重载/卸载、未知 inject、前置上下文/业务绕过及原生待办编辑。
 - source/tarball/Git 基础安装与 Web tarball 安装通过；Web 安装夹具在真实主 Session 使用 ownerMailbox 并查回同 MessageId，没有重复调用模型。证据 `/tmp/mbot-plugin-install.jVFJWo`。

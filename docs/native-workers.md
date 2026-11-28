@@ -1,6 +1,6 @@
-# 原生 Worker 与主 Session 的上下文边界（dev）
+# 原生 Worker 与主 Session 的上下文边界
 
-本阶段在 [角色/任务许可](worker-leases.md) 上接入真实 DSH fresh 子 Agent。主 Session 的人格、记忆和准入继续由 MBot Runtime 管理；Worker 不继承主会话历史，独立 Bot 的通信仍按 [统一入口设计](session-runtime.md) 使用异步信封。包版本仍为 0.1.1，未发布新的功能版本。
+当前基线 `0.2.0-rc.1`。在 [角色/任务许可](worker-leases.md) 上接入真实 DSH fresh 子 Agent，默认开启 scoped botctl 并支持 v3 恢复。Worker 不继承主 Session 历史；独立 Bot 通信仍按 [统一入口设计](session-runtime.md) 规划，Bash/文件/PTC 与 Worker compaction 尚未交付。
 
 ## 启用与使用
 
@@ -49,4 +49,4 @@ Runtime 持有每次 `startActivation` 返回的确切 activation/result/dispose
 
 真实 DSH Agent + 本地 scripted adapter 覆盖固定记忆/任务、原生 botctl、两任务并行/重复拒绝、等待取消、creator 纠偏、父取消后的晚到写者、一次审批及拒绝、boot 闸门、跨任务失败传播、创建中取消、旧子身份拒绝、显式 stop/fresh 替换、token 耗尽的部分输出和无效工具 JSON。实际安装后的 Chromium 流程检查主 Session 派活、任务结果/候选、一次父审计、私有角色记忆隔离及多窗口重放。
 
-Worker 契约使用 journal v3。[scoped botctl Worker 恢复与模块交接](worker-recovery.md) 已交付：原生 writer/closers、子事件/结果证明、派生恢复 ledger、单次 Git 结算及 v3 回复共同核验，当前能力已默认开启。即使本轮未实际派活，开启后的 Chief turn 也捕获 v3 契约；非 Chief 或关闭 workers 的主 Session 使用前台 v2。未知工具/旧契约、缺失或冲突的原生日志仍保留证据并拒绝。Bash/文件/PTC、后台与跨系统写者、checkpoint/compact/sleep、IM/peer/outbox 和管理面板继续在 [TODO](../TODO.md)。
+Worker 契约使用 journal v3。[scoped botctl Worker 恢复与模块交接](worker-recovery.md) 已交付：原生 writer/closers、子事件/结果证明、派生恢复 ledger、单次 Git 结算及 v3 回复共同核验，当前能力已默认开启。即使本轮未实际派活，开启后的 Chief turn 也捕获 v3 契约；非 Chief 或关闭 workers 的主 Session 使用前台 v2。未知工具/旧契约、缺失或冲突的原生日志仍保留证据并拒绝。Worker Bash/文件/PTC 与 compaction、后台/跨系统写者、IM/peer/outbox 和完整配置编辑继续在 [TODO](../TODO.md)；主 Session 的 checkpoint/compact/sleep 已交付。

@@ -1,6 +1,6 @@
-# Bot 实例登记与选择（dev）
+# Bot 实例登记与选择
 
-2026-11-27。本阶段建立 0.2 的实例基础，尚未发布新版本；v0.1.1 保留原行为。dev 已接入原生 Runtime 与 [主会话创建/修复](main-session.md)，完整消息/睡眠生命周期和管理面板仍待实现。
+当前基线 `0.2.0-rc.1`。profile 内保存稳定 Bot 身份、目录和选择，已接入原生 Runtime、[主会话创建/修复](main-session.md)、[checkpoint](context-checkpoints.md) 与 [sleep/wake/最小面板](sleep-wake.md)。额外对话域、IM/peer 和完整配置编辑仍在 [TODO](../TODO.md)。
 
 ## 当前接口
 
@@ -40,7 +40,7 @@ Config.registry 是 profile-owned 的单个 volatile 文档：
 
 业务操作选择顺序为显式 botId → 调用 Session 的已存 mainSessionId 绑定 → profile selectedBotId → 旧 workspace/Bash 来源。已绑定 A 的操作不会因另一窗口选择 B 而重定向；原生工具在权限等待前捕获目录。运行参数、选项与目录按调用固定，不写可变全局 process.env。Bash CLI 继续使用 -C/MBOT_WS/用户配置，不读取 DSH profile。
 
-Session 绑定路由已接入实际工作区/主 Session，跨进程数据锁、预留 Agent 接管、部分失败修复和实体校验见 [主会话](main-session.md)。注销与持久旧 Session 闸门见 [Bot 退役](bot-removal.md)；原生工作区删除不会自动注销身份。前台 Runtime journal 已接入 [协调恢复](runtime-recovery.md)；近期 checkpoint、睡眠和其他写者恢复仍待实现。
+Session 绑定路由已接入实际工作区/主 Session，跨进程数据锁、预留 Agent 接管、部分失败修复和实体校验见 [主会话](main-session.md)。注销与持久旧 Session 闸门见 [Bot 退役](bot-removal.md)；原生工作区删除不会自动注销身份。前台 Runtime journal 已接入 [协调恢复](runtime-recovery.md)，[checkpoint](context-checkpoints.md) 与 [睡眠维护](sleep-wake.md) 已交付；其他未支持写者仍按契约拒绝。
 
 ## 实例登记阶段的历史验收
 
@@ -48,4 +48,4 @@ Session 绑定路由已接入实际工作区/主 Session，跨进程数据锁、
 - 真实 source/tarball/Git 安装通过，探针调用官方 ConfigEditor 完成导入/选择/去重，再验证 native tool、命令、schema、bin、元数据和卸载。证据：/tmp/mbot-plugin-install.OEevQI。
 - 真实 Chromium/tarball 验证 init/list/import/select/status、多标签页、刷新/Host 重启、稳定身份和双实例恢复。同一 DSH_HOME 下另一个实际 profile 的登记起初为空，导入同一目录获得独立身份。没有模型调用；证据：/tmp/mbot-gui-test.mKidlm。
 
-验收探针从 apply 返回后再运行，并为插入的插件指定稳定 id，避免 ConfigEditor 等待自身启动或重排 YAML 后重建无名探针。产物在 /tmp，不读取用户 profile 或工程 .env。运行方式沿用 npm test、npm run test:install 与 [浏览器说明](p0-feedback.md#复跑)。
+验收探针从 apply 返回后再运行，并为插入的插件指定稳定 id，避免 ConfigEditor 等待自身启动或重排 YAML 后重建无名探针。产物在 /tmp，不读取用户 profile 或工程 .env。运行方式沿用 npm test、npm run test:install 与 [浏览器说明](../PLUGIN.md#浏览器验收)。

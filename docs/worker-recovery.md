@@ -1,6 +1,6 @@
-# Worker 回合恢复与运行时交接（dev）
+# Worker 回合恢复与运行时交接
 
-本阶段扩展 [前台恢复](runtime-recovery.md)，支持 [原生 Worker](native-workers.md) 当前的 scoped botctl 契约：父 journal v3、runtimeOwnership v2、深度 1、最多两个并行 Worker。Bash/文件/PTC、跨系统写者、未知旧契约以及丢失原生日志的恢复仍须各自证明，不能套用本契约。
+当前基线 `0.2.0-rc.1`。本阶段扩展 [前台恢复](runtime-recovery.md)，支持 [原生 Worker](native-workers.md) 当前的 scoped botctl 契约：父 journal v3、runtimeOwnership v2、深度 1、最多两个并行 Worker。Bash/文件/PTC、跨系统写者、未知旧契约以及丢失原生日志的恢复仍须各自证明，不能套用本契约。
 
 ## 使用与原生写者
 
@@ -32,4 +32,4 @@ Git 已成功时，核对原始 commit intent、父/native 结束事实和每个
 
 真实 AgentLoop、原生 JSONL persistence、SDK write handles 和实际 Git 验证：提交失败恢复、原提交的两个 SIGKILL 边界、子 writer 占用、派生许可进程残留、私有子事件/恢复 ledger 篡改、恢复提交失败后的重试、v3 故障回执、真实模块交接、provider 替换及 release/seal 竞态。stdin 测试强制从中文字符中间分块。
 
-Chromium 在实际 tarball 的主 Session 派活，Worker 写入结果/候选并等待时 SIGKILL Host；重启后保留原主 Session，核验 native closers、一次父审计、故障计数、PAUSED 与失败回复，确认没有再次调用子模型。具体日志/产物见 [发布说明](RELEASE_NOTE.md)。
+Chromium 在实际 tarball 的主 Session 派活，Worker 写入结果/候选并等待时 SIGKILL Host；重启后保留原主 Session，核验 native closers、一次父审计、故障计数、PAUSED 与失败回复，确认没有再次调用子模型。具体日志/产物见 [发布说明](../RELEASE_NOTE.md)。

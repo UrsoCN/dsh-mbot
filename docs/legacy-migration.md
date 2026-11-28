@@ -1,6 +1,6 @@
-# 旧只读回合迁移（dev）
+# 旧只读回合迁移
 
-本阶段为未发布的 dev。旧 Host 可能已不认识新 recover 命令，旧 journal 也没有 runtimeOwnership；直接重启会丢失原 Host 的内存记录。对已经由原生日志证明只执行了核心只读操作的回合，可以先迁移数据审计，再加载新 Runtime。其他旧写者继续沿 [Runtime 恢复](runtime-recovery.md) 的所有权规则核实。
+当前基线 `0.2.0-rc.1`。旧 Host 可能不认识新 recover 命令，旧 journal 也没有 runtimeOwnership；直接重启会丢失原 Host 的内存记录。对已经由原生日志证明只执行核心只读操作的回合，可以先迁移数据审计，再加载新 Runtime。其他旧写者继续沿 [Runtime 恢复](runtime-recovery.md) 的所有权规则核实。
 
 ## 使用
 

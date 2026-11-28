@@ -1,6 +1,6 @@
-# dev：按请求查回已审计回答
+# 按请求查回已审计回答
 
-2026-11-27。所有者 `ownerMailbox.receipt(requestId)` 和 [本地 CLI](host-ipc.md) 已从投递收据扩展为按请求核验的结果查询。复用原生 Session 与 Git，不增加模型消费者；IM 回复投递/确认、完整 Runtime 恢复仍在 [TODO](../TODO.md)。包仍为 0.1.1，属于未发布 dev。
+当前基线 `0.2.0-rc.1`。所有者 `ownerMailbox.receipt(requestId)` 和 [本地 CLI](host-ipc.md) 提供按请求核验的结果查询，复用原生 Session 与 Git，不增加模型消费者。已支持契约的中断由 [Runtime 恢复](runtime-recovery.md) 结算；IM 回复投递/ack 与其他写者恢复仍待交付。
 
 ## 使用与结果
 

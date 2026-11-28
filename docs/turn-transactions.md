@@ -1,6 +1,6 @@
-# 受管理的 turn 事务桥（dev）
+# 受管理的 turn 事务桥
 
-2026-11-27。本文说明事务基础与数据 turn 恢复；dev 已通过 [原生 Runtime](native-runtime.md) 接入真实 Agent，实际主 Session 实体/导航已接入，不代表 0.2 已交付。完整消息准入、Worker 与睡眠/checkpoint 继续按 [TODO](../TODO.md) 推进。
+当前基线 `0.2.0-rc.1`。本模块维护事务桥和 data-subprocesses 恢复契约；真实 Agent 通过 [原生 Runtime](native-runtime.md) 接入，Agent/Worker 与维护中断分别沿 [Runtime 恢复](runtime-recovery.md)、[Worker 恢复](worker-recovery.md) 和持久维护 journal 协调，独立数据恢复的范围不随之扩大。
 
 ## Host 接口与数据边界
 
@@ -29,7 +29,7 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 
 .mbot/runs/active-turn.json 记录阶段、身份、基准及私有 scratch 引用。普通前台使用 schemaVersion 2（reader 兼容完整 v1）；显式委派契约使用 schemaVersion 3，见 [Worker 数据许可](worker-leases.md)。旧 v1 reader 拒绝新版 journal，不能降级字段绕过。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
 
-dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot recover 和 mbot -C <目录> recover。恢复不调用模型，不自动 resume：
+当前提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot recover 和 mbot -C <目录> recover。恢复不调用模型，不自动 resume：
 
 1. 非阻塞取得 Bot 锁，核实 journal 与私有 ledger/header/token 一致、scratch 所有者/700 权限、必需文件及所有祖先路径。合法忽略文件的叶子软链可原样保留，不能通过祖先软链读写快照外的文件；缺失或不完整的快照留待人工核查。
 2. 结合 PID 和 /proc 出生身份检查 helper/Host 与许可子进程，避免把 PID 复用或僵尸当存活写者。Host API 先取消并等待本服务的已断连 lease，再确认同进程所有者；普通 CLI 不替一个仍活着的 Host 作此确认，应从该 Host 执行 /mbot recover 或先停止它。
@@ -39,16 +39,18 @@ dev 现在提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot rec
 
 恢复结果的 kind=recovered，needed=false 表示已无活动 journal；needed=true 时返回 runId/head/meta/success 和 alreadyCommitted。恢复成功仍保持 PAUSED，检查 status/审计后显式 resume。不要手动删除 journal 代替恢复。
 
-**范围**：journal 的 writerScope=data-subprocesses 明确限定为本桥启动的 fresh 数据子进程及其 botctl 写锁。进程检查对读取不到环境的新进程保守拒绝；出生早于 helper 的受保护守护进程不属于本桥的新数据写者，旧 Host 则单独检查。既有进程经 IPC 获得权限、真实 Agent/Worker、通用 shell/FS 或后台任务尚不受这套范围假设覆盖，必须扩展所有权和静止协议。旧 dev journal 缺少新恢复字段时明确拒绝自动恢复；0.1 发布版本没有此类 journal。完整 Runtime、Session checkpoint 与跨系统投递恢复仍待实现。
+**范围**：journal 的 writerScope=data-subprocesses 明确限定为本桥启动的 fresh 数据子进程及其 botctl 写锁。进程检查对读取不到环境的新进程保守拒绝；出生早于 helper 的受保护守护进程不属于本桥的新数据写者，旧 Host 则单独检查。既有进程经 IPC 获得权限、真实 Agent/Worker、通用 shell/FS 或后台任务尚不受这套范围假设覆盖，必须扩展所有权和静止协议。旧 dev journal 缺少新恢复字段时明确拒绝自动恢复；0.1 发布版本没有此类 journal。已支持 Agent/Worker 与维护的恢复由 Host 的各自契约协调，见 [Runtime 恢复](runtime-recovery.md)；跨系统写者和投递仍待扩展。
 
 ## 验收
+
+以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。
 
 - 类型检查与 33 项 Cordis 检查通过；真实 Bash/Node IPC 覆盖固定上下文、运行内工具不死锁、单次审计提交、非法 MEMORY/HEAD 回滚、过期 permit、两 Host 锁争用及等待取消、Session 工具/usage 事件、凭据脱敏、活动调用取消、脏目录/断连证据与完成超时。恢复新增存活许可进程、SIGKILL 后旧许可失效、损坏 completion 的重试、坏配置恢复、快照/软链/锁拒绝，以及 Git 提交后和 committed 回执后的两处真实强制退出；核对只产生一次提交及计数。
 - 原有 64 组 Bash 检查通过，覆盖 legacy run/tick/Dreaming/运维与恢复行为；没有读取真实 profile 或调用模型。
 - source/tarball/Git 安装探针实际调用 beginTurn → remember → finish，以及中断 → recover → 重试 no-op → resume，再验证原有工具/命令/schema/bin/卸载。证据：/tmp/mbot-plugin-install.0oZimU。
 - 实际 Chromium/tarball 的 init/import/list/select/status、多窗口、profile 隔离和重启回归通过。证据：/tmp/mbot-gui-test.D2fWYP。这证明原界面回归通过，不是主 Session 上下文的验收。
 
-下一步在组装系统提示之前接入 Runtime 的 lease 闸门、Agent-scoped SOUL/记忆提供者和受管理消息通道；验证真实模型视图中的旧快照 shadow、近期摘要与 compact，再完成实际工作区/主 Session 绑定。
+真实 Agent 的组装前 lease、Agent-scoped SOUL/记忆、受管理消息和原生实体绑定已经接入 [Runtime](native-runtime.md)；近期摘要与来源证明见 [摘要](managed-compaction.md) 和 [checkpoint](context-checkpoints.md)。上述数据桥测试只证明桥自身范围。
 
 Managed turn 的结果现返回 outcome/failureCountEffect，审计 meta 保存版本化取消/故障判定。干净的原生用户停止保留 baseFailures，completed 归零、failed 递增；恢复使用相同校验与结算，旧 meta 按原 success 布尔值处理。规则与新增故障验收见 [turn outcome](turn-outcomes.md)。
 

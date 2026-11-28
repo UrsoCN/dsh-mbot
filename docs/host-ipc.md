@@ -1,10 +1,10 @@
-# dev：botctl 本地宿主入口
+# botctl 本地宿主入口
 
-2026-11-27。`botctl` 的外部入口已接入 [所有者消息准入](message-admission.md)，复用 Bot 的实际主 Session、原生 Inbox 与 Runtime。这里提供本地所有者 CLI；IM、独立 Bot 通信、隔离对话域、回复 outbox 投递/确认 和睡眠仍在 [TODO](../TODO.md)。包仍为 0.1.1，属于未发布的 dev。
+当前基线 `0.2.0-rc.1`。`botctl` 通过 profile 私有端点接入 [所有者消息准入](message-admission.md)、实际主 Session 和 Runtime，支持本地对话、查询及 compact/sleep/wake/overview。IM、独立 Bot 通信、隔离对话域与回复 outbox/ack 尚未交付。
 
 ## 使用
 
-安装 dev 插件并启动对应的 `dsh --profile web`，在聊天区用 `/mbot init <目录>` 或 import/repair 建立 ready 的 Bot 主 Session。随后另开终端：
+安装当前插件并启动对应的 `dsh --profile web`，在聊天区用 `/mbot init <目录>` 或 import/repair 建立 ready 的 Bot 主 Session。随后另开终端：
 
 ```bash
 botctl bots --profile web
@@ -43,11 +43,11 @@ stdout 是 JSON，包含 schemaVersion、transportId、profileId、instanceId、
 | 3 | 传输/持久确认不确定；talk 用原 requestId，remove/recover 用原稳定 botId 查回/重试 |
 | 4 | receipt --wait 截止，执行继续；用原 ID 再查询 |
 
-`value.confirmation` 和 `value.delivery` 沿用消息准入的两个维度。queued/claimed/ended/cancelled 不等同于 guard/Git 提交成功，查询 runtime 看事务结果；缺失 requestId 查询返回 null。dev 的 receipt 另带 [已核验结果/回答](request-replies.md)，--wait 可等待该请求终态；尚不输出聊天流或向 IM 投递结果。
+`value.confirmation` 和 `value.delivery` 沿用消息准入的两个维度。queued/claimed/ended/cancelled 不等同于 guard/Git 提交成功，查询 runtime 看事务结果；缺失 requestId 查询返回 null。receipt 另带 [已核验结果/回答](request-replies.md)，--wait 可等待该请求终态；尚不输出聊天流或向 IM 投递结果。
 
 连接默认等待 15 秒。关闭终端、超时或断连仅结束观察，不取消已转交的输入。不会自动重连重发，更不会为了得到回执创建另一个 Agent。stop 通过专用控制通道等待捕获回合的原生工具/审计，并保留待办；传输不确定时先查询状态，重复 stop 可能捕获后来的回合，不能当成同一次取消的重试。
 
-同 ID 重试确认失败后归还 Inbox 的输入，不合成唤醒消息；仍由下一条新 followup 恢复 FIFO。可靠的独立 wake/睡眠恢复继续在 TODO。
+同 ID 重试确认失败后归还 Inbox 的输入，不合成唤醒消息；这类准入失败仍由后续明确的新 followup 恢复 FIFO。Bot 的 sleep/wake 已有独立维护生命周期，见 [睡眠与唤醒](sleep-wake.md)。
 
 ## Cordis 与端点归属
 
@@ -70,9 +70,11 @@ Config 可关闭入口或显式配置短目录：
 
 端点的 owner.json 原子保存 schemaVersion、PID 出生身份、instanceId 和 profileId，不记录对话。仅锁进程退出不能证明宿主静止：若原 PID/出生身份仍存活，后继 Host 仍须等待。监听锁意外丢失会停止准入；正常关闭先停止监听、断开观察者、join 所有已转交操作，再移除自己的归属记录并释放 flock。锁文件保留 inode，避免两把 flock 保护不同文件。只有已证明原 Host 不再存活且取得 flock 时，才回收符合类型/所有者/权限的遗留 socket。
 
-原生 Session log 继续保存消息，IPC 不复制队列。重启后去重由 Runtime 的原生日志投影恢复；agent-runtime 的前台契约已通过 Host recover 协调；Worker/IPC 写者、未知旧契约和 checkpoint 仍待接齐，不能删除 journal 或改 scope 绕过。
+原生 Session log 继续保存消息，IPC 不复制队列。重启后去重由 Runtime 的原生日志投影恢复；agent-runtime 的前台契约已通过 Host recover 协调；未支持的 Worker/IPC 写者与未知旧契约仍待接齐；已支持的 scoped Worker v3、checkpoint 和维护恢复各自核验证明，不能删除 journal 或改 scope 绕过。
 
 ## 验证
+
+以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。
 
 真实 Agent/CLI 验收覆盖多行中文、字面 shell 字符、请求重试/冲突、来源篡改、权限/路径、连接超时、断连、卸载 drain、锁进程丢失、第二 Host、原生停止及 profile 隔离。类型和既有 Host/Bash 回归继续保留。
 
@@ -84,4 +86,4 @@ source/tarball/Git 基础安装与 Web tarball 安装覆盖实际 bin/资源/端
 
 remove 可带 `--revision <当前登记版本>`，未注销时拒绝过期版本；已退役的同一稳定 ID 重试为 no-op。断连后先查 removed，或重试同一 ID，不以名称误删重新导入的实例。bots 只返回活动登记；removed 返回退役快照。业务 talk/receipt 拒绝退役身份，查询旧历史使用原生 Session 日志与 Git；旧 mailbox 同时失效。详见 [Bot 注销与 Session 退役](bot-removal.md)。
 
-recover 由当前 Runtime 取得原生 Session writer 并核实所有已支持的前台写者，结算 Git 与回执；不调用模型或自动 resume，退役身份也可显式恢复遗留事务。未知/后台/Worker 契约继续拒绝，详见 [前台 Runtime 恢复](runtime-recovery.md)。
+recover 由当前 Runtime 取得原生 Session writer 并核实所有已支持的前台写者，结算 Git 与回执；不调用模型或自动 resume，退役身份也可显式恢复遗留事务。未知/后台/未支持的 Worker 契约继续拒绝，详见 [前台 Runtime 恢复](runtime-recovery.md)。

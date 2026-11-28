@@ -1,6 +1,6 @@
-# Runtime 模块交接（dev）
+# Runtime 模块交接
 
-主 Session 保持同一 Bot ID、Agent 对象和原生日志。代码重载不能让旧闸门继续拦住新 Runtime，也不能通过新 Session 或清除错误绕过未完成审计。主 Session 的上下文归属见 [Session Runtime](session-runtime.md)，恢复证明见 [Runtime 恢复](runtime-recovery.md)。
+当前基线 `0.2.0-rc.1`。主 Session 保持同一 Bot ID、Agent 对象和原生日志。代码重载不能让旧闸门继续拦住新 Runtime，也不能通过新 Session 或清除错误绕过未完成审计。主 Session 的上下文归属见 [Session Runtime](session-runtime.md)，恢复证明见 [Runtime 恢复](runtime-recovery.md)。
 
 ## Agent 持有闸门，Runtime 提供当前实现
 
@@ -35,4 +35,4 @@
 
 `npm run test:gui-handoff` 使用实际 `dsh plugin add` 安装的隔离 Web profile，保留安装所得 SDK 身份，另取可修改的临时包树并启用官方 HMR。Chromium 经原生聊天及命令触发真实模块替换，验证晚到写者、保留待办、SOUL/MEMORY 刷新、失败后修正/重组和无关 Session 的继续使用；不会修改生产 profile 或调用外部模型。所有产物在 `/tmp/mbot-gui-handoff.*`。
 
-[scoped botctl Worker 的实际模块交接与恢复](worker-recovery.md) 已验收；Worker 其他工具、PTC/后台写者、跨 Host 交接、手动 compact/睡眠维护、IM/peer/outbox 和管理面板仍需各自的生命周期证明。
+[scoped botctl Worker 的实际模块交接与恢复](worker-recovery.md) 已验收；Worker 其他工具、PTC/后台写者、跨 Host 交接、IM/peer/outbox 和完整配置编辑仍需各自的生命周期证明；主 Session compact/睡眠维护已有独立 journal 与恢复链。

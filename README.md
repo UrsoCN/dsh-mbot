@@ -1,164 +1,129 @@
 # dsh-mbot
 
-DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记忆，复用 Bash 核心完成受控运行、Chief/Worker 派活和独立 Dreaming。
+DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记忆，提供受管理主 Session、Chief/Worker 派活、独立 Dreaming 和可恢复的运行事务。
 
-当前版本为 **0.2.0-rc.1**（单实例持久运行预发布里程碑，覆盖 R1–R4 维护闭环与 R5 首批热点优化；旧稳定标签仍保留 `v0.1.0` / `v0.1.1`）。能力与已知限制见 [发布说明](docs/RELEASE_NOTE.md)，后续规划见 [TODO](TODO.md)，架构见 [design](docs/design.md)，维护见 [AGENTS](AGENTS.md)。
+当前版本 **0.2.0-rc.1**，对应标签 `v0.2.0-rc.1`（2026-11-28）。Bot 实例、主 Session、持久恢复、上下文 checkpoint、自动/手动摘要、sleep/wake 和最小管理面板均已发布。隔离对话域、IM/peer/outbox、Worker Bash/文件/PTC 写工具、完整配置编辑及至少 7 天真实调度观察仍未完成。
 
-**0.2.0-rc.1 已交付**：Bot 实例登记（`/mbot init|import|list|select|open|repair|remove|removed`）、原生 DSH 工作区与受管理主 Session、turn 事务桥与工作树外持久恢复证据（`boot_id` 跨重启核验）、所有者消息准入与 `botctl` 本地私有 IPC、scoped `botctl` 原生 Worker v3 与中断恢复、turn context checkpoint 与原生自动/手动摘要（含普通 turn 旧摘要退役与冷恢复）、分阶段 `sleep`/`wake` 维护闭环与只读 `overview`/`effectiveConfig`、最小 Plugins 管理面板，以及 43x 加速的 checkpoint 恢复路径。多对话域/IM/peer/outbox、Worker Bash/文件/PTC 写工具、7 天真实调度观察与完整 P2 配置编辑仍在 [TODO](TODO.md)，待全部接齐后发布 `0.2.0` 正式版。
+| 文档 | 内容 |
+|---|---|
+| [DESIGN](DESIGN.md) | 当前架构、能力边界和后续规划大纲 |
+| [TODO](TODO.md) | 未完成的执行事项与验收出口 |
+| [PLUGIN](PLUGIN.md) | 插件结构、安装、兼容与验证 |
+| [RELEASE_NOTE](RELEASE_NOTE.md) | 按版本归并的交付与验证记录 |
+| [模块文档](docs/README.md) | 数据、Runtime、恢复和运维的详细契约 |
+| [AGENTS](AGENTS.md) | 框架维护约定 |
 
-dev 分支已推进实例登记：`/mbot list`、`/mbot import <目录>`、`/mbot select <botId 或名称>` 可用，插件 init 同时登记稳定 Bot 身份；这些变更尚未进入发布标签。登记和选择按 profile 保存；Web profile 的 init/import 会自动建立 DSH 工作区与受管理主 Session，open/repair 支持打开和重试。详见 [实例登记](docs/bot-instances.md)。
+## 安装
 
-dev 已实现 [turn 事务基础及数据恢复](docs/turn-transactions.md)，并通过 [原生 Agent Runtime](docs/native-runtime.md) 验证受管理上下文、工具、取消和审计。dev 已自动绑定主 Session，详见 [主会话](docs/main-session.md)；当前 /mbot run 仍使用独立 headless run；/mbot recover 已接入 [前台 Runtime 恢复](docs/runtime-recovery.md)，独立 mbot recover 保留数据桥范围。
-
-## 通过 DSH 安装
-
-支持 Linux/WSL 的本地环境，Node.js 22+，实测 DSH 0.2.2-rc.5。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8；先配置 Git 姓名/邮箱。框架不安装系统依赖。
-
-源码目录安装：
+支持 Linux/WSL 本地环境，Node.js 22+；当前实测 DSH `0.2.2-rc.5`。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8，先配置 Git 姓名/邮箱。
 
 ```bash
+# 源码目录安装
 npm ci --ignore-scripts
 dsh plugin --profile web add "$PWD"
-```
 
-完整包安装：
-
-```bash
+# 或安装完整包
 npm pack --pack-destination /tmp
 dsh plugin --profile web add /tmp/dsh-mbot-0.2.0-rc.1.tgz
 ```
 
-web 可换成 headless。包包含 ESM/类型、脚本、模板、prompts/patches 和运维资源，无安装时构建；已有进程按 HMR 能力生效或重启 DSH。Git 安装可使用 github:UrsoCN/dsh-mbot#<tag-or-commit>，以远端实际可见版本为准。
+也可按远端可见的版本安装 `github:UrsoCN/dsh-mbot#v0.2.0-rc.1`。包包含 JS/类型、双 CLI、模板与运行资源，无安装时构建。卸载使用 `dsh plugin --profile web remove dsh-mbot`，独立数据仓库保留；安装不修改全局 PATH、不初始化数据或部署 cron。详情见 [PLUGIN](PLUGIN.md)。
 
-推荐完整版本 tag（如 v0.1.0 对应包版本 0.1.0）。GitHub Release/Actions 不是安装必需项，分支也不等于 tag；规范检查、CI 与发布建议见 [发布检查](docs/plugin-standard-review.md)。
+## 创建 Bot 并对话
 
-卸载用 dsh plugin --profile web remove dsh-mbot；独立数据仓库保留。安装提供 profile 的 node_modules/.bin/mbot 和 botctl，但不修改全局 PATH、不初始化数据或部署 cron。
-
-## 快速开始
-
-安装后，在 DSH 聊天框执行：
+安装后在 DSH 聊天框执行：
 
 ```text
 /mbot init /tmp/mbot-demo
-/mbot status
+/mbot list
+/mbot overview
 ```
 
-结果使用命令卡片显示，点击可展开完整输出；不触发模型调用或进入模型 role content。init 保存对应 profile 的 MBot workspace；数据或身份保存失败保留此前选择，原生绑定失败保留已登记的新 Bot 并提示修复。dev 的 Web profile 会登记 DSH 工作区、创建并默认打开主 Session；结果卡片保留在原会话。失败用 `/mbot list` 查看身份，再 `/mbot repair <Bot>` 重试，已有数据用 import。
+Web profile 的 `init` 创建独立 Git 数据、登记 Bot 和原生 DSH 工作区、绑定并打开受管理主 Session。创建不调用模型，命令结果保存在发起会话的卡片中；直接在主 Session 发消息才开始业务回合。已有数据使用 `/mbot import <目录>`，绑定失败使用 `/mbot repair <Bot>`，打开已有会话使用 `/mbot open <Bot>`。
 
-在源码目录也可以使用终端入口：
+每个 Bot 有稳定身份、独立数据和一个默认私人主 Session，多窗口共用。`chief`、`coder` 是实例内角色。基础 headless profile 缺少 Controller 时只登记数据身份；独立 `mbot init` 只初始化 Git 数据。详见 [实例登记](docs/bot-instances.md) 与 [主 Session](docs/main-session.md)。
 
-```bash
-./bin/mbot init /tmp/mbot-demo
-./bin/botctl -C /tmp/mbot-demo board add "整理 README" --owner coder
-./bin/botctl -C /tmp/mbot-demo board set 001 doing
-./bin/botctl -C /tmp/mbot-demo board set 001 done
-./bin/botctl -C /tmp/mbot-demo remember "周报使用中文" --as chief --task 001
-./bin/botctl -C /tmp/mbot-demo lint
-./bin/mbot -C /tmp/mbot-demo status
-```
+## 命令与数据工具
 
-init 接受不存在/空目录，创建模板与 human: init；不会覆盖已有数据，当前也不会登记 DSH 工作区或创建主 Session。后续用同一 -C 目录。长期使用可执行 bash install.sh --workspace ~/.mbot-ws，将入口安装到 ~/.local/bin 并保存用户目录配置。
-
-## 工作区与配置
-
-Bash 目录优先级为 -C → MBOT_WS → XDG_CONFIG_HOME 下的 mbot/config → ~/.mbot-ws。用户配置只写 MBOT_WS=/absolute/path。静态 KEY=value，不执行 shell/插值；环境优先于数据仓库 .mbot/config。拒绝与框架/DSH_HOME 重叠、嵌套 Git、危险托管软链。
-
-原生工具和 /mbot 的非空 Cordis workspace 优先，留空回退上述来源。0.1 没有自有设置面板，可在对应 profile 的 cordis.patch.yml 中设置：
-
-```yaml
-- id: mbot
-  config:
-    workspace: /absolute/path/to/bot-workspace
-```
-
-Host 字段为 volatile，后续操作读取新值，在途操作保留原目录。插件 init 通过官方 ConfigEditor 保存实际目录，并串行处理并发初始化；期间的配置修改不会被静默覆盖。独立 Bash CLI 不读取 profile YAML，CLI init 仍仅初始化数据。
-
-| 配置 | 默认值 |
-|---|---:|
-| MBOT_MEMORY_MAX_LINES / MBOT_MEMORY_MAX_CHARS | 150 / 3000 |
-| MBOT_SOUL_MAX_CHARS / MBOT_WIKI_MAX_LINES / MBOT_BOARD_MAX_LINES | 5000 / 200 / 80 |
-| MBOT_TIMEOUT / MBOT_DREAM_MAX_BYTES | 300 秒 / 64000 字节 |
-| MBOT_DSH / MBOT_GRANTS | dsh / 空 |
-| MBOT_PUSH_AFTER_DREAM / MBOT_PUSH_TIMEOUT | 0（关闭）/ 30 秒 |
-
-凭据放被忽略的 DSH_HOME/.env（默认 ~/.dsh/.env），不放 crontab 或命令参数。GUI 登录不代替 headless 的 key 配置。
-
-## botctl 与 /mbot
-
-| botctl 操作 | 行为 |
+| 入口 | 常用操作 |
 |---|---|
-| boot <role> [--task id] | 读取 SOUL、共享/私有 MEMORY、看板和任务 |
-| board show/add/set | 查看、建任务、改状态；blocked 必须 --reason |
-| task show/result | 读任务、从 stdin 追加结果，支持 --as |
-| remember "fact" [--as role] [--task id] | 只追加候选到 inbox |
-| lint | 检查 UTF-8 预算、任务/看板一致性和链接 |
+| `/mbot` 人类控制 | `init/import/list/select/open/repair/remove/removed`；`status/runtime/stop/recover`；`compact/sleep/wake/overview`；`lint/board/run/tick/archive/dream/pause/resume` |
+| 原生 `botctl` 模型工具 | `boot/status/lint`、`board_show/add/set`、`task_show/result`、`remember`；Chief 另有 `worker_spawn/wait/message/stop` |
+| `botctl -C <数据目录>` | 独立 Bash 数据操作，任务/结果/候选通过受控事务修改 |
+| `botctl --profile …` | 连接已运行 Host 的 `talk/receipt/runtime/stop/bots/recover/remove/removed/compact/sleep/wake/overview` |
+| `mbot -C <数据目录>` | 独立 headless 的 `run/tick/dream` 和数据管理；每次运行新建会话 |
 
-全部支持前置 -C。任务 ID 包括归档且不复用；人类操作形成 human commit，MBOT_RUN_ID 下只改文件，由 Host 统一验收。目标脏、预算/提交失败会拒绝或恢复。详见 botctl --help。
-
-模型的原生 botctl 操作包括 boot、status、lint、board_show/add/set、task_show/result、remember。它管理 Host 配置的数据仓库，需要完整权限或一次 DSH 审批；不能写 MEMORY 或启动另一个模型。受控 Chief/Worker 继续使用 Bash botctl 与运行 guard。
-
-人类 /mbot 支持 init、status、lint、board、run、tick、archive、dream、pause、resume、help；dev 另有 list/overview/import/select/open/repair/remove/removed/runtime/stop/compact/sleep/wake/recover。控制输入按原文处理，不按 shell 解析；只有需要执行任务/整理记忆的 run/tick/dream 调模型。运行、成功、错误、跳过与取消通过命令事件展示，不默认加入模型 role content。
-
-## 单次运行与恢复
+模型工具固定使用 Host 选择或本轮绑定的数据目录，权限由原生 sandbox/approval 和数据许可共同检查。主 Session 的原生 Worker 默认开启，仅支持 scoped `botctl`，最多并行两个、深度 1；Bash/文件/PTC 写工具仍在规划。独立 headless Worker 沿用已有 grants 契约，详见 [原生 Worker](docs/native-workers.md) 与 [headless 工作流](docs/headless.md)。
 
 ```bash
-mbot -C /tmp/mbot-demo run chief "请推进看板上的任务"
-mbot -C /tmp/mbot-demo status
-mbot -C /tmp/mbot-demo pause "等待人工检查"
-mbot -C /tmp/mbot-demo resume
+./bin/mbot init /tmp/mbot-cli-demo
+./bin/botctl -C /tmp/mbot-cli-demo board add "整理 README" --owner coder
+./bin/botctl -C /tmp/mbot-cli-demo board set 001 doing
+./bin/botctl -C /tmp/mbot-cli-demo board set 001 done
+./bin/botctl -C /tmp/mbot-cli-demo remember "周报使用中文" --as chief --task 001
+./bin/botctl -C /tmp/mbot-cli-demo lint
 ```
 
-每次 run 是新的 headless 会话，使用 workspace-write/never、超时、全局锁和干净基准。Host 恢复越权/非追加写入、检查看板，保存脱敏 transcript/meta 并提交；失败保留审计，三次熔断，HEAD/控制路径异常立即暂停。原始日志在忽略的 .mbot/runs 中，保留私有权限。详情见 [设计](docs/design.md#61-受控运行)、[M2](docs/m2-run.md)。
+任务 ID 包括归档且不复用，`blocked` 必须附原因。人类数据操作形成 `human` 提交；运行内工具持当前 lease，由 Host 统一验收和提交。控制结果默认不进入模型 role content。
 
-0.1 不把数据目录自动变成 DSH 原生工作区，也不绑定持久主 Session。dev 已接入各实例的受管理主会话、创建/导入/修复与导航，以及 scoped botctl Worker/恢复；对话域、IM/peer 与手动 compact/睡眠生命周期继续列在 [P1](TODO.md)；会话历史不会代替 Markdown/Git 记忆。
+## 配置与管理面板
 
-dev 的 managed turn 若中断，journal 和持久私有快照（默认位于工作树外的持久状态目录，见 [持久恢复证据](docs/durable-recovery.md)）会跨重启保留，并结合内核 `boot_id` 核验进程身份。用 `/mbot recover`（或 Host 已停止时的 `mbot -C <目录> recover`）核实写者并恢复审计，检查 status 后显式 resume；未确定写者/快照或提交身份时拒绝恢复。Host 命令已覆盖受管理 Agent/前台工具的遗留回合和原生回执；独立 CLI 仍只处理 data-subprocesses。[scoped botctl Worker 恢复与模块交接](docs/worker-recovery.md) 已接入；旧 headless run、Worker 的其他工具、后台/IPC 写者、睡眠 checkpoint 及缺失原生日志的恢复仍待接齐。
+DSH Plugins 页面已有最小 MBot 面板：查看活跃/退役 Bot、目录、角色、绑定状态和 Runtime 参数，打开主 Session。`/mbot overview` 或 `botctl overview --profile web` 提供运行状态、预算和带来源标注的只读 `effectiveConfig`；凭据只返回引用或掩码。完整配置编辑与跨层并发保存仍待交付，见 [睡眠与管理面板](docs/sleep-wake.md)。
 
-dev 的主 Session 由 Runtime 组合人格、记忆与原生近期上下文，支持直接对话和受控前台工具；聊天区显示 [Host 审计卡片](docs/runtime-feedback.md)，`/mbot runtime` 查执行/验收/队列状态，`/mbot stop` 保留待办并等待本轮收尾；干净的用户停止保留故障计数，越权/已记录故障仍计失败，详见 [停止语义](docs/turn-outcomes.md)。dev 已提供 [所有者消息准入](docs/message-admission.md)：可信 Host 可取得 ownerMailbox，共用原生 Inbox，并按请求 ID 去重/查询持久化收据。[本地 botctl 宿主入口](docs/host-ipc.md) 已接入 talk/receipt/runtime/stop/bots/recover，需明确 --profile 和 Bot 身份；remove/removed 支持注销与查询退役身份；[receipt --wait](docs/request-replies.md) 可按请求查回已审计回答；真实 IM/peer、回复投递、隔离域、手动 compact 与睡眠仍待实现；botctl 的完整门面按阶段接入，DSH 负责日志/执行。设计见 [Session Runtime](docs/session-runtime.md)。基础 headless profile 没有工作区/Session Controller，仍只登记数据身份；CLI init 始终只初始化 Git 数据。
+Host 操作按显式 Bot → 调用 Session 的持久绑定 → profile 当前选择 → 旧 `workspace` 路由，在途操作固定原身份。配置保存走官方 ConfigEditor；升级保留角色、记忆、历史及旧 Session 归属。
 
-主 Session 是 Bot 的默认私人对话，多窗口共用；规划中的所有者 TG 私聊可接同一 Session，群聊/其他用户/独立 Bot 使用隔离 conversation。上下文与生命周期统一归 MBot Runtime，botctl 提供工具/CLI 门面，适配器通过服务接口调用。dev 已接入带来源的原生自动/手动摘要（含普通 turn 旧摘要退役与冷恢复）、分阶段 sleep/wake 维护与只读 overview/最小 Plugins 管理面板；多对话域 IM/peer、Worker 写工具与 P2 完整配置编辑仍在 TODO。
+独立 Bash 的目录优先级为 `-C` → `MBOT_WS` → XDG 用户配置 → `~/.mbot-ws`。长期使用可执行 `bash install.sh --workspace ~/.mbot-ws`，安装入口到 `~/.local/bin`。`.mbot/config` 使用静态 `KEY=value`，不执行 shell/插值，环境优先；独立 CLI 不读取 DSH profile YAML。
 
-dev 已接入 [turn 上下文 checkpoint 基础](docs/context-checkpoints.md)：按知识内容维护版本/epoch，原生历史和 Inbox 输入来源由同一次 Git 审计封存，原生 flush 与恢复后才发布。可信 Host 可调用 `ctx.mbotRuntime.checkpoint(agent)` 查询；后续 [受管理自动摘要](docs/managed-compaction.md) 已封存原生 compaction ID、来源、知识版本、摘要 hash 与单次恢复证明；手动 `/compact` 暂由维护闸门拒绝，sleep/wake 仍待完成。
+| 数据配置 | 默认值 |
+|---|---:|
+| `MBOT_MEMORY_MAX_LINES` / `MBOT_MEMORY_MAX_CHARS` | 150 / 3000 |
+| `MBOT_SOUL_MAX_CHARS` / `MBOT_WIKI_MAX_LINES` / `MBOT_BOARD_MAX_LINES` | 5000 / 200 / 80 |
+| `MBOT_TIMEOUT` / `MBOT_DREAM_MAX_BYTES` | 300 秒 / 64000 字节 |
+| `MBOT_DSH` / `MBOT_GRANTS` | dsh / 空 |
+| `MBOT_PUSH_AFTER_DREAM` / `MBOT_PUSH_TIMEOUT` | 0（关闭）/ 30 秒 |
 
-dev 支持显式注销 Bot：`/mbot remove <Bot ID 或完整名称>`，终端使用 `botctl remove --profile web --bot <稳定 Bot ID>`；`/mbot removed` 或 `botctl removed --profile web` 查询退役记录。删除 DSH 工作区只改变原生实体，独立 Bot 仍可修复或注销。注销保留 Git 数据、历史和待办，持久保存旧 Session 的执行闸门；执行或审计中需先 stop 并等待收尾。重新 import 同一目录获得新 Bot 身份和新主 Session，详见 [注销与退役](docs/bot-removal.md)。
+凭据放被忽略的 `DSH_HOME/.env`（默认 `~/.dsh/.env`），不放 crontab 或命令参数。GUI 登录不代替 headless 的 key 配置。
 
-旧 Host 无法调用新 recover 时，已结束且仅使用核心只读工具的旧回合可用 `botctl -C <数据目录> migrate-readonly --check` 检查，再去掉 --check 迁移审计。迁移保留原生日志、Session ID 和 PAUSED，之后加载新 Runtime；写操作/未知工具不能套用。见 [旧只读回合迁移](docs/legacy-migration.md)。
+## 运行、维护与恢复
 
-## Dreaming 记忆闭环
+主 Session 每轮在模型提示组装前取得 lease，固定人格/记忆与来源快照；前台工具和 Worker 静止后，Host 执行 guard、脱敏审计、Git 提交及原生 Session flush。聊天区卡片显示验收结果；`/mbot runtime` 查询状态，`/mbot stop` 停止捕获回合、保留后续 Inbox 并等待收尾。干净用户停止保留原故障计数，违规/执行错误仍计失败。
+
+`/compact`、`/mbot compact` 与 `botctl compact` 经过统一维护屏障、Bot 数据锁和持久 journal。`/mbot sleep` 执行 cutoff → 独立 Dreaming → 可选 compact/checkpoint → 持久睡眠；睡眠继续收信并跨重启保留，`/mbot wake` 使用原主 Session。详见 [摘要](docs/managed-compaction.md)、[sleep/wake](docs/sleep-wake.md)。
+
+中断后使用 `/mbot recover [Bot]` 或 `botctl recover --profile web --bot <稳定ID>`。恢复核验原生写者、工作树外私有快照、PID/`boot_id`、Git 和 journal，不调用模型或自动 resume；检查结果后显式恢复运行。当前覆盖已支持的前台契约、scoped Worker v3 和维护中断；未知写者、非只读旧契约及缺失原生日志仍拒绝。独立 `mbot -C <目录> recover` 仅处理 `data-subprocesses`，详见 [恢复边界](docs/runtime-recovery.md)。
+
+所有者本地终端可向同一主 Session 投递并查回已审计回答：
 
 ```bash
-mbot -C /tmp/mbot-demo run chief "以后周报一律用中文，记住这条"
-mbot -C /tmp/mbot-demo dream
+botctl bots --profile web
+botctl talk --profile web --bot <Bot-ID> --request-id manual-001 --text '整理今天的任务'
+botctl receipt --profile web --bot <Bot-ID> --request-id manual-001 --wait
 ```
 
-工作 Bot 投递候选，独立 Dreaming 整理 MEMORY/wiki 并写报告；输入按完整行限制，checkpoint/pending 支持续读，失败不推进。预算、链接、删除依据或模型失败回滚记忆，只提交失败报告；成功提交 dream，可用 git revert 恢复记忆/checkpoint。详情见 [M3](docs/m3-dream.md)。
+同 ID 重试复用原消息；断连只结束等待。`confirmed/ended` 与 Git 事务成功是不同状态，回复查询联合核验原生/Git/journal。详见 [本地 IPC](docs/host-ipc.md) 和 [请求结果](docs/request-replies.md)。IM 投递/ack 和独立 Bot 通信尚未开放。
 
-## 星型调度、tick 与归档
+注销使用 `/mbot remove <Bot>`，`/mbot removed` 查看退役身份。注销保留数据、日志、Inbox 和恢复证据，旧 Session 继续受闸门保护；重新 import 同一目录创建新身份。旧只读回合可先用 `botctl -C <目录> migrate-readonly --check` 核验，见 [Bot 退役](docs/bot-removal.md) 与 [旧回合迁移](docs/legacy-migration.md)。
 
-Chief 写持久派活说明，最多并行两个 fresh Worker；Worker 先 boot、再写自己结果。纠偏/中断后由 Chief 验收或标 blocked。跨次运行只依赖任务，看板 doing 优先；无 todo/doing 的 tick 不调模型。archive 原样归档 done 并提交，冲突/提交失败回滚。见 [M4](docs/m4-schedule.md)。
+## Dreaming、调度与运维
 
-MBOT_GRANTS 按冒号列出存在的物理绝对目录，可含空格；拒绝保护目录、别名、空项和重复。run/tick 逐项传 add-dir，dream 不继承。外部项目的提交/合并由人类处理。
+工作 Bot 只读长期记忆，`remember` 追加候选；独立 Dreaming 整理 MEMORY/wiki，按完整行预算续读，失败回滚记忆且不推进进度。成功报告与记忆同一次提交，可用 `git revert` 回滚，详见 [记忆模块](docs/memory.md)。
 
-## 无人值守
+独立 `run/tick` 由 Chief 先写任务再派 fresh Worker，`tick` 优先 doing、空闲不调模型，`archive` 原样归档 done。`MBOT_GRANTS` 只对 run/tick 授予物理绝对目录，Dreaming 不继承；外部项目提交/合并由人类处理，详见 [headless 工作流](docs/headless.md)。
 
-[cron 示例](cron/mbot.crontab.example) 每两小时 tick，03:17 archive 成功后接 dream；部署前调整绝对路径和 PATH，框架不自动安装。ops/cron-run.sh 记录私有独立日志，目录在数据仓库/框架/DSH_HOME 外。
-
-备份默认关闭；开启后成功 dream 推既有 upstream，目的地变更、拒绝、超时保留本地提交。ops/recover.sh 克隆到 /tmp 后清空 grants/推送，lint 与只读冷启动验证；ops/observe.sh 由人类提交预算、状态、报告与备注。**7 天连续观察尚未完成**，见 [M5](docs/m5-ops.md)。
+[cron 示例](cron/mbot.crontab.example) 每两小时 tick，03:17 归档成功后 dream；框架不自动部署。备份默认关闭，开启后只推既有 upstream。`ops/recover.sh` 做 clone 冷启动，`ops/observe.sh` 由人类记录预算、报告与异常。**至少 7 天连续观察尚未完成**，见 [运维模块](docs/operations.md)。
 
 ## 验证与维护
 
 ```bash
 npm test
 npm run test:install
-npm run test:real-plugin
+npm run bench:runtime
 ```
 
-dev 当前有公开类型、50 项 Cordis/Host、141 项本地真实 Agent Runtime 和 64 组 Bash 检查，另有 1 项按需运行的真实 DeepSeek 摘要验收；Host/Runtime 测试文件串行运行，避免恢复的进程核验与其他夹具争用。安装检查覆盖源码链接、tarball 和无开发依赖的 Git fixture，验证 Host 激活、原生 Agent/工具、turn/恢复、命令/schema/bin/展示元数据及卸载。真实模块交接与插件级重载见 [Runtime handoff](docs/runtime-handoff.md)，浏览器专项运行 `npm run test:gui-handoff`，原生摘要/刷新/维护闸门运行 `npm run test:gui-compaction`；旧版无共享闸门的升级与生命周期仍有待办。Worker 的[角色/任务许可基础](docs/worker-leases.md) 和 [原生最小执行](docs/native-workers.md) 已实现；scoped botctl 子 Agent 已默认开启并支持 [v3 恢复](docs/worker-recovery.md)，可设置 workers=false 保持前台模式；Bash/文件/PTC 与未知写者恢复仍待接齐。Runtime 验证用本地 scripted adapter；real-plugin 使用已授权 key 验证原生工具与包内 Dreaming，产物隔离在 /tmp。`npm run test:real-compaction` 另用真实 DeepSeek 验收摘要，普通对话保持本地 adapter。更早的真实运行、记忆、调度和运维脚本在 tests/real-*.sh。
+默认回归使用隔离数据与本地 scripted adapter，Host/Runtime 文件串行执行；安装覆盖源码链接、tarball、Git fixture 与 Web tarball。真实模型、GUI 和长跑按需另验，不能由类型/schema 检查替代。浏览器与恢复的全进程核验不要并行，复跑命令及环境见 [PLUGIN](PLUGIN.md)。
 
-`npm run test:gui` 使用 Playwright/Chromium，在隔离 profile 安装 tarball，验证真实聊天区、目录保存、多标签页、刷新/重启及不调用模型。Playwright 和浏览器可安装在 /tmp，通过 MBOT_PLAYWRIGHT_MODULE、PLAYWRIGHT_BROWSERS_PATH 指定。`npm run test:gui-runtime` 使用本地 adapter 另验主 Session 的审计卡片、原生停止、晚到写者、队列及失败重放。dev 的主 Session/导航已另行验收，设置页仍需实现。详见 [发布说明](docs/RELEASE_NOTE.md)、[插件历史验收](docs/plugin.md)、[维护约定](AGENTS.md)。
+规划新增和范围调整先更新 [DESIGN](DESIGN.md)，可执行事项列入 [TODO](TODO.md)，交付后归入 [RELEASE_NOTE](RELEASE_NOTE.md)。模块契约见 [文档索引](docs/README.md)，早期验收合并保存在 [历史档案](docs/archive/0.1-acceptance.md)。
 
 ## 许可证
 
 [MIT](LICENSE)
-
-`npm run test:gui-migration` 使用隔离的实际旧版安装包，验证只读旧回合迁移、拒绝路径、升级和同一 Session 的后续对话。

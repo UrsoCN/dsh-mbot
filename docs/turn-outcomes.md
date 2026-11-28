@@ -1,6 +1,6 @@
-# Managed turn 的停止与故障计数（dev）
+# Managed turn 的停止与故障计数
 
-2026-11-27。主 Session 的正常用户停止不再增加故障计数，也不清空已有故障；Git 审计、护栏、队列与恢复仍保留。包版本为 0.1.1，本阶段未发布新标签。
+当前基线 `0.2.0-rc.1`。主 Session 的正常用户停止保留已有故障计数，completed 归零，违规/执行错误等 failed 递增；Git 审计、护栏、原生队列和版本化恢复继续保留。
 
 ## 判定与结算
 
@@ -26,11 +26,13 @@ Git meta 新增 outcome、failure_count_effect，runtime 中新增 outcome_schem
 
 计数判定先验证版本、success、违规数组与 outcome/effect 的一致性，再更新 counter；当前 finalize 在提交前和结算时验证，恢复使用同一 helper。成功、取消、故障在 commit/回执边界崩溃后都从 journal 的 baseFailures 重算，因此重复恢复不增加同一轮计数。
 
-旧 v1 journal/其 Git meta 按原 success 语义结算，不根据旧 aborted/user 文本重解释历史；尚未提交的 v1 turn 恢复也保留旧失败规则。v2 journal 必须有 outcome_schema_version=1 的完整结果，不能借删除字段回退到旧语义。部分新字段、未知版本或不一致的 effect 会拒绝恢复并保留 commit/journal，不能借此重置故障计数。恢复范围仍为 data-subprocesses，agent-runtime 恢复待后续写者协调与 checkpoint 接入。
+旧 v1 journal/其 Git meta 按原 success 语义结算，不根据旧 aborted/user 文本重解释历史；尚未提交的 v1 turn 恢复也保留旧失败规则。v2 journal 必须有 outcome_schema_version=1 的完整结果，不能借删除字段回退到旧语义。部分新字段、未知版本或不一致的 effect 会拒绝恢复并保留 commit/journal，不能借此重置故障计数。独立数据恢复仍只覆盖 data-subprocesses；agent-runtime 通过 [Runtime 恢复](runtime-recovery.md) 与 [Worker v3](worker-recovery.md) 的原生写者/日志证明协调，不能套用数据桥范围。
 
 聊天区依 outcome 区分正常“已停止”和“本轮未通过验收”。有已记录违规/故障的用户取消不会被正常停止标题覆盖。/mbot runtime 的最近审计、/mbot status 的最新记录也显示规范化 outcome。
 
 ## 验证
+
+以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。
 
 - 39 项 Cordis/Host、17 项真实 Agent Runtime、64 组 Bash 回归；公开类型覆盖 outcome/effect。
 - 真实 Agent 验证三次干净停止保留两次旧故障、下一次错误熔断；取消不掩盖晚到 MEMORY 违规或此前工具错误；超时仍计故障。
@@ -39,4 +41,4 @@ Git meta 新增 outcome、failure_count_effect，runtime 中新增 outcome_schem
 
 证据：全量 `/tmp/mbot-stop-v2-suite.log`，安装 `/tmp/mbot-plugin-install.6oJbk0`，Chromium `/tmp/mbot-gui-runtime.a757YE`。测试只使用隔离 profile 与 /tmp 数据。
 
-统一消息入口、Worker、compact/sleep/wake、Runtime 恢复与管理面板继续在 TODO。
+所有者入口、scoped Worker、主 Session compact/sleep/wake 和支持契约的 Runtime 恢复已交付；额外来源、写工具和完整配置编辑见 [TODO](../TODO.md)。

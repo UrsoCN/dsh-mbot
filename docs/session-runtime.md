@@ -1,10 +1,10 @@
 # 受管理的 Bot Session 与统一入口（设计）
 
-2026-11-27。本文是完整目标设计，不代表发布版 0.1 已有全部 API/能力；dev 的已实现阶段在文末逐项区分。目标是直接与 Bot 的主 Session 对话，由 MBot 管理人格、记忆、近期上下文、消息准入和睡眠；保留 DSH 的 Session 事件存储、Agent、Inbox、模型执行和 compaction。总览见 [design](design.md)，实施见 [TODO](../TODO.md)。
+当前基线 `0.2.0-rc.1`。本文件维护主 Session、conversation、上下文、入口与睡眠的详细目标契约；当前实现和未开放能力见下文及第 8 节。架构与规划大纲以根 [DESIGN](../DESIGN.md) 为准，执行事项见 [TODO](../TODO.md)。DSH 持有原生事件/Inbox/执行，MBot Runtime 管理业务上下文、准入和维护。
 
-本轮决策：一个 Bot 默认有一个私人主 Session，多窗口是它的客户端；不同可见域使用独立 conversation。MBot Runtime 统一管理业务上下文和生命周期，botctl 是它的工具/CLI 门面。独立 Bot 通过异步信封交流，树内 send_message 只用于本轮 Worker。下一阶段优先补主 Session 的 checkpoint、compact 和 sleep/wake，再扩展对话域、IM/peer 与 Worker 写工具；以下新增协议仍属设计。
+一个 Bot 默认有一个私人主 Session，多窗口是它的客户端；MBot Runtime 统一管理业务上下文和生命周期，botctl 是工具/CLI 门面。不同可见域的 conversation、独立 Bot 异步信封、IM/peer/outbox 和 Worker 写工具仍属后续扩展，不能通过 ownerMailbox 冒充所有者接入。
 
-dev 已交付 [turn 上下文 checkpoint 基础](context-checkpoints.md) 与 [受管理自动摘要](managed-compaction.md)：知识版本/epoch、原生历史及输入来源、带引用的摘要、原生 compaction 证明、Git 封存和 flush/恢复已接入。手动 compact、普通 turn 的旧摘要退役及 sleep/wake 尚未交付，以下对应部分仍是目标设计。
+rc.1 已交付 [turn checkpoint](context-checkpoints.md)、[原生自动/手动摘要与旧摘要退役](managed-compaction.md)、[sleep/wake 与维护恢复](sleep-wake.md)。下文继续保留额外 conversation、逐域记忆与完整生命周期的目标契约；现行单私人主 Session 的具体维护行为以上述模块文档为准，例如当前 sleep 遇到活动回合会报 busy，自动等待/公平调度仍需扩展。
 
 ## 1. 所有入口共用 Runtime，botctl 是门面
 
@@ -26,7 +26,7 @@ flowchart LR
 
 门面分三个权限和执行通道：
 
-| 通道 | 例子（拟定，不是现有命令） | 执行方式 |
+| 通道 | 协议例子（当前能力见第 8 节） | 执行方式 |
 |---|---|---|
 | 对话与生命周期 | talk、send、compact、sleep、wake | 经过来源校验、路由、准入/维护闸门 |
 | 运行内数据工具 | board/task/remember | 携带当前 run 的受控权限，走数据事务；不再排同一会话的外部队列 |
@@ -145,19 +145,21 @@ DSH 的树内通信能力用于 Chief 与本轮 fresh Worker 的纠偏；原生 
 
 ## 8. 实施与验收
 
-dev 已有受管理主 Session 直接对话、固定上下文、准入/租约和受控数据工具。后续按以下阶段交付，CLI/headless 入口保持兼容：
+rc.1 已有受管理主 Session 直接对话、固定上下文、准入/租约和受控数据工具。原实施阶段的当前状态如下，CLI/headless 入口保持兼容；后续范围与依赖以 [DESIGN](../DESIGN.md#后续路线) 为准：
 
-1. 近期上下文 checkpoint 与 compact：固定取材/来源协议，接入真实手动与自动 compaction，验证持久化、旧版本退役和中断恢复。
-2. sleep/wake：Bot 维护屏障、Writer 静止、Dreaming 与 checkpoint 阶段 journal；睡眠收信、同 ID 唤醒、崩溃单次结算。
-3. 对话域与插件入口：持久绑定、来源/可见域权限、IM 路由、异步 peer 信封和按原路线投递的 outbox/ack。
-4. Worker Bash/文件/PTC：明确目录 grants、原生工具权限、并发写入/取消与扩展版本的 Writer 恢复契约。
+| 阶段 | 状态 | 契约 |
+|---|---|---|
+| 1 · checkpoint/compact | 已交付 | 来源协议、自动/手动 compaction、旧版本退役、持久化与支持范围内中断恢复 |
+| 2 · sleep/wake | 已交付单私人主 Session 闭环 | Bot 屏障、阶段 journal、睡眠收信、同 ID 唤醒与单次冷恢复 |
+| 3 · 对话域与入口 | 待交付 | 持久绑定、来源/可见域、IM、异步 peer、outbox/ack |
+| 4 · Worker 写工具 | 待交付 | 目录 grants、Bash/文件/PTC、并发/取消和扩展 Writer 恢复契约 |
 
 每阶段以真实 Agent/Session 路径验收；未知 Writer 或缺失证明继续拒绝。不同对话域与新写工具在自己的上下文/权限/恢复契约接齐后开放。
 
-阶段 1 的 turn checkpoint 与自动摘要已交付；下一子阶段为手动 compact 的维护事务、旧摘要在普通 turn 边界退役和原生 replacement 中断恢复。当前直接 `compactNow` 不在 MBot 支持的生命周期内，会被闸门拒绝，不等同于排队或已完成手动 `/compact`。
+手动 `/compact`、`/mbot compact`、`botctl compact` 已进入统一维护事务；裸 `compactNow` 仍受闸门限制，不能拿它替代生命周期入口。Worker compaction、多 conversation 的逐域维护与未知 Writer 恢复仍需各自证明。
 
 重点验收：两个窗口同时发送/编辑/取消；网页与 TG 同时发；睡眠/compact 时新消息；崩溃发生在收据、Git、checkpoint、回复投递之间；两个 Host 抢同一 Bot；A/B 异步请求；过期 Worker 回写；不同用户/群线程不串上下文；其他插件 inject 不覆盖业务上下文；新版 MEMORY 生效而旧摘要不复活规则；重复 wake 不创建第二个主 Session。
 
-API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有原生能力包括 Agent scoped 注册、queue/steer/inject、rpcId、compactNow 与命令事件。Controller 的 prompt 自建 source，accepted 不保证 flush；dev 门面用 Agent.followup 保留信封，并在 Runtime 的执行前闸门 await flush。原生 canceled splice 与 claim 可区分，不能仅以 turn/end 推断投递状态。
+API 依据为本机 DSH 0.2.2-rc.5 的 dsh-agent、dsh-system-prompt、dsh-api-session-controller、dsh-compaction、dsh-command-compact 文档/类型。已有原生能力包括 Agent scoped 注册、queue/steer/inject、rpcId、compactNow 与命令事件。Controller 的 prompt 自建 source，accepted 不保证 flush；门面用 Agent.followup 保留信封，并在 Runtime 的执行前闸门 await flush。原生 canceled splice 与 claim 可区分，不能仅以 turn/end 推断投递状态。
 
-dev 的 [turn 事务与恢复](turn-transactions.md) 已提供固定 Git 上下文、数据许可、审计与数据 turn 恢复。[原生 Runtime](native-runtime.md) 进一步接入真实 Agent、系统段/surface、前台工具和结束闸门；其 journal 标为 agent-runtime，当前数据 recover 明确拒绝该 scope。实际主 Session 实体与导航已在 dev 接入，见 [主会话](main-session.md)。[所有者准入](message-admission.md) 已实现私聊 Host 能力、不可变信封、网页与适配器来源/持久化闸门、原生去重和投递收据；[本地 CLI IPC](host-ipc.md) 已接入同一 Runtime；[原生 Worker 最小执行](native-workers.md) 已接入固定角色/任务快照、scoped botctl、并发/取消、父审计及 [v3 恢复/模块交接](worker-recovery.md)，默认开启；其其他工具/未知写者恢复、后台/跨系统写者、IM/peer、隔离域、外部回复投递与 compaction/sleep/checkpoint 仍需接齐。
+[turn 事务](turn-transactions.md) 和 [原生 Runtime](native-runtime.md) 已接入真实 Agent、系统段/surface、前台工具、审计和 [Host 协调恢复](runtime-recovery.md)；独立数据 recover 继续拒绝 agent-runtime scope。[主会话](main-session.md)、[所有者准入](message-admission.md)、[本地 IPC](host-ipc.md) 与 [已审计回复查询](request-replies.md) 已交付。[原生 Worker](native-workers.md) 默认开启 scoped botctl，具有固定角色/任务快照、并发/取消、父审计及 [v3 恢复/交接](worker-recovery.md)。其他工具/未知写者、后台/跨系统写者、额外消息域与外部投递尚未接齐。

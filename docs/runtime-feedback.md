@@ -1,6 +1,6 @@
-# Runtime 审计反馈与停止（dev）
+# Runtime 审计反馈与停止
 
-2026-11-27。主 Session 的聊天区新增独立 MBot 状态卡片；原生停止按钮与人类停止命令已验收。包仍为 0.1.1，未发布新标签。
+当前基线 `0.2.0-rc.1`。主 Session 的聊天区独立展示 MBot 审计/控制卡片，原生停止按钮与人类停止命令等待捕获回合收尾并保留其他待办。下文维护反馈、停止和失败持久化边界。
 
 ```text
 /mbot runtime [Bot ID 或完整名称]
@@ -34,7 +34,7 @@ stop 取消调用时捕获的回合，保留 DSH Inbox，等待其工具静止�
 
 原生 run_code 支持后台执行，不再列入默认前台白名单；其名称属于原生 PTC 传输，不能注册/覆盖为普通工具；后续须接齐 PTC/后台执行的所有写者静止契约，不能因脚本返回 job 收据而结束审计。
 
-下一轮必须等上轮审计及回执持久化。若 Git 已提交而 Session flush 失败，保留真实 commit，只补失败反馈并阻止继续运行，不重放已经提交的 turn。提交失败则保留 journal/snapshot 与原 HEAD，供后续 Runtime 恢复；当前数据 recover 仍明确拒绝 agent-runtime scope。
+下一轮必须等上轮审计及回执持久化。若 Git 已提交而 Session flush 失败，保留真实 commit，只补失败反馈并阻止继续运行，不重放已经提交的 turn。提交失败则保留 journal/snapshot 与原 HEAD，供 [Host 协调恢复](runtime-recovery.md) 核验；独立数据 recover 仍明确拒绝 agent-runtime scope。
 
 ## 原生停止的依据与验证
 

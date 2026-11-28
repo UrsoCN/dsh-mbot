@@ -40,6 +40,10 @@
   },
   "files": [
     "AGENTS.md",
+    "DESIGN.md",
+    "PLUGIN.md",
+    "RELEASE_NOTE.md",
+    "TODO.md",
     "plugin",
     "bin",
     "lib",

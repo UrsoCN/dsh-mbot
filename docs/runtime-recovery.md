@@ -1,6 +1,6 @@
-# 前台 Runtime 中断恢复（dev）
+# 前台 Runtime 中断恢复
 
-本阶段为未发布的 dev，包仍为 0.1.1。恢复当前受管理的主 Session 与前台工具回合；[scoped botctl Worker 的 v3 恢复](worker-recovery.md) 已扩展；Worker 其他工具、PTC/后台或经 IPC 交接的写者、睡眠 checkpoint，以及原生日志缺失的恢复仍在 TODO。
+当前基线 `0.2.0-rc.1`。恢复受管理主 Session 与前台工具回合，并支持 [scoped botctl Worker v3](worker-recovery.md) 及 [compact](managed-compaction.md)/[sleep](sleep-wake.md) 维护中断。Worker 其他工具、PTC/后台或经 IPC 交接的写者，以及缺失原生日志的恢复仍待扩展。
 
 ## 使用
 

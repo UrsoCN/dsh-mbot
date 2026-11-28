@@ -1,6 +1,6 @@
-# 主 Session 上下文 checkpoint 基础（dev）
+# 主 Session 上下文 checkpoint 基础
 
-本阶段持久化并核验每轮的上下文取材基准。后续 dev 已接入 [受管理自动摘要](managed-compaction.md)，手动 compact 与 sleep/wake 仍待完成。包仍为 0.1.1；完整目标见 [Session Runtime](session-runtime.md)，剩余阶段见 [TODO](../TODO.md)。
+当前基线 `0.2.0-rc.1`。本模块持久化并核验每轮上下文取材基准，与 [自动/手动摘要](managed-compaction.md) 和 [sleep/wake](sleep-wake.md) 的维护证明配合。完整目标见 [Session Runtime](session-runtime.md)，剩余执行事项见 [TODO](../TODO.md)。
 
 ## 知识版本与每轮快照
 
@@ -40,12 +40,14 @@ Runtime 在模型提示组装前发布 `plugin:mbot/context-snapshot` 原生记�
 
 旧回合没有 snapshot 时保留原审计格式，不合成历史 checkpoint 或回复证明。已经捕获 snapshot 的回合若审计丢掉 context 证明，则拒绝降级。取材失败若发生在取得数据 lease 后，使用真实原生 blocked/cancelled 结果完成审计、释放许可，未执行输入留在原生 Inbox。
 
-## 后续边界
+## 与维护证明的边界
 
 这里保存的是 turn 输入基准；它不等于已经生成摘要。[自动摘要](managed-compaction.md) 已补充原生 compaction ID、摘要输出/hash、摘要范围及来源/可见域证明。没有 MBot 证明的旧原生 replacement 可以被引用为 surface，但不因此成为遵守 MBot 摘要规则的证明；睡眠仍须自己的阶段 journal。
 
-后续继续接手动 compact、普通 turn 的旧摘要退役、替换过程中的冷恢复与维护屏障；然后实现 Dreaming → compact/checkpoint → wake。主 Session ID 和原生日志保持稳定。
+手动 compact、普通 turn 的旧摘要退役及支持范围内的维护冷恢复已接入 [受管理摘要](managed-compaction.md)；Dreaming → compact/checkpoint → wake 已接入 [sleep/wake](sleep-wake.md)。这些阶段使用独立持久 journal，主 Session ID 和原生日志保持稳定。
 
 ## 验证
 
-类型、172 项 Host/Runtime 和 64 组 Bash 检查通过，含知识版本/epoch、原生持久 resume、来源顺序及字节冲突、缺失全部 snapshot、提交/flush 中断、旧头兼容、查询/提交并发与重试、Runtime 交接/注销读操作静止。source/tarball/Git/Web 四类安装验证实际 checkpoint API；Chromium 验证安装包的 Worker 崩溃恢复、原主 Session 和单次 Git 审计对应的 checkpoint。使用本地模型 adapter，未调用真实 API；证据见 [发布说明](RELEASE_NOTE.md)。
+以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。
+
+类型、172 项 Host/Runtime 和 64 组 Bash 检查通过，含知识版本/epoch、原生持久 resume、来源顺序及字节冲突、缺失全部 snapshot、提交/flush 中断、旧头兼容、查询/提交并发与重试、Runtime 交接/注销读操作静止。source/tarball/Git/Web 四类安装验证实际 checkpoint API；Chromium 验证安装包的 Worker 崩溃恢复、原主 Session 和单次 Git 审计对应的 checkpoint。使用本地模型 adapter，未调用真实 API；证据见 [发布说明](../RELEASE_NOTE.md)。

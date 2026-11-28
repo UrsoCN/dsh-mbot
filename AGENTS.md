@@ -4,7 +4,7 @@
 
 ## 开始工作
 
-- 先读 README、TODO、docs/design.md、docs/RELEASE_NOTE.md，以用户最新授权/约束确定范围。
+- 先读 README、TODO、DESIGN.md、RELEASE_NOTE.md，以用户最新授权/约束确定范围。
 - 查看 git status、提交、package.json、既有标签，保留用户未提交改动；勿将待办当成已实现。
 - 若存在 .codegraph/，理解/定位代码先用 CodeGraph explore/node（MCP 或 shell），再做必要搜索/阅读；不存在则跳过，不自行索引。
 - 搜索优先 rg；产物尽量在当前仓库或 /tmp，不修改 HOME，不用真实用户 DSH profile 做测试夹具。
@@ -54,7 +54,8 @@
 - npm test 的 Host/Runtime 文件保持串行，避免进程核验与其他夹具争用。测试对 Cannot inspect possible writer 的重试须先确认原 PID 已退出（消失或 kernel zombie），并核对 Git/工作树/journal 未变化；始终重走公开恢复接口，不将仍存活/身份不明的写者当静止。
 - client/会话改动补真实界面流程，不只调 handler；保留 CLI/headless/源码/tarball 兼容矩阵。
 - 文档/低影响可逆整理检查链接、事实、git diff --check、包内容，通常不另写镜像实现的测试。
-- TODO 只放未完成；交付/验证摘要入 RELEASE_NOTE；design 区分基线/规划，README 面向当前操作。
+- TODO 只放未完成；交付/验证摘要入 RELEASE_NOTE；DESIGN 区分基线/规划，README 面向当前操作。
+- 架构与规划大纲以根 DESIGN.md 为准，TODO.md 只放可执行事务；PLUGIN.md 维护集成与验证，RELEASE_NOTE.md 按实际版本归并。docs/README.md 是模块入口，历史阶段验收集中归档，不再以阶段编号新增现行模块文档。
 - 不伪造持续观察时间，不将第零天写成 7 天；历史验收保留，新结果注明版本/证据。
 
 ## 提交与发布

@@ -1,12 +1,12 @@
-# 睡眠、唤醒与最小管理面板（R4）
+# 睡眠、唤醒与最小管理面板
 
-本说明记录 R4 交付的受控 `sleep` / `wake` 维护闭环、只读 `overview` / `effectiveConfig` 视图与 DSH 最小管理面板。前置基础见 [持久恢复证据](durable-recovery.md)、[Runtime 架构与基线](runtime-architecture-r2.md) 与 [自动与手动摘要](managed-compaction.md)。
+当前基线 `0.2.0-rc.1`。本说明记录 R4 交付的受控 `sleep` / `wake` 维护闭环、只读 `overview` / `effectiveConfig` 视图与 DSH 最小管理面板。前置基础见 [持久恢复证据](durable-recovery.md)、[Runtime 架构与基线](runtime-architecture.md) 与 [自动与手动摘要](managed-compaction.md)。
 
 ## 1. 分阶段 Sleep 生命周期
 
 调用 `runtime.sleep(botId, options)`、`/mbot sleep [botId]` 或 `botctl sleep --profile NAME --bot ID [--skip-dream] [--compact]` 时，Host 按固定阶段执行：
 
-1. **Bot 级维护屏障**：通过 `BotCoordinator.acquireBarrier(botId, 'sleep')` 等待当前前台回合与受管写者完全静止，并阻止新回合开始执行模型或打开事务；若存在未结算 turn journal 或 `.mbot/PAUSED`，拒绝进入睡眠并要求先修复/恢复。
+1. **Bot 级维护屏障**：通过 `BotCoordinator.acquireBarrier(botId, 'sleep')` 核实当前前台回合与受管写者已静止，再阻止新回合执行模型或打开事务；当前遇到活动回合会返回 busy，应先 stop/等待收尾。若存在未结算 turn journal 或 `.mbot/PAUSED`，拒绝进入睡眠并要求先修复/恢复。
 2. **固定历史 cutoff（不阻断原生收信）**：刷新（flush）主 Session 并在阶段 journal 中记录 `cutoffHead`（当前 Git `HEAD`）、`beforeKnowledgeVersion` 与各 conversation 的 `throughSeq`；在此期间与整个睡眠期间，DSH 原生 Inbox 继续接收外部与多窗口消息（不会丢失或伪造第二套队列）。
 3. **持久阶段 journal**：写入 `<stateRoot>/maintenance/<workspaceHash>/current.json`（`0600`、原子替换 + `fsync`、绑定 `ownerPid`/`ownerStart`/`bootId`），`kind: 'sleep'`，阶段依次推进 `dreaming` → `checkpointing` → `sleeping`。
 4. **独立 Dreaming**：除非显式传入 `skipDream: true`（测试/离线模式），否则在维护屏障下执行 `mbot dream`（由 `mbot dream` 持自身 Bot 数据锁完成候选整理与 Git 提交）。若 Dreaming 失败，不推进知识 epoch、不进入 `sleeping`，保留失败审计并清理阶段 journal。
