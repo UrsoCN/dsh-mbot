@@ -53,7 +53,7 @@ npm run test:install
 npm run bench:runtime
 ```
 
-`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 默认遍历四种模式，也可用 `npm run test:install -- source`（或 `tarball`、`git`、`web-tarball`）单独复跑。它先检查 node/npm/dsh/pnpm 和系统工具，再使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、内部域 v4 只读事务与公开拒绝、bin/资源及卸载；不使用真实用户 profile。安装、启动或卸载失败时输出对应日志末尾并保留原退出码，完整日志仍留在产物目录。
+`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 默认遍历四种模式，也可用 `npm run test:install -- source`（或 `tarball`、`git`、`web-tarball`）单独复跑。它先检查 node/npm/dsh/pnpm 和系统工具，再使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、内部域 v4 只读事务、域 mailbox 收信去重与模型拒绝、bin/资源及卸载；不使用真实用户 profile。安装、启动或卸载失败时输出对应日志末尾并保留原退出码，完整日志仍留在产物目录。
 
 `bench:runtime` 测量 100/300/1000 轮恢复、Worker 事件与 ignored 快照；`--quick` 供 CI 冒烟。数据及局限见 [Runtime 架构与基准](docs/runtime-architecture.md)。仓库已配置 `.github/workflows/ci.yml`：Node 24.9.0 / 24 各执行串行回归与四种安装模式，安装任务显式准备 DSH `0.2.2-rc.5` 和 pnpm `12.23.0`，失败保留日志。随包镜像见 [ops/ci.yml.example](ops/ci.yml.example)，兼容范围与发布核对见 [发布检查](docs/plugin-standard-review.md)。R5 基准暂缓，不纳入本次 CI。
 
@@ -73,7 +73,7 @@ npm run test:gui
 |---|---|
 | `test:gui` | tarball 安装、命令反馈、目录保存、多窗口/刷新/重启、无业务模型调用 |
 | `test:gui-runtime` | 主 Session、审计/停止、队列、晚到写者及 Worker 崩溃恢复 |
-| `test:gui-conversations` | tarball 安装、域预留拒绝、双窗口、刷新/Host 重启、私人主 Session 续聊 |
+| `test:gui-conversations` | tarball 安装、域 mailbox 收信/重试、预留拒绝、双窗口、刷新/Host 重启、私人主 Session 续聊 |
 | `test:gui-compaction` | 原生摘要、Git checkpoint、刷新和维护闸门 |
 | `test:gui-handoff` | 实际 Runtime 模块替换、原主 Session 与故障证明保留 |
 | `test:gui-migration` | 隔离旧安装包、只读旧回合迁移及同 Session 后续对话 |

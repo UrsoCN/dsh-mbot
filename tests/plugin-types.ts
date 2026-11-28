@@ -84,6 +84,15 @@ const receipt: Promise<runtime.MessageReceipt | undefined> = mailbox.receipt('pl
 void receipt
 mailbox.dispose()
 void delivery
+const domainMailbox: runtime.ConversationMailbox = ctx.mbotRuntime.conversationMailbox(managedAgent, {
+  ...domain.source, senderId: 'alice', replyRoute: 'chat',
+})
+const domainDelivery: Promise<runtime.ConversationDeliveryReceipt> = domainMailbox.send({ requestId: 'event', text: 'hello domain' })
+const boundDomainId: string = domainMailbox.binding.conversationId
+void boundDomainId
+void domainDelivery
+domainMailbox.receipt('event').then(value => { const sender: string | undefined = value?.result.reply?.senderId; void sender })
+domainMailbox.dispose()
 ctx.plugin(ipc, { directory: '/tmp/mbot-ipc-types' })
 const ipcStatus: ipc.IpcStatus = ctx.mbotIpc.status()
 void ipcStatus

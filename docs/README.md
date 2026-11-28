@@ -17,7 +17,7 @@
 |---|---|
 | [Bot 实例](bot-instances.md) | profile 登记、身份/revision、目录选择与导入 |
 | [主 Session](main-session.md) | 官方实体、预留、创建/修复、导航及多窗口 |
-| [conversation 身份与来源权限](conversations.md) | 开发分支 registry v3、域预留、显式资料视图、内部 v4 事务与执行拒绝边界 |
+| [conversation 身份与来源权限](conversations.md) | 开发分支 registry v3、域预留、显式资料视图、内部 v4 事务、域 mailbox 与执行拒绝边界 |
 | [注销与退役](bot-removal.md) | 活动登记/退役快照、旧 Session 闸门与数据保留 |
 | [Session Runtime 设计](session-runtime.md) | conversation、可见域和统一入口的详细目标契约，区分现状与规划 |
 | [Runtime 架构与基准](runtime-architecture.md) | 四层模块、维护屏障及 R2/R5 性能记录 |

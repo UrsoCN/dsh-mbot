@@ -11,6 +11,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { verifyWorkerAudit } from '../plugin/worker-recovery-proof.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
 import { sealCompactionAudit, compactInputType, compactOutputType } from '../plugin/compaction-data.js'
+import { validateDomainJournal, validateDomainScope } from '../plugin/domain-contract.js'
+import { validateDomainMessage } from '../plugin/domain-message.js'
+import { nativeReply } from '../plugin/native-reply.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex')
@@ -19,7 +22,12 @@ const metaPattern = /^transcripts\/\d{4}-\d{2}-\d{2}\/(\d{8}T\d{6}Z-turn-[a-f0-9
 const pending = (status, error, audit) => ({ schemaVersion: 1, status, final: false, ...(error ? { error } : {}), ...(audit ? { audit } : {}) })
 
 async function prove(input) {
-  const { workspace, botId, sessionId, record, turn, events, confirmation } = input
+  const { workspace, botId, sessionId, record, turn, events, confirmation, conversation } = input
+  if (conversation) {
+    validateDomainScope(conversation)
+    if (conversation.botId !== botId || conversation.sessionId !== sessionId) throw new Error('Domain receipt ownership changed')
+    validateDomainMessage(record.message, conversation)
+  } else if (record.message.source.mbot?.schemaVersion === 2) throw new Error('Domain receipt requires its registered scope')
   const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'color.ui=false', '-C', workspace, ...args],
     { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
   const observedHead = git('rev-parse', 'HEAD').trim()
@@ -30,12 +38,15 @@ async function prove(input) {
     const stat = await lstat(journalPath)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32768) throw new Error('Unsafe turn journal')
     journal = JSON.parse(await readFile(journalPath, 'utf8'))
-    if (![1, 2, 3].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
+    if (![1, 2, 3, 4].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
       || !/^\d{8}T\d{6}Z-turn-[a-f0-9]{16}$/u.test(journal.runId) || !Number.isSafeInteger(journal.turn) || journal.turn < 1
       || typeof journal.botId !== 'string' || typeof journal.sessionId !== 'string' || !['data-subprocesses', 'agent-runtime'].includes(journal.writerScope)
       || !Number.isSafeInteger(journal.pid) || journal.pid < 1 || !/^\d+$/u.test(journal.pidStart)
       || !Number.isSafeInteger(journal.ownerPid) || journal.ownerPid < 0) throw new Error('Invalid turn journal')
+    if (journal.schemaVersion === 4) validateDomainJournal(journal)
+    else if (journal.conversation || journal.contextHash || journal.runtimeOwnership?.schemaVersion === 3) throw new Error('Domain journal cannot be downgraded')
     if (journal.botId === botId && journal.sessionId === sessionId && journal.turn === record.turn) {
+      if (!isDeepStrictEqual(journal.conversation, conversation)) throw new Error('Domain journal ownership changed')
       let live = false
       if (journal.bootId !== undefined && !validBootId(journal.bootId)) throw new Error('Invalid turn journal boot identity')
       const sameBoot = journal.bootId === undefined || journal.bootId === await currentBootId()
@@ -63,7 +74,8 @@ async function prove(input) {
       || !Array.isArray(meta.runtime.request_ids) || !meta.runtime.request_ids.includes(record.rpcId)) continue
     if (!meta.runtime.reply) { legacy = true; continue }
     try {
-      if (meta.runtime.context && !isDeepStrictEqual(meta.runtime.context, sealContextAudit(meta, events, workspace))) throw new Error('Request context proof contradicts native evidence')
+      if (!isDeepStrictEqual(meta.runtime.conversation, conversation) || (meta.runtime.journal_schema_version === 4) !== !!conversation) throw new Error('Domain audit ownership changed')
+      if ((conversation || meta.runtime.context) && !isDeepStrictEqual(meta.runtime.context, sealContextAudit(meta, events, workspace))) throw new Error('Request context proof contradicts native evidence')
       if ((meta.runtime.compaction_policy_version === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type)))
         && !isDeepStrictEqual(meta.runtime.compactions, sealCompactionAudit(meta, events))) throw new Error('Request compaction proof contradicts native evidence')
       const reply = meta.runtime.reply
@@ -71,8 +83,13 @@ async function prove(input) {
       const text = assistant?.data.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
       const nativeTarget = { rpcId: record.rpcId, messageId: record.message.id, ...record.message.source.mbot }
       const target = reply.targets?.find(target => target.rpcId === record.rpcId)
+      if (conversation) {
+        const native = nativeReply({ botId, sessionId, turn: record.turn, conversation, messages: [record.message] }, events,
+          { reason: turn.reason, text })
+        if (!isDeepStrictEqual(reply.targets?.find(item => item.rpcId === record.rpcId), native.targets.find(item => item.rpcId === record.rpcId))) throw new Error('Domain reply source changed')
+      }
       if (meta.runtime.kind !== 'managed-turn' || meta.runtime.schemaVersion !== 1 || meta.runtime.writer_scope !== 'agent-runtime'
-        || ![2, 3].includes(meta.runtime.journal_schema_version) || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
+        || ![2, 3, 4].includes(meta.runtime.journal_schema_version) || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
         || meta.mode !== 'run' || typeof meta.bot !== 'string' || meta.bot === 'human' || !/^[a-z][a-z0-9_-]{0,31}$/u.test(meta.bot)
         || typeof meta.summary !== 'string' || !hashPattern.test(meta.base_head)
         || git('show', '-s', '--format=%P', candidate.commit).trim() !== meta.base_head
@@ -96,8 +113,9 @@ async function prove(input) {
   if (journalStatus === 'unverified') return pending('unverified', 'Turn journal cannot confirm settlement', audit)
   if (journal?.runId === meta.run_id) return pending(journalStatus ?? 'recovering', 'Git commit exists; turn settlement is not yet confirmed', audit)
   if (confirmation !== 'confirmed') return pending('unverified', 'Native request and ending are not durably confirmed', audit)
-  const reply = { schemaVersion: 1, botId, sessionId, requestId: target.requestId, rpcId: record.rpcId, messageId: target.messageId,
-    conversationKey: target.conversationKey, replyRoute: target.replyRoute, adapterId: target.adapterId, ownerId: target.ownerId,
+  const reply = { schemaVersion: conversation ? 2 : 1, botId, sessionId, requestId: target.requestId, rpcId: record.rpcId, messageId: target.messageId,
+    conversationKey: target.conversationKey, replyRoute: target.replyRoute, adapterId: target.adapterId,
+    ...(conversation ? { conversationId: conversation.conversationId, visibility: conversation.visibility, accessHash: conversation.accessHash, senderId: target.senderId } : { ownerId: target.ownerId }),
     ...(target.correlationId === undefined ? {} : { correlationId: target.correlationId }), turn: record.turn, outcome,
     commit: candidate.commit, endEventSeq: turn.endSeq, assistantEventSeq: meta.runtime.reply.assistantEventSeq,
     text: meta.runtime.reply.text }

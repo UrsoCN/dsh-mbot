@@ -154,5 +154,7 @@ export function deliveryReceipt(record, confirmation) {
   return structuredClone({ confirmation, rpcId: record.rpcId, messageId: record.message.id,
     ...(record.message.source.mbot ? { requestId: record.message.source.mbot.requestId, botId: record.message.source.mbot.botId,
       conversationKey: record.message.source.mbot.conversationKey, replyRoute: record.message.source.mbot.replyRoute } : {}),
+    ...(record.message.source.mbot?.schemaVersion === 2 ? { conversationId: record.message.source.mbot.conversationId,
+      sessionId: record.message.source.mbot.sessionId, senderId: record.message.source.mbot.senderId, visibility: record.message.source.mbot.visibility } : {}),
     delivery: record.delivery, ...(record.turn === undefined ? {} : { turn: record.turn }), ...(record.reason === undefined ? {} : { reason: record.reason }) })
 }

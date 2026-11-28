@@ -9,7 +9,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import Commands from '@deepseek-ai/dsh-commands'
 import { Session, appendPluginRecord, foldSurface, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import * as plugin from '../plugin/index.js'
@@ -26,6 +26,9 @@ import { domainOwnership } from '../plugin/domain-contract.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
 import { recoveryInput, journalDigest } from '../plugin/recovery-proof.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
+import { conversationMessageBinding, conversationMessage, validateConversationMessage } from '../plugin/conversation-messages.js'
+import { validateDomainMessage } from '../plugin/domain-message.js'
+import { MessageIndex } from '../plugin/messages.js'
 import { processStart, currentBootId } from '../plugin/recovery.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
@@ -586,7 +589,7 @@ test('conversation Git reader rejects symlinks, missing files, malformed text an
   assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /byte limit/u)
 })
 
-async function domainTurn(t, { failures, prepare } = {}) {
+async function domainTurn(t, { failures, prepare, mailbox = false } = {}) {
   const fixture = await app(t), { ctx, ws, owner } = fixture
   await configEditor(ctx, owner, ws)
   const bot = await ctx.mbot.importBot(ws)
@@ -595,7 +598,9 @@ async function domainTurn(t, { failures, prepare } = {}) {
   if (failures !== undefined) await writeFile(join(ws, '.mbot/failures'), `${failures}\n`)
   await prepare?.({ ctx, ws, bot, record, policy })
   const scope = conversationViewScope(record)
-  const user = createUserMessage({ content: [{ type: 'text', text: 'test-only domain transaction input' }], source: { kind: 'user' } })
+  const binding = conversationMessageBinding(record, { ...record.source, senderId: 'alice', replyRoute: record.replyRoute })
+  const user = mailbox ? conversationMessage(binding, { requestId: 'domain-event-1', text: 'test-only domain transaction input', correlationId: 'correlation-1' })
+    : createUserMessage({ content: [{ type: 'text', text: 'test-only domain transaction input' }], source: { kind: 'user' } })
   const session = Session.create(record.sessionId, [], { version: SESSION_FORMAT_VERSION, id: record.sessionId, createdAt: Date.now(), cwd: ws, isSeeded: false })
   session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [user] })
   const start = session.append('turn/start', { turn: 1 })
@@ -616,8 +621,78 @@ async function domainTurn(t, { failures, prepare } = {}) {
     await lease.record(event)
     return { reason, text: '' }
   }
-  return { ...fixture, bot, record, policy, scope, options, lease, snapshot, snapshotSeq, session, log, end }
+  return { ...fixture, bot, record, policy, scope, binding, user, options, lease, snapshot, snapshotSeq, session, log, end }
 }
+
+test('domain envelopes bind sender, route and content and cannot impersonate private or foreign input', () => {
+  const record = reserveConversationRecord('bot-00000000-0000-0000-0000-000000000001', { source: groupSource(), allowedSenders: ['alice', 'bob'], replyRoute: 'route' })
+  const binding = conversationMessageBinding(record, { ...record.source, senderId: 'alice', replyRoute: 'route' })
+  const input = { requestId: '请求:1', text: '原始输入😀\n', correlationId: '相关:1' }
+  const msg = conversationMessage(binding, input)
+  validateConversationMessage(msg, record)
+  const retry = conversationMessage(binding, input)
+  assert.equal(retry.source.rpcId, msg.source.rpcId)
+  assert.equal(retry.source.mbot.fingerprint, msg.source.mbot.fingerprint)
+  assert.notEqual(retry.id, msg.id)
+  const changed = conversationMessage(binding, { ...input, text: 'changed' })
+  assert.equal(changed.source.rpcId, msg.source.rpcId)
+  assert.notEqual(changed.source.mbot.fingerprint, msg.source.mbot.fingerprint)
+  const otherSender = conversationMessageBinding(record, { ...record.source, senderId: 'bob', replyRoute: 'route' })
+  assert.notEqual(conversationMessage(otherSender, input).source.rpcId, msg.source.rpcId)
+  for (const source of [{ ...msg.source, kind: 'retry' }, { ...msg.source, principal: 'owner' },
+    { ...msg.source, mbot: { ...msg.source.mbot, schemaVersion: 1 } },
+    ...['senderId', 'replyRoute', 'conversationId', 'sessionId', 'accessHash', 'fingerprint'].map(key => ({ ...msg.source, mbot: { ...msg.source.mbot, [key]: 'changed' } }))]) {
+    assert.throws(() => validateConversationMessage({ ...msg, source }, record))
+  }
+  assert.throws(() => validateDomainMessage({ ...msg, content: [{ type: 'text', text: 'forged' }] }, conversationViewScope(record)))
+  for (const change of [{ senderId: 'mallory' }, { replyRoute: 'foreign-route' }, { spaceId: 'foreign-group' }, { visibility: 'owner-private' }]) {
+    assert.throws(() => conversationMessageBinding(record, { ...record.source, senderId: 'alice', replyRoute: 'route', ...change }))
+  }
+  for (const invalid of [{ ...input, sessionId: 'private' }, { ...input, text: '' }, { ...input, requestId: 'bad\n' }, { ...input, text: 'a'.repeat(262145) }]) {
+    assert.throws(() => conversationMessage(binding, invalid))
+  }
+})
+
+test('domain reply queries bind v4 audit to its registered route and withhold unconfirmed or changed proofs', async t => {
+  const f = await domainTurn(t, { mailbox: true }), { ws, bot, scope, session, lease, user } = f
+  const journal = await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8')
+  for (const event of [session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] }),
+    session.append('user/message', { ...user, content: [{ type: 'text', text: 'native prepared representation' }] }, { surfaceOp: 'append' }),
+    session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [conversationMessage(f.binding, { requestId: 'later', text: 'not executed yet' })] }),
+    session.append('assistant/message', { turn: 1, step: 1,
+      message: createAssistantMessage({ content: [{ type: 'text', text: 'domain audited answer' }], source: { provider: 'fixture', model: 'fixture' } }) }, { surfaceOp: 'append' })]) await lease.record(event)
+  await f.end()
+  const index = new MessageIndex()
+  for (const event of f.log().events) index.apply(event)
+  const record = index.requests.get(user.source.rpcId), turn = index.turns.get(1)
+  const input = { workspace: ws, botId: bot.botId, sessionId: scope.sessionId, record, turn, confirmation: 'confirmed',
+    events: f.log().events, workers: [], conversation: scope }
+  const prove = (value = input) => JSON.parse(execFileSync(process.execPath, [join(plugin.packageRoot, 'bin/turn-receipt.mjs')],
+    { input: JSON.stringify(value), encoding: 'utf8' }))
+  assert.equal(prove().final, false)
+  const result = await lease.finish({ reason: { kind: 'completed' }, text: 'domain audited answer' })
+  assert.equal(result.success, true)
+  const receipt = prove()
+  assert.equal(receipt.final, true)
+  assert.equal(receipt.reply.schemaVersion, 2)
+  assert.equal(receipt.reply.senderId, 'alice')
+  assert.equal(receipt.reply.conversationId, scope.conversationId)
+  assert.equal(receipt.reply.text, 'domain audited answer')
+  assert.equal(prove().reply.replyId, receipt.reply.replyId)
+  await writeFile(join(ws, '.mbot/runs/active-turn.json'), journal)
+  assert.equal(prove().final, false)
+  await rm(join(ws, '.mbot/runs/active-turn.json'))
+  assert.equal(prove({ ...input, confirmation: 'unconfirmed' }).final, false)
+  assert.equal(prove({ ...input, conversation: undefined }).final, false)
+  assert.equal(prove({ ...input, conversation: { ...scope, accessHash: '0'.repeat(64) } }).final, false)
+  const changed = structuredClone(input)
+  changed.record.message.source.mbot.replyRoute = 'foreign'
+  assert.equal(prove(changed).final, false)
+  const meta = JSON.parse(git(ws, 'show', `${result.head}:${result.meta}`))
+  assert.equal(meta.runtime.reply.targets.length, 1)
+  assert.equal(meta.runtime.reply.targets[0].senderId, 'alice')
+  assert.deepEqual(verifyRecoveryAudit(ws, f.options, f.log().events, result), meta)
+})
 
 test('domain v4 bridge pins filtered context and tools, seals Git audit, and restores a domain checkpoint', async t => {
   const f = await domainTurn(t), { ctx, ws, bot, record, policy, scope, lease, snapshot, snapshotSeq, log, end } = f

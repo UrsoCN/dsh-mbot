@@ -22,6 +22,8 @@
 - 安装任务显式安装 `pnpm@12.23.0`；脚本在创建 profile 前检查依赖，安装/启动/卸载失败时输出日志末尾并保留退出码。checkout/setup-node/upload-artifact 更新为固定 commit 的 v6（Node 24 runtime），同步随包模板和安装说明。
 - 本地在 `bed565a` 的独立副本中仅应用 CI 安装脚本修复，使用隔离 PATH、DSH `0.2.2-rc.5` 和新安装的 pnpm `12.23.0`，Node 24.9.0 / 24.22.3 各通过四类安装（`/tmp/mbot-plugin-install.ET5UGn`、`/tmp/mbot-plugin-install.0jSwgl`）。缺失依赖/失败退出码、`actionlint`、Bash 语法、324 条文档链接和包资源检查通过。未混入在途 P1 功能，也未重复完整业务回归；修复后的 GitHub 实际运行仍待推送验收。
 
+- 后续远端核验（2026-11-28）：修复提交 `9b0824a` 的 run `46123034693`、开发提交 `31ee106` 的 run `46125306335` 均为 success；两个 run 各有 2 个回归与 8 个安装任务全部通过，各 check-run annotations 均为空，原 Node 20 弃用告警已消失。中间提交 `47a3100` 的 run `46124415704` 也成功。证据为 GitHub Actions API（本地摘要 `/tmp/dsh-mbot-ci-verified.json`），不代表尚未推送提交的远端验收。
+
 ### Conversation 身份与权限预留
 
 - registry v3 兼容 v1/v2，持久保存不同用户/群/线程/peer 的来源、发送者许可、回复路线与稳定 Session ID；ConfigEditor 保存支持并发 revision、幂等和失败保留，既有归属不能重置、降级或改绑。预留记录随 Bot 退役保留，详见 [conversation 模块](docs/conversations.md)。
@@ -42,6 +44,14 @@
 - context snapshot v2 绑定持久域身份、knowledge v2、原生来源和 Inbox；私有 context 字节 hash 先持久化再发布 journal，Git 审计封存同一证明。Host 恢复核对登记/原生/私有快照/Git，保留取消计数、PAUSED 与单次结算；拒绝降级、权限变化、快照篡改和已捕获证明丢失。纯 Node/Git helper 与 Host schema 分离，独立 Bash 入口保持可用。契约见 [域事务](docs/conversations.md#内部域事务与-checkpoint)。
 - Node 24.9.0 完整回归通过（212 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash，`/tmp/dsh-mbot-domain-turn-full.log`）。之后补充聚合预算/证明丢失校验，类型及 11 项域专项通过（`/tmp/dsh-mbot-domain-final-scope.log`）；新增原生 Agent 测试经公开 recoverTurn 验证 Runtime 重载、登记冲突拒绝、checkpoint 恢复及 Inbox 保留，零模型调用（`/tmp/dsh-mbot-domain-runtime-recovery.log`）。测试中的域回合从内部桥建立，尚不代表实际域模型流程交付。 公开 checkpoint/plugin-record 类型已区分私人 v1 与域 v2，新增分支收窄检查通过。
 - source/tarball/Git/Web tarball 四类安装实际执行域 v4 helper、快照读取及 Git 封存，保留公开域拒绝与原有私人 Runtime 回归（`/tmp/mbot-plugin-install.a5VImi`、`/tmp/dsh-mbot-domain-turn-install.log`）。tarball Chromium 通过双窗口拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复和私人主 Session 续聊，实际截图已检查（`/tmp/mbot-gui-conversations.5WhvAB`、`/tmp/dsh-mbot-domain-turn-gui.log`）。未调用真实 API或执行 R5；域消息、提示、候选/Dreaming、摘要/维护仍列 P1。
+
+### 域收信与回复证明
+
+- 新增可信 Host `conversationMailbox`，绑定已存在且已附着的域 Agent，每次操作重验持久来源、发送者许可和回复路线。域信封 v2 以 Bot/域/适配器/发送者/平台 requestId 区分请求，复用原生 Inbox、并发去重、flush 确认和查询；Runtime 重载、退出及注销撤销旧能力，原生队列篡改被拒绝。域仍为 reserved，不创建实体或调用模型。
+- 内部 v4 事务封存原生域输入和回复目标，查询联合核验 context snapshot、原生结束、Git 审计、journal 结算与 flush；返回绑定域/发送者的回答 v2，所有者回答保持 v1。派生展示文本不能替换原 Inbox 证明，未执行的排队消息不会成为本轮回复目标。契约见 [域 mailbox](docs/conversations.md#域-mailbox-与回复证明)。
+- 共用回复门面补充脱敏一致性检查：若查询时新增凭据规则改变已封存正文或路线/投递身份，返回 unverified，不在原 replyId 下发布被改写的信封。实际适配器、域模型提示/工具、候选/Dreaming、摘要/维护和外部投递仍列 P1。
+- Node 24.9.0 完整回归通过：217 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-messages-full-final.log`）；补充测试覆盖原生派生展示、未执行排队消息、未结算 journal、动态凭据规则及能力撤销。所有者路由错误提示保持兼容。
+- 四类实际安装全部通过（`/tmp/mbot-plugin-install.rI4Fpd`、`/tmp/dsh-mbot-domain-messages-install-final.log`）；安装夹具现在分别用两个域验证内部事务和原生 mailbox，并同步修正登记数量断言。tarball Chromium 验收通过收信/去重、双窗口拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复、原 MessageId 重试和私人主 Session 续聊；实际截图已检查（`/tmp/mbot-gui-conversations.CZ5FgN`、`/tmp/dsh-mbot-domain-messages-gui.log`）。346 条文档链接、包资源、Bash 语法及 `git diff --check` 通过。未运行 R5 或真实 API。
 
 ## 0.2.0-rc.1（2026-11-28）
 

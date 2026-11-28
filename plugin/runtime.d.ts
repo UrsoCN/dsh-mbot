@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ActorIdentity, ActorLease, TurnLease } from './turn.js'
 import type { SubagentResult } from '@deepseek-ai/dsh-subagent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ConversationViewScope } from './conversation-view.js'
 export declare const name: 'mbot-runtime'
 export declare const inject: string[]
 export interface Config { /** Task-scoped native Workers; default true. False keeps foreground-only turns. */ workers?: boolean; compactMaxBytes?: number }
@@ -65,9 +66,18 @@ export interface VerifiedReply {
   conversationKey: string; replyRoute: string; adapterId: string; ownerId: string; correlationId?: string
   turn: number; outcome: import('./turn.js').ManagedOutcome; commit: string; endEventSeq: number; assistantEventSeq: number | null; text: string
 }
-export interface MessageResult {
+export interface ConversationMailboxBinding extends ConversationViewScope {
+  schemaVersion: 2; adapterId: string; senderId: string; replyRoute: string
+}
+export interface ConversationDeliveryReceipt extends MessageDeliveryReceipt {
+  conversationId: string; sessionId: string; senderId: string; visibility: import('./conversation-view.js').ConversationViewScope['visibility']
+}
+export interface ConversationVerifiedReply extends Omit<VerifiedReply, 'schemaVersion' | 'ownerId'> {
+  schemaVersion: 2; conversationId: string; visibility: import('./conversation-view.js').ConversationViewScope['visibility']; accessHash: string; senderId: string
+}
+export interface MessageResult<Reply = VerifiedReply> {
   schemaVersion: 1; status: 'queued' | 'running' | 'auditing' | 'recovering' | 'unverified' | import('./turn.js').ManagedOutcome
-  final: boolean; observedThroughSeq: number; error?: string; reply?: VerifiedReply
+  final: boolean; observedThroughSeq: number; error?: string; reply?: Reply
   audit?: { commit: string; observedHead: string; runId: string; meta: string; memoryCommit: string;
     outcome: import('./turn.js').ManagedOutcome; failureCountEffect: import('./turn.js').FailureCountEffect; success: boolean }
 }
@@ -77,6 +87,13 @@ export interface OwnerMailbox {
   /** Returns after admission flush, never waits for a model response. */
   send(input: OwnerMessageInput): Promise<MessageDeliveryReceipt>
   receipt(requestId: string): Promise<MessageReceipt | undefined>
+  dispose(): void
+}
+export interface ConversationMailbox {
+  readonly binding: Readonly<ConversationMailboxBinding>
+  /** Returns after native admission flush. Reserved domains remain gated. */
+  send(input: OwnerMessageInput): Promise<ConversationDeliveryReceipt>
+  receipt(requestId: string): Promise<(ConversationDeliveryReceipt & { result: MessageResult<ConversationVerifiedReply> }) | undefined>
   dispose(): void
 }
 export declare class MBotRuntime extends Service {
@@ -99,6 +116,8 @@ export declare class MBotRuntime extends Service {
   prepareRemoval(botId: string): { sessionIds: string[]; verifySessions(signal?: AbortSignal): Promise<void>; commit(retired: import('./instances.js').RetiredBot): Promise<void>; release(): Promise<void> }
   /** Trusted Host capability: caller verifies the owner and binds a private main route. */
   ownerMailbox(agent: Agent, binding: OwnerMailboxBinding): OwnerMailbox
+  /** Trusted adapter authenticates the full source/sender. Requires an existing attached domain Agent; does not activate it. */
+  conversationMailbox(agent: Agent, attestation: import('./conversations.js').ConversationAttestation): ConversationMailbox
   /** Trusted Host contract: the tool joins all writers before returning. */
   foregroundTool(name: string): () => void
   dataLease(agent: Agent): TurnLease | ActorLease
@@ -132,6 +151,9 @@ declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'mbot-owner-rpc': { kind: 'user'; rpcId: string; mbot: OwnerMailboxBinding & {
       schemaVersion: 1; botId: string; requestId: string; fingerprint: string; correlationId?: string
+    } }
+    'mbot-conversation-rpc': { kind: 'user'; rpcId: string; mbot: ConversationMailboxBinding & {
+      requestId: string; fingerprint: string; correlationId?: string
     } }
   }
 }

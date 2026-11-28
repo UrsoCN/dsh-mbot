@@ -251,6 +251,80 @@ test('Runtime recovers an internal domain v4 turn after reload and keeps native 
   assert.equal(requests.length, 0)
 })
 
+test('conversation mailboxes enforce sender capabilities and deduplicate native input through reload and uncertain flush', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent: main, owner, requests } = await app(t, () => response('must not execute'), { main: true, persistence: true })
+  const access = { ...conversationAccess(), allowedSenders: ['alice', 'bob'] }
+  const registration = await ctx.mbot.reserveConversation(bot.botId, access)
+  const foreign = await ctx.mbot.reserveConversation(bot.botId, conversationAccess('foreign-group'))
+  const created = await ctx.agents.create({ sessionId: registration.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  const agent = created.agent
+  const attestation = { ...registration.source, senderId: 'alice', replyRoute: registration.replyRoute }
+  assert.throws(() => ctx.mbotRuntime.conversationMailbox(main, attestation), /domain Session/u)
+  for (const changes of [{ senderId: 'mallory' }, { replyRoute: 'wrong' }, { spaceId: 'other' }, { sessionId: main.id }]) {
+    assert.throws(() => ctx.mbotRuntime.conversationMailbox(agent, { ...attestation, ...changes }))
+  }
+  const mailbox = ctx.mbotRuntime.conversationMailbox(agent, attestation)
+  attestation.senderId = 'mallory'
+  const input = { requestId: 'same-platform-id', text: 'owned input😀\n', correlationId: 'correlation' }
+  const sending = mailbox.send(input)
+  const concurrent = mailbox.send({ ...input })
+  input.text = 'caller mutation'
+  const first = await sending
+  assert.equal((await concurrent).messageId, first.messageId)
+  const repeat = await mailbox.send({ requestId: input.requestId, text: 'owned input😀\n', correlationId: 'correlation' })
+  assert.equal(first.messageId, repeat.messageId)
+  assert.equal(first.senderId, 'alice')
+  assert.equal(first.conversationId, registration.conversationId)
+  assert.equal(first.confirmation, 'confirmed')
+  await assert.rejects(mailbox.send(input), /changed content/u)
+  await assert.rejects(mailbox.send({ ...input, text: 'owned input😀\n', correlationId: 'different' }), /changed content/u)
+  await settle(ctx, agent)
+  assert.equal(requests.length, 0)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal((await mailbox.receipt(input.requestId)).result.status, 'queued')
+  const bob = ctx.mbotRuntime.conversationMailbox(agent, { ...registration.source, senderId: 'bob', replyRoute: registration.replyRoute })
+  assert.equal(await bob.receipt(input.requestId), undefined)
+  const b = await bob.send({ requestId: input.requestId, text: 'bob input' })
+  assert.notEqual(b.rpcId, first.rpcId)
+  const foreignAgent = (await ctx.agents.create({ sessionId: foreign.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })).agent
+  const otherMailbox = ctx.mbotRuntime.conversationMailbox(foreignAgent, { ...foreign.source, senderId: 'alice', replyRoute: foreign.replyRoute })
+  assert.equal(await otherMailbox.receipt(input.requestId), undefined)
+  const other = await otherMailbox.send({ requestId: input.requestId, text: 'foreign group input' })
+  assert.notEqual(other.rpcId, first.rpcId)
+  const flush = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = async session => { if (session.id === agent.id) throw new Error('fixture unconfirmed flush'); return flush(session) }
+  const uncertain = await mailbox.send({ requestId: 'uncertain', text: 'kept once' })
+  assert.equal(uncertain.confirmation, 'unconfirmed')
+  ctx.sessions.flush = flush
+  assert.equal((await mailbox.send({ requestId: 'uncertain', text: 'kept once' })).messageId, uncertain.messageId)
+  await settle(ctx, agent); await settle(ctx, foreignAgent)
+  await owner.dispose()
+  await assert.rejects(mailbox.send({ requestId: 'stale', text: 'no append' }), /unavailable/u)
+  await ctx.plugin(runtime, { workers: false })
+  const reopened = ctx.mbotRuntime.conversationMailbox(agent, { ...registration.source, senderId: 'alice', replyRoute: registration.replyRoute })
+  assert.equal((await reopened.send({ requestId: input.requestId, text: 'owned input😀\n', correlationId: 'correlation' })).messageId, first.messageId)
+  assert.equal((await reopened.receipt('uncertain')).confirmation, 'confirmed')
+  assert.equal(agent.inbox.nextTurn.length, 3)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+  assert.equal(requests.length, 0)
+  const pending = agent.inbox.nextTurn[0]
+  assert.equal(agent.inbox.replace(pending.id, { ...pending, content: [{ type: 'text', text: 'edited with stale envelope' }] }), true)
+  await assert.rejects(reopened.receipt(input.requestId), /changed content/u)
+  reopened.dispose()
+  await assert.rejects(reopened.receipt(input.requestId), /unavailable/u)
+  const beforeRetirement = ctx.mbotRuntime.conversationMailbox(agent, { ...registration.source, senderId: 'alice', replyRoute: registration.replyRoute })
+  class Controller extends Service {
+    constructor(ctx) { super(ctx, 'sessionController') }
+    async resolveAgent(id) { const found = ctx.agents.get(id); assert.ok(found); return { agent: found } }
+  }
+  await ctx.plugin(Controller)
+  await ctx.mbot.removeBot(bot.botId)
+  await assert.rejects(beforeRetirement.send({ requestId: 'retired', text: 'must not append' }), /unavailable|removed/u)
+  assert.throws(() => ctx.mbotRuntime.conversationMailbox(agent, { ...registration.source, senderId: 'alice', replyRoute: registration.replyRoute }), /domain Session|removed/u)
+})
+
 test('reserved conversations retain input across Runtime reload and remain gated after explicit disposal/resume', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent: main, owner, requests } = await app(t, () => response('private main response'), { main: true, persistence: true, compaction: 'scoped' })
   const registration = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
@@ -3179,6 +3253,28 @@ test('reply redaction is traceable to native text and a later successful flush r
   assert.equal(receipt.result.reply.text, 'before [REDACTED] after\n中文 suffix')
   assert.ok(!JSON.stringify(receipt).includes(token))
   assert.equal((await ctx.mbotRuntime.status(agent)).state, 'failed')
+})
+
+test('new redaction rules withhold a sealed reply instead of changing its bytes under the same reply ID', { timeout: 30000 }, async t => {
+  const { registerSecret } = await import('../plugin/redact.js')
+  const { ctx, agent } = await app(t, () => response('later-sensitive-answer'), { main: true })
+  const mailbox = mainMailbox(ctx, agent, { replyRoute: 'later-sensitive-route' })
+  await mailbox.send({ requestId: 'later-sensitive-request', text: 'capture the original answer' })
+  await settle(ctx, agent)
+  const original = await mailbox.receipt('later-sensitive-request')
+  assert.equal(original.result.final, true)
+  for (const secret of ['later-sensitive-answer', 'later-sensitive-route', 'later-sensitive-request']) {
+    const unregister = registerSecret(secret)
+    try {
+      const receipt = await mailbox.receipt('later-sensitive-request')
+      assert.equal(receipt.result.final, false)
+      assert.equal(receipt.result.status, 'unverified')
+      assert.equal(receipt.result.reply, undefined)
+      assert.match(receipt.result.error, /redaction policy/u)
+      assert.ok(!JSON.stringify(receipt).includes(secret))
+    } finally { unregister() }
+  }
+  assert.deepEqual((await mailbox.receipt('later-sensitive-request')).result.reply, original.result.reply)
 })
 
 test('a warm older Host header still commits using legacy audit without fabricating sealed replies', { timeout: 30000 }, async t => {

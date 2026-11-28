@@ -39,6 +39,8 @@ Git meta 的 runtime.reply 为 schemaVersion 1，带 writer_scope=agent-runtime�
 
 工作树文件编辑、后续提交、merge 或删除当前 transcript 副本不改写历史回答。若原审计提交已不在 HEAD 的可达历史中，不能用旧聊天卡片的 head 强行证明当前仓库已确认它。ignorable plugin record 完全不参与证明，既不是提交证据，也不是消费/完成权威。
 
+查询时继续应用当前凭据脱敏策略。如果新增凭据规则会改变已封存的正文或回复/投递身份，则返回 `unverified` 且不带 reply；不能在原 replyId 下返回改写后的信封，也不能为保持身份而放行凭据。审计中已脱敏且可从原生文本重建的回答继续正常返回。
+
 Git commit 出现也不等于全部结算完成。匹配的 journal 未退出时，只报告已核实 commit 和 auditing/recovering，不交付 reply；原生 request/end 的 flush 失败也阻止 final。后续成功 flush 可以查回已提交结果，无需重复运行模型。查询只读，不能替代恢复或删除 journal。
 
 Git 与本地同权限 Host/人类仍是可信维护边界。这些一致性检查防止误关联、损坏、陈旧状态和未完成交接，不宣称是恶意同权限代码的安全沙箱。
@@ -50,6 +52,8 @@ Git 与本地同权限 Host/人类仍是可信维护边界。这些一致性检�
 已经中断的 agent-runtime journal 仍需协调恢复，不能由数据 recover、删 journal 或改 scope 掩盖。用户新反馈中的旧头验收故障已避免继续发生，已留下的 journal、删除 Bot/退休绑定等工作继续单独处理。
 
 回复信封是可交接的不可变结果，当前只有查回/等待能力，尚未向 IM 投递，也没有外部投递 ack/outbox 消费者。后续 outbox 应复用 replyId 和原路线，不复制原生消息消费队列；外部副作用/不确定投递不能承诺 exactly-once。
+
+开发分支的 [域 mailbox](conversations.md#域-mailbox-与回复证明) 使用独立信封/返回回答 schemaVersion 2，必须和 journal v4、持久域 scope 及 context snapshot v2 一致；所有者回答保持 schemaVersion 1。域 helper 已通过内部桥审计查询，未公开域模型执行或外部投递。
 
 ## 验证
 

@@ -196,6 +196,19 @@ async function probe(ctx) {
     assert.equal(domainMeta.runtime.journal_schema_version, 4)
     assert.equal(domainMeta.runtime.context.snapshot.knowledge.version, view.knowledge.version)
     assert.equal(ctx.agents.get(conversation.sessionId), undefined)
+    const inboxDomain = await ctx.mbot.reserveConversation(bot.botId, { source: { ...conversation.source, spaceId: 'mailbox-group' },
+      allowedSenders: ['alice'], replyRoute: 'mailbox-group-route' })
+    const domainAgent = (await ctx.agents.create({ sessionId: inboxDomain.sessionId, meta: { cwd: bot.workspacePath },
+      agentOptions: { provider: 'mbot-installation', model: 'scripted' } })).agent
+    const domainMailbox = ctx.mbotRuntime.conversationMailbox(domainAgent, { ...inboxDomain.source, senderId: 'alice', replyRoute: inboxDomain.replyRoute })
+    const domainDelivery = await domainMailbox.send({ requestId: 'install-domain-event', text: 'installed mailbox queued input' })
+    const domainRetry = await domainMailbox.send({ requestId: 'install-domain-event', text: 'installed mailbox queued input' })
+    assert.equal(domainRetry.messageId, domainDelivery.messageId)
+    assert.equal((await domainMailbox.receipt('install-domain-event')).result.status, 'queued')
+    await domainAgent.whenIdle()
+    assert.equal(domainAgent.inbox.nextTurn.length, 1)
+    assert.equal((await ctx.mbotRuntime.status(domainAgent)).state, 'reserved')
+    domainMailbox.dispose()
     let runtimeCalls = 0
     class InstalledAdapter extends LlmAdapter {
       async *stream(request) {
@@ -317,7 +330,7 @@ for mode in "${modes[@]}"; do
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" run_logged "$root/$mode.runtime.log" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}"
   jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|test("^[0-9]{3,9}")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
-  jq -e '.registry.schemaVersion==3 and (.registry.conversations|length)==1 and .registry.conversations[0].state=="reserved" and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
+  jq -e '.registry.schemaVersion==3 and (.registry.conversations|length)==2 and all(.registry.conversations[]; .state=="reserved") and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
   installed_task_id=$(jq -r '.output | rtrimstr("\n")' "$root/$mode.result.json")

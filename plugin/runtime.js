@@ -14,7 +14,7 @@ import * as CompactCommand from '@deepseek-ai/dsh-command-compact'
 import { foregroundTools, installGates, createGateCell } from './gate-driver.js'
 import { ConversationSession, runtimeRecordType, validReceipt } from './conversation-session.js'
 import { BotCoordinator } from './bot-coordinator.js'
-import { createOwnerMailbox } from './mailbox-facade.js'
+import { createOwnerMailbox, createConversationMailbox } from './mailbox-facade.js'
 import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
 import { sleepBot, wakeBot, recoverSleepMaintenance, botOverview } from './sleep.js'
 import { readMaintenanceJournal } from './maintenance-journal.js'
@@ -395,6 +395,11 @@ export class MBotRuntime extends Service {
   /** Host capability: the caller verifies owner identity and binds the route. */
   ownerMailbox(agent, options) {
     return createOwnerMailbox(this, agent, options)
+  }
+
+  /** Trusted adapter attestation; receives into the domain Inbox without activation. */
+  conversationMailbox(agent, attestation) {
+    return createConversationMailbox(this, agent, attestation)
   }
 
   /** Trusted Host declaration: the tool must join every writer before returning. */

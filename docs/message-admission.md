@@ -63,6 +63,8 @@ flush/来源/租约准入失败且未执行的输入返回唯一原生 Inbox，�
 
 DSH 0.2.2-rc.5 没有公开的仅唤醒接口。对于持久化失败后停在 Inbox 的输入，同 ID 重试只确认并复用原消息；下一条新 followup 会恢复 FIFO 消费。不会通过创建第二个 Agent、访问私有 wakeDriver 或合成空业务消息来唤醒。Bot 的 sleep/wake 与维护恢复已由 [持久阶段 journal](sleep-wake.md) 接入；它与这里的同 ID 消息重试有不同语义。agent-runtime 中断沿 [Host 协调恢复](runtime-recovery.md) 核验，不能用数据 recover 或删除 journal 绕过。
 
+开发分支额外提供 [conversationMailbox](conversations.md#域-mailbox-与回复证明)，以持久来源/发送者许可向已附着的域 Inbox 收信，使用独立 v2 信封及域回复证明。它不改变上述 ownerMailbox 的所有者语义；额外域模型执行继续 reserved，真实适配器和 outbox 仍待交付。
+
 ## 验证
 
 以下数量与临时路径保留首次专项验收时的历史记录；当前复跑入口见根 [PLUGIN](../PLUGIN.md)。

@@ -41,6 +41,16 @@ async function setup(ctx) {
         descriptor: ctx.mbotRuntime.states.get(resolved.agent)?.conversation,
         pending: resolved.agent.inbox.nextTurn.map(message => message.content) }) }
     } })
+  ctx.commands.register({ name: 'mbot_fixture_domain_mailbox', description: 'Send or retry a disposable authenticated domain envelope.', recordInput: false,
+    async handler(invocation) {
+      const record = ctx.mbot.registry().conversations.find(item => item.sessionId === invocation.agent.id)
+      const mailbox = ctx.mbotRuntime.conversationMailbox(invocation.agent, { ...record.source, senderId: 'alice', replyRoute: record.replyRoute })
+      try {
+        const delivery = await mailbox.send({ requestId: 'gui-domain-message', text: 'Authenticated domain message😀' })
+        await invocation.agent.whenIdle()
+        return { kind: 'success', text: JSON.stringify({ delivery, receipt: await mailbox.receipt('gui-domain-message') }) }
+      } finally { mailbox.dispose() }
+    } })
   ctx.commands.register({ name: 'mbot_fixture_checkpoint', description: 'Inspect the installed Runtime checkpoint inside this disposable fixture.', recordInput: false,
     async handler(invocation) {
       return { kind: 'success', text: JSON.stringify(await ctx.mbotRuntime.checkpoint(invocation.agent)) }

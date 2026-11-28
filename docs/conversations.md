@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复；实际模型提示/工具接线、消息、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；实际模型提示/工具接线、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -38,7 +38,28 @@ const permitted = ctx.mbot.authorizeConversation(botId, {
 
 `reserveConversation` 使用官方 ConfigEditor 的最新配置和可选 revision 校验，串行保存同 profile 的预留。相同 Bot/source/许可的重复请求返回原记录，不增加 revision；ACL 或 replyRoute 冲突拒绝。调用时捕获输入，返回分离快照，调用者后续修改对象不会改变待保存或已保存权限。失败保存保留旧有效配置。
 
-`authorizeConversation` 只验证可信适配器提供的身份与现有许可一致；它不是平台认证，也不是执行许可。不能凭它创建 mailbox、启动模型或直接调用 ownerMailbox。主 Session 的所有者入口见 [消息准入](message-admission.md)。
+`authorizeConversation` 只验证可信适配器提供的身份与现有许可一致；它不是平台认证或模型执行许可。域 mailbox 还要求相同 Session 已存在且被当前 Runtime 附着；不能改用 ownerMailbox。主 Session 的所有者入口见 [消息准入](message-admission.md)。
+
+## 域 mailbox 与回复证明
+
+可信适配器核实平台来源和发送者后，可向**已存在且已附着**的域 Agent 取得能力；接口本身不创建实体或升级 reserved 状态：
+
+```js
+const mailbox = ctx.mbotRuntime.conversationMailbox(agent, {
+  ...record.source, senderId: verifiedSenderId, replyRoute: record.replyRoute,
+})
+ctx.effect(() => () => mailbox.dispose())
+const delivery = await mailbox.send({ requestId: platformEventId, text: '域消息' })
+const receipt = await mailbox.receipt(platformEventId)
+```
+
+创建和每次操作都核对持久 Bot/conversation/Session、完整来源、发送者许可与回复路线。调用者不能通过正文、requestId 或 send 参数改选域/发送者/路线。不同发送者各持自己的能力；Runtime 重载、注销、Agent 退出或 dispose 后，旧能力拒绝操作。捕获输入后再 await，调用者后续修改对象不影响已经投递的字节。
+
+`source.mbot.schemaVersion=2` 包含域 scope、adapterId、senderId、replyRoute、requestId、可选 correlationId 和内容指纹。原生 rpcId 使用 `mbot-domain:` 前缀，命名空间为 Bot/域/适配器/发送者/平台 requestId。正文、路线和关联 ID 变化是同 ID 冲突；不同 Bot/域/发送者即使平台 ID 相同也不合并。只支持非空文本（1–262144 字节），附件尚待适配器契约。
+
+mailbox 复用 DSH followup/Inbox、原生日志投影和 flush，不增加消费者或持久队列。`confirmed` 只证明 flush；失败返回 `unconfirmed`，重试原 ID 复用原 MessageId，不追加唤醒消息。reserved 域暂不处理这些输入；查询返回 queued。原生队列编辑不能保留旧信封指纹篡改正文，冲突后拒绝重试/查询；Bot 退役保留原生数据但撤销能力。
+
+内部 v4 域事务已可封存域回复目标，查询返回 schemaVersion 2 的回答信封，包含 conversationId、可见性、权限 hash 和 senderId。只有原生结束事件、精确目标、可达 Git 审计、context snapshot v2 与 journal 已结算且 flush 确认一致时才返回 final。缺失域身份、跨域/跨路线、未确认落盘及篡改证据均不释放回答；这一步由内部桥夹具验收，尚无公开域模型执行入口。它不向 IM/peer 投递，也未实现外部 ack/outbox。
 
 ## 显式域资料视图
 
@@ -87,7 +108,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 - 原生 `plugin:mbot/context-snapshot` 的 schemaVersion 2 绑定持久 conversationId、knowledge v2、原生有序来源 cut/Inbox 输入和前序 checkpoint。同一次 Git 审计封存域身份与 context；成功域回合不得没有 snapshot，已捕获的失败/取消回合也不能删掉证明或降为私人 v1。
 - 恢复要求 Host 原生所有权核验及 `recorded-domain-v1` proof，检查 registry 域归属、原 journal/私有 ledger/context hash、原生事件和 Git 审计；使用原始受限 guard，保持单次提交/结算与 PAUSED，不运行模型。Runtime 重载后可恢复 checkpoint，输入继续留在同一 reserved Session 的 Inbox。
 
-当前不支持域 ownerMailbox 收据、IM/peer/outbox、候选/Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
+域回复使用独立 conversationMailbox，不能改用 ownerMailbox。当前不支持实际 IM/peer/outbox、候选/Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
 
 ## 持久化、执行与退役
 
@@ -106,6 +127,7 @@ registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2
 - 独立 Host 子进程在 Session flush 后被 SIGKILL，再从实际持久存储恢复同一 ID，核对 Inbox 字节、域记录和零模型调用。
 - `npm run test:gui-conversations` 使用 tarball 安装后的 Web profile，覆盖双窗口、拒绝反馈、刷新、Host 重启和私人主 Session 续聊。GUI 与恢复全进程检查分开执行。
 - 资料视图测试覆盖私人 canary 不泄露、群/其他用户/peer 隔离、固定 commit 与未提交草稿、权限/正文版本变化、清单越界、符号链接、缺文件、非法 UTF-8/NUL 和字节限额；安装矩阵通过真实 Host API 检查包内 helper，确认只返回元数据且不激活域。
+- 域 mailbox 测试覆盖并发重试、输入捕获、不同发送者/群的同 ID 隔离、来源/路线拒绝、flush 不确定、原生队列篡改、Runtime 重载和注销；GUI 使用实际安装后的能力收信，并在 SIGKILL 重启后以原 ID 查回同一 MessageId。
 - 域桥测试覆盖固定快照/只读命令、私人路径拒绝、越权写入回滚、取消计数、正文脱敏、合并记忆预算、原生/Git checkpoint 及中断单次结算；原生 Agent 测试通过公开恢复接口核验重载后的持久域身份、checkpoint 和 Inbox。安装矩阵实际执行包内 v4 桥，公开域执行仍拒绝。
 
 上述验收证明预留拒绝边界与内部域事务，不代表已完成实际域模型对话、候选治理、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。

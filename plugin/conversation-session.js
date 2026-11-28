@@ -9,6 +9,8 @@ import { captureContext, restoreContext } from './context-checkpoint.js'
 import { verifyManagedCompactions } from './compaction.js'
 import { conversationViewScope } from './conversation-view.js'
 import { freezeContext } from './context-hash.js'
+import { conversationForSession } from './conversations.js'
+import { validateConversationMessage } from './conversation-messages.js'
 
 export const runtimeRecordType = 'plugin:mbot/runtime-turn'
 const receiptPhases = ['active', 'auditing', 'committed', 'rejected', 'failed', 'cancelled']
@@ -150,7 +152,11 @@ export class ConversationSession {
     const fresh = record.messages.filter(message => !record.admitted.has(message.id))
     if (!fresh.length) return
     for (const message of fresh) {
-      validateSource(message, this.botId)
+      if (this.domainScope) {
+        const registration = conversationForSession(this.runtime.ctx.mbot.registry(), this.agent.id)
+        if (!registration || registration.botId !== this.botId) throw new Error('Conversation permission is unavailable')
+        validateConversationMessage(message, registration)
+      } else validateSource(message, this.botId)
       this.messageIndex.match(message)
     }
     // Native append/followup does not itself guarantee a storage flush. This

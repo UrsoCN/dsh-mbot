@@ -12,7 +12,7 @@
 
 ## P1：对话域、消息与写者扩展
 
-- [ ] 在 [内部域事务 v4](docs/conversations.md#内部域事务与-checkpoint) 基础上接通原生提示/读工具和逐域消息准入，扩展来源/回复证明及实际实体激活；覆盖不同用户/群/线程、跨域拒绝、重载与中断，不绕过现有 reserved 闸门。
+- [ ] 在 [内部域事务 v4](docs/conversations.md#内部域事务与-checkpoint) 基础上接通原生提示/读工具、域信封的实际回合准入及实体激活；复用已实现的 conversationMailbox 和域回复证明，覆盖不同用户/群/线程、跨域拒绝、重载与中断，不绕过现有 reserved 闸门。
 - [ ] 实现按域投递的候选与独立 Dreaming，以及域摘要、sleep/wake 和维护恢复；验证私人任务/历史/摘要不串域，完整验收后才开放额外域。
 - [ ] 接入真实 IM 适配器：所有者专用私聊可绑定主 Session，群/其他用户隔离；验证 QQ `@alias`、附件/路由恢复和回复不串域。
 - [ ] 实现按已验证 replyRoute 的 outbox、ack 与投递不确定状态；覆盖 IM 重试、断连和提交前/后崩溃。
@@ -31,7 +31,7 @@
 
 ## 发布与配套交付
 
-- [ ] 推送 CI 修复后确认 `.github/workflows/ci.yml` 的两组回归、8 个安装任务全部通过且无 Node 20 弃用警告；首次 run `46121170070` 的安装失败与本地修复证据见 [RELEASE_NOTE](RELEASE_NOTE.md#首次-ci-修复)。按需增加 tag 产物/校验和的 Release Action。
+- [ ] 按发布渠道需要增加 tag 产物/校验和的 Release Action；CI 回归与安装矩阵已在远端通过，证据见 [RELEASE_NOTE](RELEASE_NOTE.md#首次-ci-修复)。
 - [ ] 验证旧 `0.1` 数据/profile、登记及配置版本迁移，不覆盖自定义角色/协议；Node/DSH 声明与安装矩阵以 [兼容范围](docs/plugin-standard-review.md#兼容范围与-ci) 为准。
 - [ ] 核验上游 DSH 固定 `undici@8.11.2` 的已知漏洞与修复版本兼容性；候选 `0.2.3-alpha.2` 已采用 `undici@8.12.4`，但须验证 SDK/Node 要求与实际 Host 安装，不以本仓库开发环境 override 代替宿主修复。
 - [ ] 完成上述正式版范围的联合回归和发布核对，再推进 `0.2.0`；版本/lock/tag 与验收证据一致，发布规则见 [发布检查](docs/plugin-standard-review.md)。

@@ -1,8 +1,10 @@
-// Trusted Host owner mailbox facade over the single authoritative DSH Inbox.
-// Keeps owner-private main conversation binding strict; multi-conversation
-// visibility expansion is deferred to P1 stage 3.
+// Trusted Host mailboxes over the single authoritative DSH Inbox.
 import { ownerBinding, ownerMessage, requestIdentity, deliveryReceipt } from './messages.js'
 import { messageReceipt } from './receipts.js'
+import { conversationForSession } from './conversations.js'
+import { conversationMessageBinding, conversationMessage } from './conversation-messages.js'
+import { isDeepStrictEqual } from 'node:util'
+import { domainMessageScope } from './domain-message.js'
 
 export function createOwnerMailbox(runtime, agent, options) {
   const state = runtime.states.get(agent)
@@ -11,11 +13,36 @@ export function createOwnerMailbox(runtime, agent, options) {
   const bot = runtime.ctx.mbot.bot({ botId: state.botId })
   if (bot.mainSessionId !== agent.id || bot.binding?.state !== 'ready') throw new Error('Owner mailbox requires a ready Bot main Session')
   const binding = ownerBinding(options, state.botId)
-  let revoked = false
-  const check = () => {
-    if (revoked || runtime.closed || state.closing || state.retiring || runtime.states.get(agent) !== state || runtime.ctx.mbot.closed) throw new Error('MBot owner mailbox is unavailable')
+  return createMailbox(runtime, agent, state, binding, ownerMessage, () => {
     const current = runtime.ctx.mbot.bot({ botId: state.botId })
     if (current.mainSessionId !== agent.id || current.binding?.state !== 'ready') throw new Error('Bot main Session binding changed; reopen the mailbox')
+  })
+}
+
+/** Receive into an already materialized reserved domain; does not activate it. */
+export function createConversationMailbox(runtime, agent, attestation) {
+  const state = runtime.states.get(agent)
+  if (!state?.domainScope || runtime.closed || !runtime.ready || state.closing || state.initializing || state.earlyEvents) throw new Error('Conversation mailbox requires an attached domain Session')
+  const captured = structuredClone(attestation)
+  const currentBinding = () => {
+    runtime.ctx.mbot.bot({ botId: state.botId }) // Retired ownership cannot issue capabilities.
+    const record = conversationForSession(runtime.ctx.mbot.registry(), agent.id)
+    if (!record || record.botId !== state.botId) throw new Error('Conversation mailbox ownership changed')
+    const binding = conversationMessageBinding(record, captured)
+    if (!isDeepStrictEqual(domainMessageScope(binding), state.domainScope)) throw new Error('Conversation mailbox no longer matches its Runtime scope')
+    return binding
+  }
+  const binding = currentBinding()
+  return createMailbox(runtime, agent, state, binding, conversationMessage, () => {
+    if (!isDeepStrictEqual(binding, currentBinding())) throw new Error('Conversation mailbox permission changed')
+  })
+}
+
+function createMailbox(runtime, agent, state, binding, createMessage, checkBinding) {
+  let revoked = false
+  const check = () => {
+    if (revoked || runtime.closed || state.closing || state.retiring || runtime.states.get(agent) !== state || runtime.ctx.mbot.closed) throw new Error('MBot mailbox is unavailable')
+    checkBinding()
   }
   const operation = run => {
     try { check() } catch (error) { return Promise.reject(error) }
@@ -28,7 +55,7 @@ export function createOwnerMailbox(runtime, agent, options) {
     send: input => {
       // Own caller bytes before the first await, including duplicate retries.
       let message
-      try { check(); message = ownerMessage(binding, input) }
+      try { check(); message = createMessage(binding, input) }
       catch (error) { return Promise.reject(error) }
       return operation(async () => {
         let record = state.messageIndex.requests.get(requestIdentity(message))
@@ -51,12 +78,12 @@ export function createOwnerMailbox(runtime, agent, options) {
     },
     receipt: requestId => operation(async () => {
       check()
-      const probe = ownerMessage(binding, { requestId, text: 'receipt lookup' })
+      const probe = createMessage(binding, { requestId, text: 'receipt lookup' })
       const record = state.messageIndex.requests.get(requestIdentity(probe))
       if (!record) return undefined
       if (record.conflict) throw new Error('Request identity was reused with changed content or duplicate native input')
       const source = record.message.source.mbot
-      if (!source || Object.keys(binding).some(key => source[key] !== binding[key])) throw new Error('Request belongs to a different owner route')
+      if (!source || Object.keys(binding).some(key => source[key] !== binding[key])) throw new Error(`Request belongs to a different ${binding.schemaVersion === 2 ? 'conversation' : 'owner'} route`)
       let confirmation = 'confirmed'
       try { await runtime.ctx.sessions.flush(agent.session); check() }
       catch { confirmation = 'unconfirmed' }
