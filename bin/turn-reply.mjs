@@ -5,7 +5,8 @@ import { nativeReply } from '../plugin/native-reply.js'
 import { redactionSpans } from '../plugin/reply-proof.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
 import { sealCompactionAudit, compactInputType, compactOutputType } from '../plugin/compaction-data.js'
-import { validateDomainHeader } from '../plugin/domain-contract.js'
+import { validateDomainHeader, domainJournalVersion } from '../plugin/domain-contract.js'
+import { candidatePath, readCandidateFile, sealDomainCandidates } from '../plugin/domain-candidates.js'
 
 const [headerFile, eventsFile, finishFile] = process.argv.slice(2)
 if (headerFile === '--seal-meta') {
@@ -20,12 +21,16 @@ if (headerFile === '--seal-meta') {
     const header = process.argv[7] ? JSON.parse(await readFile(process.argv[7], 'utf8')) : {}
     if (header.conversation) {
       validateDomainHeader(header)
-      if (meta.runtime.journal_schema_version !== 4) throw new Error('Domain journal cannot be downgraded')
+      if (meta.runtime.journal_schema_version !== domainJournalVersion(header.runtimeOwnership)) throw new Error('Domain journal cannot be downgraded')
       meta.runtime.conversation = header.conversation
     }
     if (header.compactionPolicyVersion !== undefined) meta.runtime.compaction_policy_version = header.compactionPolicyVersion
     const context = sealContextAudit(meta, events, process.argv[6])
     if (context) meta.runtime.context = context
+    if (meta.runtime.journal_schema_version === 5) {
+      const bytes = await readCandidateFile(process.argv[6], candidatePath(header.conversation, meta.run_id))
+      meta.runtime.candidates = sealDomainCandidates(meta, events, bytes)
+    }
     const compactions = header.compactionPolicyVersion === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type))
       ? sealCompactionAudit(meta, events) : undefined
     if (compactions) meta.runtime.compactions = compactions

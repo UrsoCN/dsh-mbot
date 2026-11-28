@@ -61,6 +61,14 @@
 - Node 24.9.0 完整 Host/Runtime 回归 234 项通过、1 项真实 API 跳过、1 项精简 Host 冷启动失败：其没有全局 botctl，旧 restriction 却依赖该名称。修正为拒绝所有继承工具、保留 scoped 域工具后，22 项相关专项全部通过，随后 64 组 Bash 回归通过。日志 `/tmp/dsh-mbot-domain-context-full.log`、`/tmp/dsh-mbot-domain-context-final-scope.log`、`/tmp/dsh-mbot-domain-context-bash.log`；保留首轮失败证据，未重复不受影响的完整矩阵。
 - 四类安装通过并核验实际域 schema 与私人工具不可见（`/tmp/mbot-plugin-install.8phoFy`、`/tmp/dsh-mbot-domain-context-install.log`）。tarball Chromium 的双窗口拒绝、收信重试、刷新、SIGKILL/同 ID 恢复及私人主 Session 续聊通过，实际截图已检查（`/tmp/mbot-gui-conversations.JZlx5s`、`/tmp/dsh-mbot-domain-context-gui-final.log`）。首轮 GUI 暴露 Controller 可在 agent/created 回调结束前返回 live Agent；夹具改为等待 Runtime 真实 attach，新增受控延迟测试证明未就绪 mailbox 拒绝、同一附着等待完成后收信（`/tmp/dsh-mbot-domain-attachment.log`）。348 条文档链接、包资源与 `git diff --check` 通过；未运行 R5 或真实 API。
 
+### 域候选事务与私人 Dreaming 取材隔离
+
+- 内部域桥新增 journal v5/runtimeOwnership v4，本域 remember 保存每回合 JSONL；原生请求/派发/成功回执、脱敏跨度、知识版本和 Git 文件 hash 联合核验。限定路径、字节/条数预算、callId 幂等、guard 回滚和失败/取消语义保留，候选不直接改长期记忆。契约见 [域候选事务](docs/conversations.md#域候选事务)。
+- 原生 context 的 candidateVersion 绑定写者版本；checkpoint、reply 与恢复核验原提交的候选，专用恢复 proof 防止复用只读证明，保留旧 v4 历史/恢复。私人 Dreaming 按原始审计排除域 transcript（含旧 pending），防止通过工具日志重新摄入域候选。
+- 公开域仍 reserved。独立域 Dreaming、摘要、sleep/wake、维护恢复及公开激活继续列入 P1，R5 暂缓；本次不变更包版本或既有标签。
+- Node 24.9.0 完整回归通过：253 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-candidates-full.log`）。之后补充成功回执与候选文件一致性，类型与 28 项专项全部通过（`/tmp/dsh-mbot-domain-candidates-final-scope2.log`），覆盖删除整文件/单行、旧证明拒绝、真实原生重载与提交中断恢复。首次专项因手工构造的 tool/result 缺少原生 surfaceOp 标记失败，修正夹具后复验，保留 `/tmp/dsh-mbot-domain-candidates-final-scope.log`。
+- 四类实际安装全部通过，覆盖同一内部 Session 的 v4→v5 升级及候选 Git 证明（`/tmp/mbot-plugin-install.4zGtk1`、`/tmp/dsh-mbot-domain-candidates-install.log`）。tarball Chromium 通过预留拒绝、双窗口、收信重试、刷新、SIGKILL 后同 ID 恢复和私人主 Session 续聊，实际截图已检查（`/tmp/mbot-gui-conversations.1aVFqN`、`/tmp/dsh-mbot-domain-candidates-gui.log`）。351 条文档链接、包资源、Bash 语法及 `git diff --check` 通过；本阶段未运行真实 API 或 R5。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

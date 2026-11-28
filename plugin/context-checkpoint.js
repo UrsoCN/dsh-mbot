@@ -98,6 +98,7 @@ export async function captureContext(state, record) {
     const data = { schemaVersion: state.domainScope ? 2 : 1, kind: 'turn-input', visibility: state.domainScope?.visibility ?? 'owner-private', botId, sessionId: agent.id, conversationId: state.domainScope?.conversationId ?? agent.id,
       turn: record.turn, runId: record.lease.identity.runId, role: snapshot.role, memoryCommit: snapshot.head, knowledge: snapshot.knowledge,
       ...(record.lease.compactionPolicyVersion ? { compactionPolicyVersion: record.lease.compactionPolicyVersion } : {}),
+      ...(snapshot.candidateVersion !== undefined ? { candidateVersion: snapshot.candidateVersion } : {}),
       contextEpoch: previous === null ? 1 : previous.contextEpoch + (previous.knowledgeVersion === snapshot.knowledge.version ? 0 : 1),
       previous, sourceCut: { throughSeq, events: contextReferences(surface.events) },
       input: record.messages.map(message => ({ messageId: message.id, hash: contextHash(message) })) }

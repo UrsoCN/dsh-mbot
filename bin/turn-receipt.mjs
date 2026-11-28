@@ -13,6 +13,7 @@ import { sealContextAudit } from '../plugin/context-audit.js'
 import { sealCompactionAudit, compactInputType, compactOutputType } from '../plugin/compaction-data.js'
 import { validateDomainJournal, validateDomainScope } from '../plugin/domain-contract.js'
 import { validateDomainMessage } from '../plugin/domain-message.js'
+import { verifyCandidateAudit } from '../plugin/domain-candidates.js'
 import { nativeReply } from '../plugin/native-reply.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -38,13 +39,13 @@ async function prove(input) {
     const stat = await lstat(journalPath)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32768) throw new Error('Unsafe turn journal')
     journal = JSON.parse(await readFile(journalPath, 'utf8'))
-    if (![1, 2, 3, 4].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
+    if (![1, 2, 3, 4, 5].includes(journal.schemaVersion) || journal.workspace !== workspace || typeof journal.runId !== 'string'
       || !/^\d{8}T\d{6}Z-turn-[a-f0-9]{16}$/u.test(journal.runId) || !Number.isSafeInteger(journal.turn) || journal.turn < 1
       || typeof journal.botId !== 'string' || typeof journal.sessionId !== 'string' || !['data-subprocesses', 'agent-runtime'].includes(journal.writerScope)
       || !Number.isSafeInteger(journal.pid) || journal.pid < 1 || !/^\d+$/u.test(journal.pidStart)
       || !Number.isSafeInteger(journal.ownerPid) || journal.ownerPid < 0) throw new Error('Invalid turn journal')
-    if (journal.schemaVersion === 4) validateDomainJournal(journal)
-    else if (journal.conversation || journal.contextHash || journal.runtimeOwnership?.schemaVersion === 3) throw new Error('Domain journal cannot be downgraded')
+    if ([4, 5].includes(journal.schemaVersion)) validateDomainJournal(journal)
+    else if (journal.conversation || journal.contextHash || [3, 4].includes(journal.runtimeOwnership?.schemaVersion)) throw new Error('Domain journal cannot be downgraded')
     if (journal.botId === botId && journal.sessionId === sessionId && journal.turn === record.turn) {
       if (!isDeepStrictEqual(journal.conversation, conversation)) throw new Error('Domain journal ownership changed')
       let live = false
@@ -74,10 +75,11 @@ async function prove(input) {
       || !Array.isArray(meta.runtime.request_ids) || !meta.runtime.request_ids.includes(record.rpcId)) continue
     if (!meta.runtime.reply) { legacy = true; continue }
     try {
-      if (!isDeepStrictEqual(meta.runtime.conversation, conversation) || (meta.runtime.journal_schema_version === 4) !== !!conversation) throw new Error('Domain audit ownership changed')
+      if (!isDeepStrictEqual(meta.runtime.conversation, conversation) || ([4, 5].includes(meta.runtime.journal_schema_version)) !== !!conversation) throw new Error('Domain audit ownership changed')
       if ((conversation || meta.runtime.context) && !isDeepStrictEqual(meta.runtime.context, sealContextAudit(meta, events, workspace))) throw new Error('Request context proof contradicts native evidence')
       if ((meta.runtime.compaction_policy_version === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type)))
         && !isDeepStrictEqual(meta.runtime.compactions, sealCompactionAudit(meta, events))) throw new Error('Request compaction proof contradicts native evidence')
+      verifyCandidateAudit(workspace, candidate.commit, meta, events)
       const reply = meta.runtime.reply
       const assistant = events.findLast(event => event.type === 'assistant/message' && event.data.turn === record.turn && event.seq < turn.endSeq)
       const text = assistant?.data.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
@@ -89,7 +91,7 @@ async function prove(input) {
         if (!isDeepStrictEqual(reply.targets?.find(item => item.rpcId === record.rpcId), native.targets.find(item => item.rpcId === record.rpcId))) throw new Error('Domain reply source changed')
       }
       if (meta.runtime.kind !== 'managed-turn' || meta.runtime.schemaVersion !== 1 || meta.runtime.writer_scope !== 'agent-runtime'
-        || ![2, 3, 4].includes(meta.runtime.journal_schema_version) || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
+        || ![2, 3, 4, 5].includes(meta.runtime.journal_schema_version) || meta.run_id !== metaPattern.exec(candidate.path)[1] || meta.session_id !== sessionId
         || meta.mode !== 'run' || typeof meta.bot !== 'string' || meta.bot === 'human' || !/^[a-z][a-z0-9_-]{0,31}$/u.test(meta.bot)
         || typeof meta.summary !== 'string' || !hashPattern.test(meta.base_head)
         || git('show', '-s', '--format=%P', candidate.commit).trim() !== meta.base_head

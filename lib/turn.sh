@@ -21,6 +21,16 @@ mbot_turn_finalize() {
   fi
   [[ $(stat -c '%d:%i' "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_INODE" && $(realpath -e -- "$MBOT_GIT_DIR" 2>/dev/null || true) == "$MBOT_GIT_DIR" ]] || { mbot_error 'Git directory replaced during managed turn'; exit 1; }
   mbot_guard_run
+  if [[ $(jq -r .schemaVersion "$MBOT_SCRATCH/ledger.json") == 5 ]]; then
+    local candidate
+    candidate=$(node "$MBOT_ROOT/bin/turn-domain.mjs" --candidate-path "$MBOT_SCRATCH" "$MBOT_WS")
+    # Enumerating changed files alone cannot detect a newly written file/row
+    # that disappeared after the tool acknowledged it.
+    if ! node "$MBOT_ROOT/bin/turn-domain.mjs" --guard "$MBOT_SCRATCH" "$MBOT_WS" "$candidate" "$events_file" >/dev/null 2>&1; then
+      mbot_violation "$candidate" candidate_receipt_mismatch
+      mbot_restore "$candidate"
+    fi
+  fi
   mbot_turn_write_ledger committing
   jq -cs 'def text: [.content[]? | select(.type=="text") | .text] | join("\n");
     .[] | if .type=="tool/call" then {type:"tool_call",tool:.data.name,input:(.data.arguments|try fromjson catch .)}
@@ -40,7 +50,7 @@ mbot_turn_finalize() {
     (mbot_execution_fault($session) or any($journal[0].actors[]?; .native.executionFault==true)) as $execution_fault |
     .success=(.success and ($execution_fault|not)) |
     (if .success then "completed"
-     elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3 or $journal[0].schemaVersion==4) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
+     elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3 or $journal[0].schemaVersion==4 or $journal[0].schemaVersion==5) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
      else "failed" end) as $outcome |
     . + {outcome:$outcome, failure_count_effect:(if $outcome=="completed" then "reset" elif $outcome=="cancelled" then "preserve" else "increment" end),
       runtime:({kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,
@@ -75,6 +85,9 @@ mbot_turn_finalize() {
   cp -- "$MBOT_SCRATCH/raw.jsonl" "$MBOT_WS/.mbot/runs/$MBOT_RUN_ID.jsonl"
   cp -- "$events_file" "$MBOT_WS/.mbot/runs/$MBOT_RUN_ID.session.jsonl"
   mbot_git add -A -- BOARD.md tasks inbox "$transcript" "$meta"
+  if [[ $(jq -r .schemaVersion "$MBOT_SCRATCH/ledger.json") == 5 ]]; then
+    [[ ! -f $MBOT_WS/$candidate ]] || mbot_git add -- "$candidate"
+  fi
   summary=$(jq -r .summary "$MBOT_SCRATCH/meta.json")
   # Persist exact commit intent before advancing HEAD. Recovery can recognize a
   # completed commit even if the process died before publishing its receipt.

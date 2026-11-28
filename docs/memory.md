@@ -8,6 +8,7 @@
 |---|---|
 | 根/角色 MEMORY、wiki | 所有者私人资料；工作 Bot 只读，独立 Dreaming 在验收事务内整理；人类可维护 |
 | inbox 候选 | `remember` 仅追加，保留已有字节前缀和真实角色/任务来源 |
+| 域候选（开发分支） | 内部 v5 scoped remember 写本域每回合 JSONL，原生/Git 审计验证；不进入私人 inbox，也不直接更新记忆 |
 | SOUL、协议、配置和工具 | 人类维护，工作 Bot/Dreaming 不修改 |
 | `wiki/ops-log.md` | 人类专用，Dreaming 也只读 |
 | Dreaming 报告/checkpoint | Host 与本轮合法记忆变更一起审计、提交 |
@@ -21,6 +22,8 @@ botctl -C /tmp/mbot-example remember "周报使用中文" --as chief
 mbot -C /tmp/mbot-example dream
 ```
 
+私人 Dreaming 按原始 Git 审计排除域 managed transcript，包括旧 checkpoint 的 pending；当前 metadata 删除或改写不能把既有域记录转成私人来源，缺失/歧义来源停止本次取材。域候选 JSONL 不属于其输入目录。
+
 Dreaming 是独立 fresh Session，按 Analyze → Merge → Rewrite → Report 整理。优先选 inbox，再选 transcript/归档任务，新材料默认最多 64000 字节，按完整 UTF-8 行截取；单行装不下时保留进度、记录失败且不调模型。
 
 成功 checkpoint 保存输入 blob/offset/pending，续读尚未处理的片段；未读期间追加内容按顺序继续。替换源按当前版本处理，重命名源重新入队，避免漏读或复活已删除内容。失败 metadata 的 processed 仅记录本次选材，重试仍以最近成功 checkpoint 为准。
@@ -33,7 +36,7 @@ Dreaming 是独立 fresh Session，按 Analyze → Merge → Rewrite → Report 
 
 `/mbot sleep` 在维护屏障内调用同一独立 Dreaming，再推进可选 compact/checkpoint 和 sleeping；不会给工作 Bot 直接写记忆的权限。已提交 Dreaming 的中断只补后续阶段，详见 [sleep/wake](sleep-wake.md)。
 
-开发分支已支持 [显式域资料视图](conversations.md#显式域资料视图) 的 Git 读取与检查。旧记忆仍为所有者私人资料；新增 `memory/shared/` 和 `memory/conversations/` 由人类显式发布，现有 Dreaming 不写这些文件。视图接入回合、工具、候选和逐域 Dreaming 属于 P1 剩余工作；质量评测及异议/遗忘治理见 [DESIGN](../DESIGN.md#远期研究p3)。
+开发分支已支持 [显式域资料视图](conversations.md#显式域资料视图) 的 Git 读取与检查。旧记忆仍为所有者私人资料；新增 `memory/shared/` 和 `memory/conversations/` 由人类显式发布，现有 Dreaming 不写这些文件。内部域回合、工具与 [候选事务](conversations.md#域候选事务) 已接线；公开激活与独立逐域 Dreaming 仍属 P1 剩余工作。后续 Dreaming 只接受完成回合的合格候选，失败/取消回合中的留存候选需要复核，不能自动提升为事实；质量评测及异议/遗忘治理见 [DESIGN](../DESIGN.md#远期研究p3)。
 
 ## 验证
 

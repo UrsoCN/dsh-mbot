@@ -159,14 +159,14 @@ async function probe(ctx) {
     const { realpath } = await import('node:fs/promises')
     const { randomUUID } = await import('node:crypto')
     const fromPackage = createRequire(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
-    const { LlmAdapter, createUserMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
+    const { LlmAdapter, createUserMessage, createAssistantMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
     // Exercise the installed internal v4 bridge while the public domain gate stays closed.
     const { dirname, join } = await import('node:path')
     const { pathToFileURL } = await import('node:url')
     const packageRoot = dirname(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
     const installed = path => import(pathToFileURL(join(packageRoot, path)).href)
     const { openTurn } = await installed('plugin/turn.js')
-    const { domainOwnership } = await installed('plugin/domain-contract.js')
+    const { domainOwnership, domainCandidateOwnership } = await installed('plugin/domain-contract.js')
     const { contextHash, contextReferences, contextSnapshotType } = await installed('plugin/context-state.js')
     const { Session, SESSION_FORMAT_VERSION, appendPluginRecord } = await import(fromPackage.resolve('@deepseek-ai/dsh-session'))
     const session = Session.create(conversation.sessionId, [], { version: SESSION_FORMAT_VERSION, id: conversation.sessionId,
@@ -195,14 +195,39 @@ async function probe(ctx) {
     const domainMeta = JSON.parse(execFileSync('git', ['-C', bot.workspacePath, 'show', `${domainResult.head}:${domainResult.meta}`], { encoding: 'utf8' }))
     assert.equal(domainMeta.runtime.journal_schema_version, 4)
     assert.equal(domainMeta.runtime.context.snapshot.knowledge.version, view.knowledge.version)
+    // Upgrade the same internal Session to v5, preserving the original v4 audit.
+    const candidateUser = createUserMessage({ content: [{ type: 'text', text: 'installed domain candidate' }], source: { kind: 'user' } })
+    session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [candidateUser] })
+    const candidateStart = session.append('turn/start', { turn: 2 })
+    const candidateLease = await openTurn(ctx.mbot, packageRoot, bot, { ...domainOptions, turn: 2, messages: [candidateUser], runtimeOwnership: domainCandidateOwnership })
+    appendPluginRecord(session, contextSnapshotType, { schemaVersion: 2, candidateVersion: 1, kind: 'turn-input', visibility: 'group', botId: bot.botId,
+      sessionId: conversation.sessionId, conversationId: conversation.conversationId, turn: 2, runId: candidateLease.identity.runId,
+      role: 'chief', memoryCommit: candidateLease.snapshot.head, knowledge: candidateLease.snapshot.knowledge, contextEpoch: 1,
+      previous: { schemaVersion: 1, snapshotHash: domainMeta.runtime.context.snapshotHash, knowledgeVersion: view.knowledge.version, contextEpoch: 1, commit: domainResult.head },
+      sourceCut: { throughSeq: session.seq - 1, events: contextReferences([]) }, input: [{ messageId: candidateUser.id, hash: contextHash(candidateUser) }] })
+    const candidateArguments = JSON.stringify({ action: 'remember', text: 'Installed per-domain candidate' })
+    session.append('assistant/message', { turn: 2, step: 1,
+      message: createAssistantMessage({ content: [{ type: 'tool-call', id: 'installed-candidate', name: 'botctl', arguments: candidateArguments }], source: { provider: 'fixture', model: 'fixture' } }) }, { surfaceOp: 'append' })
+    session.append('tool/call', { turn: 2, step: 1, callId: 'installed-candidate', name: 'botctl', arguments: candidateArguments })
+    for (const event of session.snapshotEvents().filter(event => event.seq >= candidateStart.seq)) await candidateLease.record(event)
+    const candidateWrite = await candidateLease.execute('botctl', ['remember', 'Installed per-domain candidate', '--call', 'installed-candidate'])
+    assert.equal(candidateWrite.exitCode, 0, candidateWrite.stderr)
+    await candidateLease.record(session.append('turn/end', { turn: 2, reason: { kind: 'completed' } }))
+    const candidateResult = await candidateLease.finish({ reason: { kind: 'completed' }, text: '' })
+    assert.equal(candidateResult.success, true)
+    const candidateMeta = JSON.parse(execFileSync('git', ['-C', bot.workspacePath, 'show', `${candidateResult.head}:${candidateResult.meta}`], { encoding: 'utf8' }))
+    assert.equal(candidateMeta.runtime.journal_schema_version, 5)
+    assert.equal(candidateMeta.runtime.candidates.count, 1)
+    const { verifyCandidateAudit } = await installed('plugin/domain-candidates.js')
+    verifyCandidateAudit(bot.workspacePath, candidateResult.head, candidateMeta, session.snapshotEvents().filter(event => event.seq >= candidateStart.seq))
     assert.equal(ctx.agents.get(conversation.sessionId), undefined)
     const inboxDomain = await ctx.mbot.reserveConversation(bot.botId, { source: { ...conversation.source, spaceId: 'mailbox-group' },
       allowedSenders: ['alice'], replyRoute: 'mailbox-group-route' })
     const domainAgent = (await ctx.agents.create({ sessionId: inboxDomain.sessionId, meta: { cwd: bot.workspacePath },
       agentOptions: { provider: 'mbot-installation', model: 'scripted' } })).agent
-    const { domainToolSchema } = await installed('plugin/domain-tools.js')
+    const { domainCandidateToolSchema } = await installed('plugin/domain-tools.js')
     const { projectToolSchema } = await import(fromPackage.resolve('@deepseek-ai/dsh-tools'))
-    assert.deepEqual(projectToolSchema(ctx.tools.get('botctl', domainAgent), false), domainToolSchema)
+    assert.deepEqual(projectToolSchema(ctx.tools.get('botctl', domainAgent), false), domainCandidateToolSchema)
     for (const name of ['bash', 'read', 'write', 'spawn_agent']) assert.equal(ctx.tools.get(name, domainAgent), undefined)
     const domainMailbox = ctx.mbotRuntime.conversationMailbox(domainAgent, { ...inboxDomain.source, senderId: 'alice', replyRoute: inboxDomain.replyRoute })
     const domainDelivery = await domainMailbox.send({ requestId: 'install-domain-event', text: 'installed mailbox queued input' })

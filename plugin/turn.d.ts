@@ -17,6 +17,7 @@ export interface ContextSnapshot {
   /** Version of Git persona/protocol/memory content, independent of task HEAD changes. */
   readonly knowledge?: ContextKnowledge | ConversationKnowledge
   readonly conversation?: Readonly<ConversationViewScope>
+  readonly candidateVersion?: 1
   readonly documents?: readonly (ConversationKnowledge['documents'][number] & { readonly text: string })[]
 }
 export interface TurnIdentity { readonly botId: string; readonly sessionId: string; readonly turn: number; readonly runId: string }
@@ -27,6 +28,7 @@ export interface TurnResult { readonly kind: 'finished'; readonly runId: string;
 export type RuntimeOwnership = { schemaVersion: 1; mode: 'foreground-only'; workerDepth: 0; tools: readonly string[] }
   | { schemaVersion: 2; mode: 'foreground-workers'; workerDepth: 1; maxWorkers: 2; tools: readonly string[]; workerTools: readonly string[] }
   | { schemaVersion: 3; mode: 'domain-foreground'; workerDepth: 0; tools: readonly ['botctl'] }
+  | { schemaVersion: 4; mode: 'domain-candidates'; workerDepth: 0; tools: readonly ['botctl']; candidateVersion: 1 }
 export interface ActorIdentity { readonly botId: string; readonly runId: string; readonly parentSessionId: string; readonly parentTurn: number; readonly sessionId: string; readonly role: string; readonly taskId: string; readonly actorId: string }
 export interface ActorSnapshot extends ContextSnapshot { readonly taskId: string; readonly task: string }
 export interface NativeWorkerProof {

@@ -36,6 +36,7 @@ export function contextReferences(events) {
 
 export function validateContextSnapshot(data, seq) {
   const domain = data?.schemaVersion === 2
+  if (data?.candidateVersion !== undefined && (!domain || data.candidateVersion !== 1)) throw new Error('Invalid domain candidate context contract')
   if (domain) {
     validateDomainKnowledge(data.knowledge, data.role)
     const scope = data.knowledge.scope

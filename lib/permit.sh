@@ -21,17 +21,17 @@ mbot_check_permit() {
     local actor
     actor=$(printf '%s\0%s' "$MBOT_RUN_ID" "$MBOT_PERMIT_TOKEN" | jq -Rse --argjson now "$(date +%s%3N)" --slurpfile permit "$file" '
       split("\u0000") as $identity | $permit[0] |
-      select((.schemaVersion==1 or .schemaVersion==2 or .schemaVersion==3 or .schemaVersion==4) and .phase=="active" and .expiresAt>$now and .runId==$identity[0]) |
+      select((.schemaVersion==1 or .schemaVersion==2 or .schemaVersion==3 or .schemaVersion==4 or .schemaVersion==5) and .phase=="active" and .expiresAt>$now and .runId==$identity[0]) |
       if .token==$identity[1] then {role:.role}
       elif .schemaVersion==3 and .runtimeOwnership.schemaVersion==2 and .runtimeOwnership.mode=="foreground-workers"
         and .runtimeOwnership.workerDepth==1 and .runtimeOwnership.maxWorkers==2 then
         .actors[] | select(.state=="active" and .token==$identity[1]) | {role,actorId,taskId}
       else empty end') || { mbot_error 'managed turn permit is stale or invalid'; return 1; }
     MBOT_BOT=$(jq -er .role <<< "$actor")
-    if [[ $(jq -r .schemaVersion "$file") == 4 ]]; then
+    if [[ $(jq -r .schemaVersion "$file") =~ ^[45]$ ]]; then
       node "$MBOT_ROOT/bin/turn-domain.mjs" --validate-header "$file" >/dev/null
       MBOT_DOMAIN_SCRATCH=$scratch
-    elif jq -e 'has("conversation") or has("contextHash") or .runtimeOwnership.schemaVersion==3' "$file" >/dev/null; then
+    elif jq -e 'has("conversation") or has("contextHash") or .runtimeOwnership.schemaVersion==3 or .runtimeOwnership.schemaVersion==4' "$file" >/dev/null; then
       mbot_error 'domain permit cannot be downgraded'; return 1
     fi
     if jq -e '.actorId!=null' <<< "$actor" >/dev/null; then
@@ -58,6 +58,7 @@ mbot_require_no_turn() {
 # Recheck assignment under botctl.lock. A new owner/state invalidates old work.
 mbot_check_command() {
   if [[ -v MBOT_DOMAIN_SCRATCH ]]; then
+    if [[ $(jq -r .schemaVersion "$MBOT_DOMAIN_SCRATCH/ledger.json") == 5 && $# == 4 && $1 == remember && $3 == --call ]]; then return 0; fi
     [[ $# == 2 && ( $1 == view || ( $1 == boot && $2 == "$MBOT_BOT" ) ) ]] || { mbot_error 'operation is outside the domain data scope'; return 1; }
     return 0
   fi

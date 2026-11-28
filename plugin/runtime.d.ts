@@ -35,7 +35,7 @@ export interface ContextCheckpoint {
   schemaVersion: 1; snapshotSeq: number; snapshotHash: string; commit: string; meta: string; turn: number
   compactions?: CompactionProof[]
   snapshot: ({ schemaVersion: 1; visibility: 'owner-private'; knowledge: import('./turn.js').ContextKnowledge; compactionPolicyVersion?: 1 }
-    | { schemaVersion: 2; visibility: import('./conversation-view.js').ConversationViewScope['visibility'];
+    | { schemaVersion: 2; candidateVersion?: 1; visibility: import('./conversation-view.js').ConversationViewScope['visibility'];
         knowledge: import('./conversation-view.js').ConversationKnowledge; compactionPolicyVersion?: never }) & {
     kind: 'turn-input'; botId: string; sessionId: string; conversationId: string
     turn: number; runId: string; role: string; memoryCommit: string; contextEpoch: number

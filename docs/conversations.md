@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；原生提示/工具与历史隔离已接线并通过内部模型夹具验收。公开准入、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、读工具、本域候选与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；原生提示/工具与历史隔离已接线并通过内部模型夹具验收。公开准入、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -61,7 +61,7 @@ const receipt = await mailbox.receipt(platformEventId)
 
 mailbox 复用 DSH followup/Inbox、原生日志投影和 flush，不增加消费者或持久队列。`confirmed` 只证明 flush；失败返回 `unconfirmed`，重试原 ID 复用原 MessageId，不追加唤醒消息。reserved 域暂不处理这些输入；查询返回 queued。原生队列编辑不能保留旧信封指纹篡改正文，冲突后拒绝重试/查询；Bot 退役保留原生数据但撤销能力。
 
-内部 v4 域事务已可封存域回复目标，查询返回 schemaVersion 2 的回答信封，包含 conversationId、可见性、权限 hash 和 senderId。只有原生结束事件、精确目标、可达 Git 审计、context snapshot v2 与 journal 已结算且 flush 确认一致时才返回 final。缺失域身份、跨域/跨路线、未确认落盘及篡改证据均不释放回答；这一步由内部桥夹具验收，尚无公开域模型执行入口。它不向 IM/peer 投递，也未实现外部 ack/outbox。
+内部 v4/v5 域事务已可封存域回复目标，查询返回 schemaVersion 2 的回答信封，包含 conversationId、可见性、权限 hash 和 senderId。只有原生结束事件、精确目标、可达 Git 审计、context snapshot v2 与 journal 已结算且 flush 确认一致时才返回 final。缺失域身份、跨域/跨路线、未确认落盘及篡改证据均不释放回答；这一步由内部桥夹具验收，尚无公开域模型执行入口。它不向 IM/peer 投递，也未实现外部 ack/outbox。
 
 ## 显式域资料视图
 
@@ -97,11 +97,11 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。内部域事务通过下述 context snapshot v2 将知识版本封存到原生/Git 证明；单独的视图检查仍不构成事务证明。既有私人主 Session 的知识与快照保留 v1。
 
-`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。内部数据桥已提供脱敏/预算检查后的固定快照读取，下述原生工具复用同一快照；公开准入、域候选、Dreaming 与摘要/维护接齐之前，公开域闸门继续拒绝执行。
+`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。内部数据桥已提供脱敏/预算检查后的固定快照读取，下述原生工具复用同一快照；公开准入、独立域 Dreaming 与摘要/维护接齐之前，公开域闸门继续拒绝执行。
 
 ## 内部域事务与 checkpoint
 
-内部 `openTurn` 使用独立 `journal.schemaVersion=4` 与 `runtimeOwnership={schemaVersion:3, mode:'domain-foreground', workerDepth:0, tools:['botctl']}`。这一步为后续激活建立数据契约；公开 `ctx.mbot.beginTurn` 拒绝 conversation 参数和 reserved Session，模型闸门也未开放。不得将内部 helper 当作新消息入口。
+初始只读契约的内部 `openTurn` 使用独立 `journal.schemaVersion=4` 与 `runtimeOwnership={schemaVersion:3, mode:'domain-foreground', workerDepth:0, tools:['botctl']}`。这一步为后续激活建立数据契约；公开 `ctx.mbot.beginTurn` 拒绝 conversation 参数和 reserved Session，模型闸门也未开放。不得将内部 helper 当作新消息入口。
 
 - 取得 Bot 锁并固定 HEAD 后，从域清单读取资料。上下文只含已发布协议/SOUL/记忆/参考，私人 BOARD、角色记忆等不自动取入；候选写入和 Worker 委派均拒绝。
 - 合并后的全部 memory 受 `MBOT_MEMORY_MAX_LINES`/`MBOT_MEMORY_MAX_CHARS` 限制（含拼接换行），SOUL 受字符预算限制，每份参考受 wiki 行预算限制。超限在发布 active journal 前拒绝；正文使用现行凭据脱敏，知识/域身份 hash 保留原始精确值。
@@ -110,7 +110,21 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 - 原生 `plugin:mbot/context-snapshot` 的 schemaVersion 2 绑定持久 conversationId、knowledge v2、原生有序来源 cut/Inbox 输入和前序 checkpoint。同一次 Git 审计封存域身份与 context；成功域回合不得没有 snapshot，已捕获的失败/取消回合也不能删掉证明或降为私人 v1。
 - 恢复要求 Host 原生所有权核验及 `recorded-domain-v1` proof，检查 registry 域归属、原 journal/私有 ledger/context hash、原生事件和 Git 审计；使用原始受限 guard，保持单次提交/结算与 PAUSED，不运行模型。Runtime 重载后可恢复 checkpoint，输入继续留在同一 reserved Session 的 Inbox。
 
-域回复使用独立 conversationMailbox，不能改用 ownerMailbox。当前不支持实际 IM/peer/outbox、候选/Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
+域回复使用独立 conversationMailbox，不能改用 ownerMailbox。当前不支持实际 IM/peer/outbox、独立域 Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
+
+## 域候选事务
+
+开发分支增加 `journal.schemaVersion=5` 与 `runtimeOwnership={schemaVersion:4, mode:'domain-candidates', workerDepth:0, tools:['botctl'], candidateVersion:1}`。旧 v4 保持只读；新工具声明包含 `boot/view/remember`，Host 固定域/角色/快照与原生 callId，模型只能提交 `{action:'remember', text}`。原生 sandbox approval、Bot 数据锁和 permit 检查继续生效，禁止模型选择路径、作者、任务、其他域或 Worker。
+
+候选保存到 `memory/conversations/<conversationId>/candidates/<runId>.jsonl`。每回合创建新文件，规范 JSONL，单条最多 16384 UTF-8 字节，每文件最多 64 条/256 KiB；拒绝空白、NUL、非法 UTF-8、非规范序列化、符号链接、特殊/可执行文件与覆盖旧回合文件。同一 callId 重试只有内容完全相同时才幂等。写入在现有数据工具锁内完成，原子替换并 fsync。
+
+每条记录绑定 scope、runId、角色、知识版本、原生 callId、原始文本 hash 和脱敏跨度。guard 核验唯一原生 assistant tool-call 与 tool/call 的名称、参数字节、回合/step 和顺序，同时核验成功 tool/result 的路径/callId/正文 hash；已回执的候选丢失（包括整文件删除或少一行）也会被检测。只有本回合候选路径可以通过，篡改候选或越权文件按既有规则回滚并记失败。同一次 Git 审计写入 `runtime.candidates`，保存路径、正文 hash、字节数、条数及 callIds。没有候选时仍封存 count 0 与空内容证明。
+
+原生 context snapshot v2 带 `candidateVersion:1`，私有 snapshot、journal、工具 schema 与 Git 审计须一致；删除候选审计或降成 v4 不能绕过原生证明。checkpoint、reply 查询和恢复都从原审计 commit 读取候选 blob，重算原生来源，不用当前工作树替代。新恢复使用 `recorded-domain-candidates-v1` proof，不能复用 v4 的只读证明；提交中断保持单次结算与 PAUSED，取消保持故障计数。
+
+候选是待审查建议。文件留存不证明回合成功，也不证明内容真实；失败/取消回合可保留已验证候选并明确保留原 outcome，后续独立域 Dreaming 只自动接收完成回合，其他状态须复核。当前没有域候选消费/记忆合并入口，也不直接改 MEMORY/wiki 或知识版本。私人 Dreaming 排除域 transcript（含旧 pending）且不扫描候选目录；分类依据原始添加 commit 的审计，当前 metadata 改写不能扩大可见域。
+
+公开域仍为 reserved，候选流程只在内部原生夹具中接通。独立域 Dreaming、摘要、sleep/wake 和维护恢复完成后，才联合验收实体激活。
 
 ## 原生提示、读工具与历史隔离
 
@@ -118,7 +132,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 DSH `0.2.2-rc.5` 在原生 step 内再次执行 `refreshContext`，仅过滤 assemble 返回值不足以隔离 required provider。Runtime 用官方 Agent-scoped 空 context 覆盖已观察到的外来 provider；掩码随 Agent 保留，Runtime 重载可继续使用。最终 `llm/stream` 验证原生请求标记、Session/surface、原始事件投影、消息与工具历史；迟到 required context、输入改写、外来工具/PTC 或额外消息拒绝，普通模型请求不在中间件中改写。
 
-`domain-tools.js` 安装只含 `boot`/`view` 的独立 botctl schema，同时限制继承的工具。每次执行核对持久域归属、本轮 lease 和精确参数，再走原生 sandboxPolicy/approval。`boot` 只能选当前角色；`view` 只能读快照清单内的路径，不能传宿主目录、私人路径或写操作。scope-local 工具不受 DSH inherited restriction 约束，因此最终 schema 仍须精确核验。
+`domain-tools.js` 按契约安装独立 botctl schema：v4 只含 `boot`/`view`，v5 另含本域 `remember`，同时限制继承的工具。每次执行核对持久域归属、本轮 lease 和精确参数，再走原生 sandboxPolicy/approval。`boot` 只能选当前角色；`view` 只能读快照清单内的路径，不能传宿主目录或私人路径，候选写入也只能走版本化 remember。scope-local 工具不受 DSH inherited restriction 约束，因此最终 schema 仍须精确核验。
 
 历史 user/assistant/tool 事件须来自本轮原生记录或已经 Git/context 联合验证的回合；不收养预先写入的私人历史，也不继承父 Session。旧派生系统/运行上下文通过原生 surface replacement 退役，原始日志保留。恢复时从 snapshot 捕获的 Inbox cut 取原消息并验 hash；准入失败而尚无 user/message 的回合也能验证，展示消息不能替代原输入字节。准备阶段失败保留未派发输入；最终模型检查发生在原生派发后时，保留真实失败终态，不伪造 queued 状态。
 
@@ -142,7 +156,8 @@ registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2
 - `npm run test:gui-conversations` 使用 tarball 安装后的 Web profile，覆盖双窗口、拒绝反馈、刷新、Host 重启和私人主 Session 续聊。GUI 与恢复全进程检查分开执行。
 - 资料视图测试覆盖私人 canary 不泄露、群/其他用户/peer 隔离、固定 commit 与未提交草稿、权限/正文版本变化、清单越界、符号链接、缺文件、非法 UTF-8/NUL 和字节限额；安装矩阵通过真实 Host API 检查包内 helper，确认只返回元数据且不激活域。
 - 域 mailbox 测试覆盖并发重试、输入捕获、不同发送者/群的同 ID 隔离、来源/路线拒绝、flush 不确定、原生队列篡改、Runtime 重载和注销；GUI 使用实际安装后的能力收信，并在 SIGKILL 重启后以原 ID 查回同一 MessageId。
-- 域桥测试覆盖固定快照/只读命令、私人路径拒绝、越权写入回滚、取消计数、正文脱敏、合并记忆预算、原生/Git checkpoint 及中断单次结算；原生 Agent 测试通过公开恢复接口核验重载后的持久域身份、checkpoint 和 Inbox。安装矩阵实际执行包内 v4 桥，公开域执行仍拒绝。
+- 域桥测试覆盖固定快照/只读命令、私人路径拒绝、越权写入回滚、取消计数、正文脱敏、合并记忆预算、原生/Git checkpoint 及中断单次结算；原生 Agent 测试通过公开恢复接口核验重载后的持久域身份、checkpoint 和 Inbox。安装矩阵实际执行包内 v4 只读与 v5 候选桥，公开域执行仍拒绝。
 - 内部原生域模型夹具覆盖 boot/view、多轮知识更新、重载、提交失败后的单次恢复与续聊；私人 canary、迟到 required context、scope-local 冲突、输入改写、额外工具、未审计历史与审批拒绝均有反向验收。安装矩阵核对实际域 schema 和私人 Bash/文件/派活工具不可见；同一私人 Agent 的 Worker 开关往返切换继续通过。
+- 候选测试覆盖原生写入/回复/重载、v4 历史升级、正文脱敏、重试冲突、字节预算、非法路径/文件、伪造来源与已回执候选丢失回滚、Git 提交失败后的单次恢复、取消计数和旧恢复证明拒绝；私人 Dreaming 排除新域 transcript 与旧 pending，并拒绝通过修改 metadata 重新分类。
 
 上述验收证明预留拒绝边界与内部域事务，不代表已完成实际域模型对话、候选治理、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。

@@ -7,7 +7,7 @@ import { redact, redactValue } from './redact.js'
 import { processStart } from './recovery.js'
 import { validateOwnership } from './recovery-proof.js'
 import { freezeContext } from './context-state.js'
-import { validateDomainHeader, validateDomainKnowledge } from './domain-contract.js'
+import { validateDomainHeader, validateDomainKnowledge, domainJournalVersion } from './domain-contract.js'
 import { isDeepStrictEqual } from 'node:util'
 
 function write(stream, value) {
@@ -92,7 +92,7 @@ export class TurnLease {
 
   #execute(program, args, options, token) {
     if (this.#closed) return Promise.reject(new Error('Managed turn is closed'))
-    if (this.snapshot.conversation && (program !== 'botctl' || !['boot', 'view'].includes(args[0]))) return Promise.reject(new Error('Operation is outside the domain data scope'))
+    if (this.snapshot.conversation && (program !== 'botctl' || !['boot', 'view', ...(this.runtimeOwnership?.candidateVersion === 1 ? ['remember'] : [])].includes(args[0]))) return Promise.reject(new Error('Operation is outside the domain data scope'))
     const signal = options.signal ? AbortSignal.any([options.signal, this.#cancel.signal]) : this.#cancel.signal
     const operation = this.mbot.execute(program, args, { workspace: this.snapshot.workspace, signal, input: options.input,
       permit: { runId: this.identity.runId, token } })
@@ -269,7 +269,9 @@ export async function openTurn(mbot, root, bot, options) {
     }
     const ready = JSON.parse(value)
     if (header.conversation) {
-      if (ready.journalSchemaVersion !== 4 || !isDeepStrictEqual(ready.snapshot?.conversation, header.conversation)) throw new Error('Installed bridge cannot preserve domain ownership')
+      if (ready.journalSchemaVersion !== domainJournalVersion(header.runtimeOwnership)
+        || ready.snapshot?.candidateVersion !== header.runtimeOwnership.candidateVersion
+        || !isDeepStrictEqual(ready.snapshot?.conversation, header.conversation)) throw new Error('Installed bridge cannot preserve domain ownership')
       validateDomainKnowledge(ready.snapshot.knowledge, bot.defaultRole)
     }
     if (header.compactionPolicyVersion === 1 && ready.compactionPolicyVersion !== 1) throw new Error('Installed turn bridge cannot seal managed compaction')

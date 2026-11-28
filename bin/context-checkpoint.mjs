@@ -20,7 +20,7 @@ try {
       if (conversation.botId !== botId || conversation.sessionId !== log.session.id) throw new Error('Context restore changed its domain ownership')
     }
     const journal = await readJournal(workspace)
-    if (journal && (![1, 2, 3, 4].includes(journal.schemaVersion) || typeof journal.runId !== 'string')) throw new Error('Unknown turn journal while restoring context')
+    if (journal && (![1, 2, 3, 4, 5].includes(journal.schemaVersion) || typeof journal.runId !== 'string')) throw new Error('Unknown turn journal while restoring context')
     // Single-pass index of native events by turn to eliminate O(T * E) scans.
     const snapshots = new Map()
     const turnStarts = new Map()

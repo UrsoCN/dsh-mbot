@@ -45,7 +45,7 @@ client 复用 DSH 命令事件和聊天视图，在主 Session 展示独立审�
 
 Runtime 不可用时 Agent-owned 闸门继续阻止业务执行；同 Agent 的共享 registry/driver 按 ABI 接管，关闭先等待写者、Git 审计和消息/reply flush。中断恢复使用原生 writer/closers 与持久证据，未知契约拒绝，见 [模块交接](docs/runtime-handoff.md) 与 [恢复](docs/runtime-recovery.md)。
 
-额外 conversation 安装独立的 scoped botctl，只声明显式域快照的 boot/view；原生工具限制与最终请求校验共同排除私人工具、PTC 和外来上下文。域上下文掩码随 Agent 保留，Runtime 重载刷新工具 handler。当前公开域仍为 reserved，原生模型链路只在内部夹具中验收，详见 [域上下文](docs/conversations.md#原生提示读工具与历史隔离)。
+额外 conversation 安装独立的 scoped botctl，声明显式域快照的 boot/view 和只投本域候选的 remember；原生工具限制与最终请求校验共同排除私人工具、PTC 和外来上下文。域上下文掩码随 Agent 保留，Runtime 重载刷新工具 handler。当前公开域仍为 reserved，原生模型链路只在内部夹具中验收，详见 [域上下文](docs/conversations.md#原生提示读工具与历史隔离)。
 
 ## 回归与安装验收
 
@@ -55,7 +55,7 @@ npm run test:install
 npm run bench:runtime
 ```
 
-`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 默认遍历四种模式，也可用 `npm run test:install -- source`（或 `tarball`、`git`、`web-tarball`）单独复跑。它先检查 node/npm/dsh/pnpm 和系统工具，再使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、内部域 v4 只读事务、域 mailbox 收信去重与模型拒绝、bin/资源及卸载；不使用真实用户 profile。安装、启动或卸载失败时输出对应日志末尾并保留原退出码，完整日志仍留在产物目录。
+`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 默认遍历四种模式，也可用 `npm run test:install -- source`（或 `tarball`、`git`、`web-tarball`）单独复跑。它先检查 node/npm/dsh/pnpm 和系统工具，再使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、内部域 v4 只读与 v5 候选事务、域 mailbox 收信去重与模型拒绝、bin/资源及卸载；不使用真实用户 profile。安装、启动或卸载失败时输出对应日志末尾并保留原退出码，完整日志仍留在产物目录。
 
 域模型测试覆盖固定视图、多轮知识更新、Runtime 重载、提交失败恢复、私人 canary、迟到 required context、scope-local 冲突、准备阶段改写、未审计历史、额外工具和审批拒绝。安装矩阵另核对域工具的实际 schema 及私人工具不可见；GUI 继续验证公开 reserved 拒绝路径。
 

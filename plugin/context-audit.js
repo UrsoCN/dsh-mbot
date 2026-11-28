@@ -133,9 +133,10 @@ export function sealContextAudit(meta, events, workspace, knownKnowledge) {
   const conversation = meta.runtime.conversation
   if (conversation) {
     validateDomainScope(conversation)
-    if (meta.runtime.journal_schema_version !== 4 || snapshot.schemaVersion !== 2
-      || !isDeepStrictEqual(snapshot.knowledge.scope, conversation)) throw new Error('Domain context requires its original v4 audit and scope')
-  } else if (snapshot.schemaVersion !== 1 || meta.runtime.journal_schema_version === 4) throw new Error('Context audit dropped its domain identity')
+    if (![4, 5].includes(meta.runtime.journal_schema_version) || snapshot.schemaVersion !== 2
+      || snapshot.candidateVersion !== (meta.runtime.journal_schema_version === 5 ? 1 : undefined)
+      || !isDeepStrictEqual(snapshot.knowledge.scope, conversation)) throw new Error('Domain context requires its original domain audit and scope')
+  } else if (snapshot.schemaVersion !== 1 || [4, 5].includes(meta.runtime.journal_schema_version)) throw new Error('Context audit dropped its domain identity')
   const knowledge = knownKnowledge ?? readKnowledge(workspace, meta.base_head, meta.bot, conversation)
   if (!start || !end || event.seq <= start.seq || event.seq >= end.seq
     || snapshot.botId !== meta.runtime.bot_id || snapshot.sessionId !== meta.runtime.session_id || snapshot.turn !== meta.runtime.turn

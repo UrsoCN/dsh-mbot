@@ -92,7 +92,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     if (conversation) {
       validateDomainJournal(journal)
       if (!isDeepStrictEqual(journal.conversation, conversationViewScope(conversation))) throw new Error('Recovery journal changed its persistent domain ownership')
-    } else if (journal.conversation || journal.schemaVersion === 4) throw new Error('Domain recovery requires persistent conversation ownership')
+    } else if (journal.conversation || [4, 5].includes(journal.schemaVersion)) throw new Error('Domain recovery requires persistent conversation ownership')
     const resolved = await awaited(options.signal, controller.resolveAgent(journal.sessionId))
     if ('error' in resolved) throw resolved.error
     const agent = resolved.agent
@@ -106,7 +106,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
       && (journal.bootId === undefined || journal.bootId === bootId)
       && states.some(state => state.current?.lease?.identity.runId === journal.runId || state.failedAuditRunId === journal.runId)
     if (journal.schemaVersion === 3) workerRecoveryContract(journal)
-    if (journal.schemaVersion !== 4 && !captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
+    if (![4, 5].includes(journal.schemaVersion) && !captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
     options.signal?.throwIfAborted()
     if (runtime.closed || runtime.ctx.mbot.closed) throw new Error('MBot Runtime closed during recovery')
     await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
@@ -140,7 +140,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
     const proofFile = join(directory, 'proof.json')
     await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart, bootId,
-      mode: journal.schemaVersion === 4 ? 'recorded-domain-v1' : journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
+      mode: journal.schemaVersion === 5 ? 'recorded-domain-candidates-v1' : journal.schemaVersion === 4 ? 'recorded-domain-v1' : journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
       ...(captured ? { capturedRunId: journal.runId } : {}), ...(legacyEvidence ? { evidence: legacyEvidence } : {}),
       journalHash: journalDigest(journal), ...(journal.schemaVersion === 3 ? { workers } : {}), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,
         events: log.events.filter(event => event.seq >= start && event.seq <= end) }, input }), { mode: 0o600, flag: 'wx' })

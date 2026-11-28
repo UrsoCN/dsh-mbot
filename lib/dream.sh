@@ -5,7 +5,7 @@ mbot_dream() {
   mbot_execute dream dream 'Consolidate memory from selected inputs' ''
 }
 mbot_dream_inputs() {
-  local previous since meta rel blob old offset size entry left=$MBOT_DREAM_MAX_BYTES used=0 bytes
+  local previous since meta rel blob old offset size entry visibility left=$MBOT_DREAM_MAX_BYTES used=0 bytes eligible=0
   previous=''
   while IFS= read -r old; do
     meta=$(mbot_git diff-tree --no-commit-id --name-only -r "$old" -- 'dream-reports/*.meta.json')
@@ -46,6 +46,9 @@ mbot_dream_inputs() {
   : > "$MBOT_SCRATCH/pending.jsonl"; : > "$MBOT_SCRATCH/processed.jsonl"
   while IFS= read -r entry; do
     rel=$(jq -r '.path' <<< "$entry"); blob=$(jq -r '.blob' <<< "$entry")
+    visibility=$(node "$MBOT_ROOT/bin/dream-source.mjs" "$MBOT_WS" "$MBOT_BASE" "$rel") || return 1
+    [[ $visibility != domain ]] || continue
+    eligible=$((eligible+1))
     offset=$(jq -r '.offset' <<< "$entry"); size=$(jq -r '.size' <<< "$entry"); bytes=0
     if ((left > 0)); then
       mbot_git cat-file blob "$blob" > "$MBOT_SCRATCH/current"
@@ -70,7 +73,7 @@ mbot_dream_inputs() {
     --slurpfile pending "$MBOT_SCRATCH/pending.jsonl" --slurpfile processed "$MBOT_SCRATCH/processed.jsonl" \
     '{since:$since,source_head:$head,bytes:$bytes,limit:$limit,processed:$processed,pending:$pending}' > "$MBOT_SCRATCH/checkpoint.json"
   MBOT_INPUT_BLOCKED=0
-  if ((used==0)) && [[ $(jq 'length' "$MBOT_SCRATCH/queue.json") != 0 ]]; then MBOT_INPUT_BLOCKED=1; fi
+  if ((used==0 && eligible>0)); then MBOT_INPUT_BLOCKED=1; fi
 }
 mbot_dream_prompt() {
   MBOT_DREAM_REPORT=dream-reports/$MBOT_RUN_ID.md

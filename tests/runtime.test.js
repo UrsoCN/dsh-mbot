@@ -44,12 +44,12 @@ import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plu
 import { readonlyLegacy } from '../plugin/readonly-migration.js'
 import { recoveryInput } from '../plugin/recovery-proof.js'
 import { openTurn } from '../plugin/turn.js'
-import { domainOwnership } from '../plugin/domain-contract.js'
+import { domainOwnership, domainCandidateOwnership } from '../plugin/domain-contract.js'
 import { conversationViewScope } from '../plugin/conversation-view.js'
 import { captureContext } from '../plugin/context-checkpoint.js'
 import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
 import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/compaction-data.js'
-import { domainToolSchema } from '../plugin/domain-tools.js'
+import { domainCandidateToolSchema, domainToolSchema, registerDomainBotctl } from '../plugin/domain-tools.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -224,7 +224,7 @@ async function domainNativeFixture(t, script, options = {}) {
   const begin = ctx.mbot.beginTurn.bind(ctx.mbot)
   await assert.rejects(begin({ sessionId: agent.id, turn: 1, request: 'public remains blocked' }), /Reserved conversation/u)
   ctx.mbot.beginTurn = request => request.sessionId !== agent.id ? begin(request)
-    : openTurn(ctx.mbot, mbot.packageRoot, bot, { ...request, conversation: scope, runtimeOwnership: domainOwnership, compactionPolicyVersion: undefined })
+    : openTurn(ctx.mbot, mbot.packageRoot, bot, { ...request, conversation: scope, runtimeOwnership: domainCandidateOwnership, compactionPolicyVersion: undefined })
   const openFixtureGate = () => {
     const state = ctx.mbotRuntime.states.get(agent)
     state.conversation = Object.freeze({ ...state.conversation, state: 'fixture-only' })
@@ -245,7 +245,7 @@ test('domain native prompts and scoped tools retain only published knowledge acr
   await settle(ctx, agent)
   assert.equal(requests.length, 3, f.errors.map(error => error.stack).join('\n'))
   for (const request of requests) {
-    assert.deepEqual(request.tools, [domainToolSchema])
+    assert.deepEqual(request.tools, [domainCandidateToolSchema])
     assert.ok(!JSON.stringify(request).includes('PRIVATE_'))
     assert.match(JSON.stringify(request), /Published SOUL.md/u)
     assert.ok(!JSON.stringify(request).includes('worker_spawn'))
@@ -273,6 +273,68 @@ test('domain native prompts and scoped tools retain only published knowledge acr
   assert.ok(!JSON.stringify(requests.at(-1)).includes('PRIVATE_'))
   assert.equal((await mailbox().receipt('domain-1')).result.reply.replyId, first.result.reply.replyId)
   assert.equal((await mailbox().receipt('domain-3')).result.final, true)
+})
+
+test('domain native remember seals isolated candidates and preserves knowledge and replies across reload', { timeout: 30000 }, async t => {
+  const candidate = '仅本群候选😀\nThis is a suggestion, not established memory.'
+  const f = await domainNativeFixture(t, (_request, count) => count === 1
+    ? response('', { name: 'botctl', args: { action: 'remember', text: candidate } }) : response('candidate recorded'))
+  const { ctx, ws, agent, policy, owner } = f
+  const privateBefore = await readFile(join(ws, 'MEMORY.md'))
+  const publicBefore = await readFile(join(ws, policy.memory[0]))
+  await f.mailbox().send({ requestId: 'remember', text: 'suggest a domain memory' })
+  await settle(ctx, agent)
+  assert.equal(f.requests.length, 2, f.errors.map(error => error.stack).join('\n'))
+  const receipt = (await f.mailbox().receipt('remember')).result
+  assert.equal(receipt.final, true, JSON.stringify(receipt))
+  assert.equal(receipt.reply.outcome, 'completed')
+  const meta = JSON.parse(git(ws, 'show', `${receipt.audit.commit}:${receipt.audit.meta}`))
+  assert.equal(meta.runtime.journal_schema_version, 5)
+  assert.equal(meta.runtime.context.snapshot.candidateVersion, 1)
+  assert.equal(meta.runtime.candidates.count, 1)
+  const rows = (await readFile(join(ws, meta.runtime.candidates.path), 'utf8')).trim().split('\n').map(JSON.parse)
+  assert.equal(rows[0].text, candidate)
+  assert.deepEqual(rows[0].scope, f.scope)
+  assert.equal(rows[0].knowledgeVersion, meta.runtime.context.snapshot.knowledge.version)
+  assert.deepEqual(await readFile(join(ws, 'MEMORY.md')), privateBefore)
+  assert.deepEqual(await readFile(join(ws, policy.memory[0])), publicBefore)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  await owner.dispose()
+  await ctx.plugin(runtime, { workers: false })
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).snapshot.candidateVersion, 1)
+  f.openFixtureGate()
+  await f.mailbox().send({ requestId: 'after-remember', text: 'continue with the same published memory' })
+  await settle(ctx, agent)
+  assert.equal(f.requests.length, 3)
+  const next = (await f.mailbox().receipt('after-remember')).result
+  assert.equal(next.final, true)
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).snapshot.knowledge.version, rows[0].knowledgeVersion)
+  assert.equal((await f.mailbox().receipt('remember')).result.reply.replyId, receipt.reply.replyId)
+})
+
+test('domain native candidate upgrade preserves audited v4 history and replaces the tool declaration', { timeout: 30000 }, async t => {
+  const f = await domainNativeFixture(t, (_request, count) => count === 2
+    ? response('', { name: 'botctl', args: { action: 'remember', text: 'new domain candidate' } }) : response('domain answer'))
+  const { ctx, agent, bot, scope } = f
+  const begin = ctx.mbot.beginTurn
+  ctx.mbot.beginTurn = request => request.sessionId === agent.id
+    ? openTurn(ctx.mbot, mbot.packageRoot, bot, { ...request, conversation: scope, runtimeOwnership: domainOwnership, compactionPolicyVersion: undefined }) : begin(request)
+  const cell = runtimeCells.get(agent)
+  await cell.controlTool.dispose()
+  cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerDomainBotctl(child, scope, false))
+  await f.mailbox().send({ requestId: 'old-contract', text: 'original readonly domain' })
+  await settle(ctx, agent)
+  assert.deepEqual(f.requests[0].tools, [domainToolSchema])
+  assert.equal((await f.mailbox().receipt('old-contract')).result.final, true)
+  await cell.controlTool.dispose()
+  cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerDomainBotctl(child, scope))
+  ctx.mbot.beginTurn = begin
+  await f.mailbox().send({ requestId: 'new-contract', text: 'now record a candidate' })
+  await settle(ctx, agent)
+  assert.equal(f.requests.length, 3, f.errors.map(error => error.stack).join('\n'))
+  assert.deepEqual(f.requests[1].tools, [domainCandidateToolSchema])
+  assert.equal((await f.mailbox().receipt('old-contract')).result.final, true)
+  assert.equal((await f.mailbox().receipt('new-contract')).result.reply.outcome, 'completed')
 })
 
 test('domain prompt validation rejects foreign producers, transformed input, extra tools and unaudited history', { timeout: 60000 }, async t => {
@@ -309,12 +371,16 @@ test('domain prompt validation rejects foreign producers, transformed input, ext
 })
 
 test('domain native tools reject private paths, foreign roles, writes and approval denial before data execution', { timeout: 60000 }, async t => {
-  for (const variant of ['private-path', 'foreign-role', 'write', 'extra-field', 'approval']) await t.test(variant, async t => {
+  for (const variant of ['private-path', 'foreign-role', 'write', 'extra-field', 'approval', 'candidate-approval', 'candidate-scope', 'candidate-empty', 'candidate-size']) await t.test(variant, async t => {
     const args = variant === 'private-path' ? { action: 'view', path: 'MEMORY.md' }
       : variant === 'foreign-role' ? { action: 'boot', bot: 'coder' }
         : variant === 'write' ? { action: 'board', text: 'forbidden' }
           : variant === 'extra-field' ? { action: 'boot', bot: 'chief', workspace: '/tmp' }
-            : { action: 'boot', bot: 'chief' }
+            : variant === 'candidate-approval' ? { action: 'remember', text: 'deny candidate' }
+              : variant === 'candidate-scope' ? { action: 'remember', text: 'foreign scope', path: 'MEMORY.md' }
+                : variant === 'candidate-empty' ? { action: 'remember', text: ' ' }
+                  : variant === 'candidate-size' ? { action: 'remember', text: '😀'.repeat(4097) }
+                    : { action: 'boot', bot: 'chief' }
     const f = await domainNativeFixture(t, (_request, count) => count === 1 ? response('', { name: 'botctl', args }) : response('read denied'))
     const { ctx, agent, ws } = f
     const executed = [], approvals = []
@@ -324,7 +390,7 @@ test('domain native tools reject private paths, foreign roles, writes and approv
       lease.execute = (...args) => { executed.push(args); return execute(...args) }
       return lease
     }
-    if (variant === 'approval') {
+    if (variant === 'approval' || variant === 'candidate-approval') {
       ctx.sandboxPolicy.resolve = () => ({ mode: 'read-only', workspaceRoot: ws })
       class Approval extends Service {
         constructor(ctx) { super(ctx, 'approval') }
@@ -343,7 +409,7 @@ test('domain native tools reject private paths, foreign roles, writes and approv
     assert.ok(!JSON.stringify(f.requests).includes('PRIVATE_'))
     assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), privateMemory)
     assert.equal(git(ws, 'status', '--porcelain'), '')
-    if (variant === 'approval') {
+    if (variant === 'approval' || variant === 'candidate-approval') {
       assert.equal(approvals.length, 1); assert.equal(approvals[0].toolName, 'botctl')
       assert.match(results[0].data.message.content[0].text, /user rejected escalating/u)
     }
@@ -351,7 +417,7 @@ test('domain native tools reject private paths, foreign roles, writes and approv
 })
 
 test('domain native turn recovers its answer once after failed commit and resumes verified history after reload', { timeout: 30000 }, async t => {
-  const f = await domainNativeFixture(t, () => response('recover domain answer'))
+  const f = await domainNativeFixture(t, (_request, count) => count === 1 ? response('', { name: 'botctl', args: { action: 'remember', text: 'recover this candidate once' } }) : response('recover domain answer'))
   const { ctx, agent, ws, bot, owner } = f
   await removalController(ctx, agent)
   const spawn = ctx.subprocess.spawn.bind(ctx.subprocess), shim = join(root, `domain-commit-failure-${++sequence}`)
@@ -364,12 +430,15 @@ test('domain native turn recovers its answer once after failed commit and resume
   await agent.whenIdle()
   await assert.rejects(ctx.mbotRuntime.settled(agent))
   ctx.subprocess.spawn = spawn
-  assert.equal(f.requests.length, 1)
+  assert.equal(f.requests.length, 2)
   const base = git(ws, 'rev-parse', 'HEAD')
   await owner.dispose()
   await ctx.plugin(runtime, { workers: false })
   const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
   assert.equal(recovered.success, true)
+  const recoveredMeta = JSON.parse(git(ws, 'show', `${recovered.head}:${recovered.meta}`))
+  assert.equal(recoveredMeta.runtime.candidates.count, 1)
+  assert.match(await readFile(join(ws, recoveredMeta.runtime.candidates.path), 'utf8'), /recover this candidate once/u)
   assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
   assert.equal((await f.mailbox().receipt('interrupted')).result.reply.text, 'recover domain answer')
   assert.equal((await ctx.mbotRuntime.checkpoint(agent)).commit, recovered.head)
@@ -379,7 +448,7 @@ test('domain native turn recovers its answer once after failed commit and resume
   f.openFixtureGate()
   await f.mailbox().send({ requestId: 'continued', text: 'continue the verified history' })
   await settle(ctx, agent)
-  assert.equal(f.requests.length, 2)
+  assert.equal(f.requests.length, 3)
   assert.ok(!JSON.stringify(f.requests).includes('PRIVATE_'))
   assert.equal((await f.mailbox().receipt('continued')).result.final, true)
 })

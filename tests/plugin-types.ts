@@ -56,6 +56,8 @@ void contextCheckpoint
 declare const contextSnapshot: runtime.ContextCheckpoint['snapshot']
 if (contextSnapshot.schemaVersion === 2) {
   const domainKnowledge: plugin.ConversationKnowledge = contextSnapshot.knowledge
+  const candidateVersion: 1 | undefined = contextSnapshot.candidateVersion
+  void candidateVersion
   const domainId: string = domainKnowledge.scope.conversationId
   void domainId
 } else {

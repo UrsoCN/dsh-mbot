@@ -47,7 +47,10 @@ mbot_guard_snapshot() {
 }
 mbot_guard_allowed() {
   local rel=$1
-  [[ ${MBOT_DOMAIN_TURN:-0} != 1 ]] || return 1
+  if [[ ${MBOT_DOMAIN_TURN:-0} == 1 ]]; then
+    node "$MBOT_ROOT/bin/turn-domain.mjs" --guard "$MBOT_SCRATCH" "$MBOT_WS" "$rel" "${MBOT_RECOVERY_EVENTS:-$MBOT_SCRATCH/session-events.jsonl}" >/dev/null 2>&1
+    return
+  fi
   if [[ ${MBOT_MODE:-run} == dream ]]; then
     case $rel in
       wiki/ops-log.md) return 1 ;;

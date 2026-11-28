@@ -6,6 +6,9 @@ const uuid = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 const digest = /^[a-f0-9]{64}$/u
 const gitHash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u
 export const domainOwnership = Object.freeze({ schemaVersion: 3, mode: 'domain-foreground', workerDepth: 0, tools: Object.freeze(['botctl']) })
+export const domainCandidateOwnership = Object.freeze({ schemaVersion: 4, mode: 'domain-candidates', workerDepth: 0, tools: Object.freeze(['botctl']), candidateVersion: 1 })
+
+export const domainJournalVersion = ownership => validateDomainOwnership(ownership).schemaVersion === 4 ? 5 : 4
 
 export function validateDomainScope(scope) {
   if (!scope || typeof scope !== 'object' || Array.isArray(scope)
@@ -19,7 +22,7 @@ export function validateDomainScope(scope) {
 }
 
 export function validateDomainOwnership(value) {
-  if (!isDeepStrictEqual(value, domainOwnership)) throw new Error('Unsupported domain writer ownership contract')
+  if (!isDeepStrictEqual(value, domainOwnership) && !isDeepStrictEqual(value, domainCandidateOwnership)) throw new Error('Unsupported domain writer ownership contract')
   return value
 }
 
@@ -33,7 +36,7 @@ export function validateDomainHeader(header) {
 
 export function validateDomainJournal(journal) {
   validateDomainHeader(journal)
-  if (journal.schemaVersion !== 4 || journal.actors !== undefined || !digest.test(journal.contextHash ?? '')) throw new Error('Domain turn requires journal v4 without Worker permits and with its context hash')
+  if (journal.schemaVersion !== domainJournalVersion(journal.runtimeOwnership) || journal.actors !== undefined || !digest.test(journal.contextHash ?? '')) throw new Error('Domain turn requires its versioned journal without Worker permits and with its context hash')
   return journal
 }
 

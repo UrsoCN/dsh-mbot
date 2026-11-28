@@ -9,7 +9,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import Commands from '@deepseek-ai/dsh-commands'
 import { Session, appendPluginRecord, foldSurface, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import { createUserMessage, createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import * as plugin from '../plugin/index.js'
@@ -22,9 +22,10 @@ import { conversationKey, conversationSource, conversationAccess, reserveConvers
 import { conversationViewPath, conversationViewPolicy, readConversationView, conversationViewDocument, conversationViewLimits, conversationViewScope } from '../plugin/conversation-view.js'
 import { openTurn } from '../plugin/turn.js'
 import { contextHash, contextSnapshotType, contextReferences, verifyContextCut, validateContextSnapshot } from '../plugin/context-state.js'
-import { domainOwnership } from '../plugin/domain-contract.js'
+import { candidatePath, parseCandidates, candidateText, candidateLimits, readCandidateFile, verifyCandidateAudit } from '../plugin/domain-candidates.js'
+import { domainOwnership, domainCandidateOwnership } from '../plugin/domain-contract.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
-import { recoveryInput, journalDigest } from '../plugin/recovery-proof.js'
+import { recoveryInput, journalDigest, validateRecoveryProof } from '../plugin/recovery-proof.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
 import { conversationMessageBinding, conversationMessage, validateConversationMessage } from '../plugin/conversation-messages.js'
 import { validateDomainMessage } from '../plugin/domain-message.js'
@@ -589,7 +590,7 @@ test('conversation Git reader rejects symlinks, missing files, malformed text an
   assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /byte limit/u)
 })
 
-async function domainTurn(t, { failures, prepare, mailbox = false } = {}) {
+async function domainTurn(t, { failures, prepare, mailbox = false, ownership = domainOwnership } = {}) {
   const fixture = await app(t), { ctx, ws, owner } = fixture
   await configEditor(ctx, owner, ws)
   const bot = await ctx.mbot.importBot(ws)
@@ -605,11 +606,11 @@ async function domainTurn(t, { failures, prepare, mailbox = false } = {}) {
   session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [user] })
   const start = session.append('turn/start', { turn: 1 })
   const options = { botId: bot.botId, sessionId: record.sessionId, turn: 1, request: 'isolated transaction fixture',
-    conversation: scope, messages: [user], writerScope: 'agent-runtime', runtimeOwnership: domainOwnership,
+    conversation: scope, messages: [user], writerScope: 'agent-runtime', runtimeOwnership: ownership,
     onExpiry: async () => {}, onCancel: async () => {} }
   // Production service rejects reserved activation. Exercise the internal bridge contract directly.
   const lease = await openTurn(ctx.mbot, plugin.packageRoot, bot, options)
-  const snapshot = { schemaVersion: 2, kind: 'turn-input', visibility: scope.visibility, botId: bot.botId,
+  const snapshot = { schemaVersion: 2, ...(ownership.candidateVersion ? { candidateVersion: ownership.candidateVersion } : {}), kind: 'turn-input', visibility: scope.visibility, botId: bot.botId,
     sessionId: record.sessionId, conversationId: record.conversationId, turn: 1, runId: lease.identity.runId,
     role: 'chief', memoryCommit: lease.snapshot.head, knowledge: lease.snapshot.knowledge, contextEpoch: 1, previous: null,
     sourceCut: { throughSeq: session.seq - 1, events: contextReferences([]) }, input: [{ messageId: user.id, hash: contextHash(user) }] }
@@ -623,6 +624,169 @@ async function domainTurn(t, { failures, prepare, mailbox = false } = {}) {
   }
   return { ...fixture, bot, record, policy, scope, binding, user, options, lease, snapshot, snapshotSeq, session, log, end }
 }
+
+async function recordDomainCandidate(f, text, callId = 'domain-candidate-call', dispatch = true) {
+  const args = JSON.stringify({ action: 'remember', text })
+  const request = f.session.append('assistant/message', { turn: 1, step: 1,
+    message: createAssistantMessage({ content: [{ type: 'tool-call', id: callId, name: 'botctl', arguments: args }], source: { provider: 'fixture', model: 'fixture' } }) }, { surfaceOp: 'append' })
+  await f.lease.record(request)
+  const call = dispatch ? f.session.append('tool/call', { turn: 1, step: 1, callId, name: 'botctl', arguments: args }) : null
+  if (call) await f.lease.record(call)
+  const result = await f.lease.execute('botctl', ['remember', text, '--call', callId])
+  if (dispatch) await f.lease.record(f.session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId, isError: result.exitCode !== 0, content: [{ type: 'text', text: result.stdout || result.stderr }] }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] }))
+  return result
+}
+
+test('domain candidates bind native provenance and redaction, deduplicate retries and reject audit downgrade', async t => {
+  const secret = 'domain-candidate-secret-445566778899'
+  const f = await domainTurn(t, { ownership: domainCandidateOwnership, prepare: ({ ws }) => writeFile(join(ws, '.env'), `TEST_SECRET=${secret}\n`) })
+  const text = `中文😀\nCandidate ${secret}.`
+  const first = await recordDomainCandidate(f, text)
+  assert.equal(first.exitCode, 0, first.stderr)
+  const retry = await f.lease.execute('botctl', ['remember', text, '--call', 'domain-candidate-call'])
+  assert.equal(retry.exitCode, 0, retry.stderr)
+  assert.equal(retry.stdout, first.stdout)
+  const conflict = await f.lease.execute('botctl', ['remember', 'changed', '--call', 'domain-candidate-call'])
+  assert.notEqual(conflict.exitCode, 0)
+  const path = candidatePath(f.scope, f.lease.identity.runId)
+  const bytes = await readFile(join(f.ws, path)), rows = parseCandidates(bytes)
+  assert.equal(rows.length, 1)
+  assert.ok(!bytes.toString().includes(secret))
+  assert.match(rows[0].text, /\[REDACTED\]/u)
+  const result = await f.lease.finish(await f.end())
+  const meta = verifyRecoveryAudit(f.ws, f.options, f.log().events, result)
+  assert.equal(result.outcome, 'completed')
+  assert.equal(meta.runtime.candidates.count, 1)
+  assert.deepEqual(meta.runtime.candidates.callIds, ['domain-candidate-call'])
+  assert.equal(meta.runtime.candidates.bytes, bytes.length)
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+  for (const changed of [{ ...meta.runtime, candidates: { ...meta.runtime.candidates, count: 2 } },
+    { ...meta.runtime, journal_schema_version: 4 }]) {
+    assert.throws(() => verifyCandidateAudit(f.ws, result.head, { ...meta, runtime: changed }, f.log().events))
+  }
+  const omitted = structuredClone(meta)
+  omitted.runtime.journal_schema_version = 4
+  delete omitted.runtime.candidates
+  assert.throws(() => sealContextAudit(omitted, f.log().events, f.ws), /original domain audit/u)
+  const native = structuredClone(f.log().events)
+  native.find(event => event.type === 'tool/call').data.arguments = JSON.stringify({ action: 'remember', text: 'forged' })
+  assert.throws(() => verifyCandidateAudit(f.ws, result.head, meta, native), /native tool dispatch|successful native receipt/u)
+  await writeFile(join(f.ws, path), 'current worktree is not historical proof\n')
+  verifyCandidateAudit(f.ws, result.head, meta, f.log().events)
+  await writeFile(join(f.ws, path), bytes)
+})
+
+test('domain candidate guard rolls back forged content, foreign paths, missing dispatch and unsafe files', async t => {
+  for (const variant of ['text', 'scope', 'dispatch', 'foreign-file', 'mode', 'symlink', 'missing', 'missing-row']) await t.test(variant, async t => {
+    const f = await domainTurn(t, { ownership: domainCandidateOwnership })
+    const text = 'a domain suggestion'
+    assert.equal((await recordDomainCandidate(f, text, 'candidate-call', variant !== 'dispatch')).exitCode, 0)
+    const path = candidatePath(f.scope, f.lease.identity.runId)
+    const rows = parseCandidates(await readFile(join(f.ws, path)))
+    if (variant === 'text') rows[0].text = 'forged suggestion'
+    if (variant === 'scope') rows[0].scope.accessHash = '0'.repeat(64)
+    if (['text', 'scope'].includes(variant)) await writeFile(join(f.ws, path), rows.map(row => JSON.stringify(row) + '\n').join(''))
+    if (variant === 'foreign-file') {
+      await mkdir(join(f.ws, 'memory/shared'), { recursive: true })
+      await writeFile(join(f.ws, 'memory/shared/forbidden.md'), 'cross-domain write')
+    }
+    if (variant === 'missing') await rm(join(f.ws, path))
+    if (variant === 'missing-row') {
+      assert.equal((await recordDomainCandidate(f, 'second acknowledged candidate', 'second-call')).exitCode, 0)
+      await writeFile(join(f.ws, path), rows.map(row => JSON.stringify(row) + '\n').join(''))
+    }
+    if (variant === 'mode') await chmod(join(f.ws, path), 0o755)
+    if (variant === 'symlink') { await rm(join(f.ws, path)); await symlink(join(f.ws, 'MEMORY.md'), join(f.ws, path)) }
+    const result = await f.lease.finish(await f.end())
+    assert.equal(result.outcome, 'failed')
+    const meta = verifyRecoveryAudit(f.ws, f.options, f.log().events, result)
+    assert.equal(meta.runtime.candidates.count, variant === 'foreign-file' ? 1 : 0)
+    assert.equal(git(f.ws, 'status', '--porcelain'), '')
+    await assert.rejects(access(join(f.ws, 'memory/shared/forbidden.md')))
+  })
+})
+
+test('domain candidate budgets and serialization reject invalid inputs without mutating the file', async t => {
+  assert.equal(candidateText('😀'.repeat(4096)).length, 8192)
+  for (const text of ['', '  ', '\0', '😀'.repeat(4097)]) assert.throws(() => candidateText(text))
+  for (const bytes of [Buffer.from('{}'), Buffer.from('{ "x":1 }\n'), Buffer.from([0xff, 10]),
+    Buffer.from('{}\n'.repeat(candidateLimits.count + 1)), Buffer.alloc(candidateLimits.fileBytes + 1)]) assert.throws(() => parseCandidates(bytes))
+  const f = await domainTurn(t, { ownership: domainCandidateOwnership })
+  assert.equal((await recordDomainCandidate(f, 'within budget')).exitCode, 0)
+  const path = candidatePath(f.scope, f.lease.identity.runId), before = await readFile(join(f.ws, path))
+  for (const text of ['', '😀'.repeat(4097)]) assert.notEqual((await f.lease.execute('botctl', ['remember', text, '--call', 'invalid-call'])).exitCode, 0)
+  await assert.rejects(readCandidateFile(f.ws, '../MEMORY.md'), /Unsafe/u)
+  assert.deepEqual(await readFile(join(f.ws, path)), before)
+  assert.equal((await f.lease.finish(await f.end())).outcome, 'completed')
+})
+
+test('domain candidate recovery rejects readonly proofs and preserves cancellation and the original file', async t => {
+  const f = await domainTurn(t, { ownership: domainCandidateOwnership, failures: 2 })
+  assert.equal((await recordDomainCandidate(f, 'candidate before cancellation')).exitCode, 0)
+  await f.end({ kind: 'aborted', reason: { kind: 'user' } })
+  f.lease.child.terminate()
+  await f.lease.child.waitForExit()
+  const journal = JSON.parse(await readFile(join(f.ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  const input = await recoveryInput(journal, f.log())
+  const directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const proof = join(directory, 'proof.json'), ownerStart = await processStart()
+  const evidence = { schemaVersion: 1, kind: 'runtime-quiescent', mode: 'recorded-domain-v1',
+    ownerPid: process.pid, ownerStart, bootId: await currentBootId(), journalHash: journalDigest(journal), log: f.log(), input }
+  await writeFile(proof, JSON.stringify(evidence), { mode: 0o600 })
+  await assert.rejects(validateRecoveryProof(proof, journal), /writer contract/u)
+  evidence.mode = 'recorded-domain-candidates-v1'
+  await writeFile(proof, JSON.stringify(evidence), { mode: 0o600 })
+  const before = git(f.ws, 'rev-parse', 'HEAD')
+  const output = await f.ctx.mbot.execute('mbot', ['recover'], { workspace: f.ws, recoveryOwner: { pid: process.pid, start: ownerStart, runtimeProof: proof } })
+  assert.equal(output.exitCode, 0, output.stderr)
+  const result = JSON.parse(output.stdout)
+  assert.equal(result.outcome, 'cancelled')
+  assert.equal(result.failureCountEffect, 'preserve')
+  assert.equal(await readFile(join(f.ws, '.mbot/failures'), 'utf8'), '2\n')
+  const meta = verifyRecoveryAudit(f.ws, f.options, f.log().events, result)
+  assert.equal(meta.runtime.candidates.count, 1)
+  assert.equal(git(f.ws, 'rev-list', '--count', `${before}..HEAD`), '1')
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+  await access(join(f.ws, '.mbot/PAUSED'))
+})
+
+test('private Dreaming excludes domain candidate transcripts from new and pending inputs', async t => {
+  const f = await domainTurn(t, { ownership: domainCandidateOwnership })
+  assert.equal((await recordDomainCandidate(f, 'DOMAIN_DREAM_CANARY')).exitCode, 0)
+  const result = await f.lease.finish(await f.end())
+  const path = candidatePath(f.scope, f.lease.identity.runId)
+  await writeFile(join(f.ws, 'inbox/private.md'), 'PRIVATE_DREAM_CANDIDATE\n')
+  git(f.ws, 'add', 'inbox/private.md'); git(f.ws, 'commit', '-m', 'human: private candidate')
+  const scratch = await mkdtemp(join(root, 'dream-filter-'))
+  const select = () => execFileSync('bash', ['-c', `set -euo pipefail
+    MBOT_ROOT=$1 MBOT_WS=$2 MBOT_SCRATCH=$3 MBOT_DREAM_MAX_BYTES=64000
+    source "$MBOT_ROOT/lib/guard.sh"
+    source "$MBOT_ROOT/lib/dream.sh"
+    MBOT_BASE=$(mbot_git rev-parse HEAD)
+    : > "$MBOT_SCRATCH/prompt"
+    mbot_dream_inputs
+    cat "$MBOT_SCRATCH/prompt"
+  `, 'dream-filter', plugin.packageRoot, f.ws, scratch], { encoding: 'utf8' })
+  assert.match(select(), /PRIVATE_DREAM_CANDIDATE/u)
+  assert.doesNotMatch(await readFile(join(scratch, 'prompt'), 'utf8'), /DOMAIN_DREAM_CANARY/u)
+  const pending = { path: result.transcript, blob: git(f.ws, 'rev-parse', `${result.head}:${result.transcript}`), offset: 0,
+    size: Buffer.byteLength(git(f.ws, 'show', `${result.head}:${result.transcript}`)) + 1 }
+  await mkdir(join(f.ws, 'dream-reports'), { recursive: true })
+  await writeFile(join(f.ws, 'dream-reports/filter.meta.json'), JSON.stringify({ checkpoint: { pending: [pending] } }))
+  git(f.ws, 'add', 'dream-reports'); git(f.ws, 'commit', '-m', 'dream: filter fixture')
+  assert.equal(select(), '')
+  const checkpoint = JSON.parse(await readFile(join(scratch, 'checkpoint.json'), 'utf8'))
+  assert.deepEqual(checkpoint.pending, [])
+  assert.deepEqual(checkpoint.processed, [])
+  const meta = JSON.parse(await readFile(join(f.ws, result.meta), 'utf8'))
+  delete meta.runtime.conversation; delete meta.runtime.context; delete meta.runtime.candidates
+  meta.runtime.journal_schema_version = 2
+  await writeFile(join(f.ws, result.meta), JSON.stringify(meta))
+  git(f.ws, 'add', result.meta); git(f.ws, 'commit', '-m', 'human: cannot relabel original domain audit')
+  assert.equal(select(), '')
+  await access(join(f.ws, path))
+})
 
 test('domain envelopes bind sender, route and content and cannot impersonate private or foreign input', () => {
   const record = reserveConversationRecord('bot-00000000-0000-0000-0000-000000000001', { source: groupSource(), allowedSenders: ['alice', 'bob'], replyRoute: 'route' })

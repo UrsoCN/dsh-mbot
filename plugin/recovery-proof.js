@@ -41,7 +41,7 @@ export async function readJournal(workspace) {
 
 /** Compare private bridge evidence to an exclusively owned native Session. */
 export async function recoveryInput(journal, log) {
-  if (![1, 2, 3, 4].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
+  if (![1, 2, 3, 4, 5].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
     || (journal.bootId !== undefined && !validBootId(journal.bootId))
     || !Number.isSafeInteger(journal.turn) || journal.turn < 1 || typeof journal.sessionId !== 'string'
     || log.session.id !== journal.sessionId || log.session.cwd !== journal.workspace || log.session.origin === 'subagent') throw new Error('Runtime recovery identity does not match its native Session')
@@ -57,7 +57,7 @@ export async function recoveryInput(journal, log) {
     || header.writerScope !== 'agent-runtime' || !isDeepStrictEqual(header.runtimeOwnership, journal.runtimeOwnership)
     || header.compactionPolicyVersion !== journal.compactionPolicyVersion
     || !isDeepStrictEqual(header.conversation, journal.conversation)) throw new Error('Runtime header does not match its journal')
-  if (journal.schemaVersion === 4) {
+  if ([4, 5].includes(journal.schemaVersion)) {
     validateDomainJournal(journal)
     if (contentHash(await privateFile(join(journal.scratch, 'context.json'))) !== journal.contextHash) throw new Error('Domain context snapshot changed')
   } else {
@@ -97,6 +97,8 @@ export async function validateRecoveryProof(path, journal) {
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid() || (directory.mode & 0o777) !== 0o700
     || !file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid() || (file.mode & 0o777) !== 0o600) throw new Error('Unsafe Runtime recovery proof')
   const proof = JSON.parse(await privateFile(path))
+  if ([4, 5].includes(journal.schemaVersion)
+    && proof.mode !== (journal.schemaVersion === 5 ? 'recorded-domain-candidates-v1' : 'recorded-domain-v1')) throw new Error('Domain recovery proof cannot change its writer contract')
   if (!Number.isSafeInteger(proof.ownerPid) || proof.ownerPid <= 0) throw new Error('Invalid Runtime recovery proof owner')
   const ownerStat = await readFile(`/proc/${proof.ownerPid}/stat`, 'utf8')
   const ownerState = ownerStat.slice(ownerStat.lastIndexOf(')') + 2).trim().split(/\s+/u)[0]
@@ -107,7 +109,10 @@ export async function validateRecoveryProof(path, journal) {
     if (journal.ownerPid !== proof.ownerPid || journal.ownerStart !== proof.ownerStart
       || (journal.bootId !== undefined && journal.bootId !== proof.bootId)
       || proof.capturedRunId !== journal.runId) throw new Error('Legacy Runtime recovery needs its original live owner')
-  } else if (proof.mode === 'recorded-domain-v1') validateDomainJournal(journal)
+  } else if (proof.mode === 'recorded-domain-v1' || proof.mode === 'recorded-domain-candidates-v1') {
+    validateDomainJournal(journal)
+    if (journal.schemaVersion !== (proof.mode === 'recorded-domain-candidates-v1' ? 5 : 4)) throw new Error('Domain recovery proof cannot change its writer contract')
+  }
   else if (proof.mode === 'recorded-foreground-v1') validateOwnership(journal.runtimeOwnership)
   else if (proof.mode === 'recorded-workers-v2') { validateOwnership(journal.runtimeOwnership, true); workerRecoveryContract(journal) }
   else if (proof.mode === 'legacy-readonly' && journal.runtimeOwnership === undefined) { /* checked against native facts below */ }
