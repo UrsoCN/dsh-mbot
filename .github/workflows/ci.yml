@@ -33,8 +33,8 @@ jobs:
       GIT_COMMITTER_EMAIL: mbot-ci@example.invalid
       DSH_TELEMETRY_MODE: DISABLED
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -44,7 +44,7 @@ jobs:
         run: npm test 2>&1 | tee /tmp/mbot-regression.log
       - name: Preserve regression log
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: regression-node-${{ matrix.node }}
           path: /tmp/mbot-regression.log
@@ -63,20 +63,20 @@ jobs:
     env:
       DSH_TELEMETRY_MODE: DISABLED
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - name: Install dependencies and tested DSH
+      - name: Install dependencies, tested DSH and pnpm
         run: |
           npm ci --ignore-scripts
-          npm install --global --ignore-scripts @deepseek-ai/dsh@0.2.2-rc.5
+          npm install --global --ignore-scripts @deepseek-ai/dsh@0.2.2-rc.5 pnpm@12.23.0
       - name: Install, run and remove plugin in isolated profile
         run: npm run test:install -- "${{ matrix.mode }}" 2>&1 | tee /tmp/mbot-install.log
       - name: Preserve installation evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: install-${{ matrix.mode }}-node-${{ matrix.node }}
           path: |

@@ -30,7 +30,7 @@
 
 ## 发布与配套交付
 
-- [ ] 推送后确认 `.github/workflows/ci.yml` 的回归与四类安装矩阵在 GitHub 实际通过（PAT 已具备 workflow 权限）；按需增加 tag 产物/校验和的 Release Action。
+- [ ] 推送 CI 修复后确认 `.github/workflows/ci.yml` 的两组回归、8 个安装任务全部通过且无 Node 20 弃用警告；首次 run `46121170070` 的安装失败与本地修复证据见 [RELEASE_NOTE](RELEASE_NOTE.md#首次-ci-修复)。按需增加 tag 产物/校验和的 Release Action。
 - [ ] 验证旧 `0.1` 数据/profile、登记及配置版本迁移，不覆盖自定义角色/协议；Node/DSH 声明与安装矩阵以 [兼容范围](docs/plugin-standard-review.md#兼容范围与-ci) 为准。
 - [ ] 核验上游 DSH 固定 `undici@8.11.2` 的已知漏洞与修复版本兼容性；候选 `0.2.3-alpha.2` 已采用 `undici@8.12.4`，但须验证 SDK/Node 要求与实际 Host 安装，不以本仓库开发环境 override 代替宿主修复。
 - [ ] 完成上述正式版范围的联合回归和发布核对，再推进 `0.2.0`；版本/lock/tag 与验收证据一致，发布规则见 [发布检查](docs/plugin-standard-review.md)。

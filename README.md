@@ -15,7 +15,7 @@ DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记�
 
 ## 安装
 
-支持 Linux/WSL 本地环境，Node.js 24.9+；当前实测 DSH `0.2.2-rc.5`。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8，先配置 Git 姓名/邮箱。
+支持 Linux/WSL 本地环境，Node.js 24.9+；当前实测 DSH `0.2.2-rc.5`。`dsh plugin` 需要 PATH 中有 pnpm（CI 固定 `12.23.0`）；通过 npm 安装 DSH 时需另行安装 pnpm，见 [安装依赖](PLUGIN.md#安装与资源)。还需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8，先配置 Git 姓名/邮箱。
 
 ```bash
 # 源码目录安装

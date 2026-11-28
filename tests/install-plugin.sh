@@ -13,6 +13,22 @@ for mode in "${modes[@]}"; do
     *) printf 'Unknown installation mode: %s (expected tarball, source, git or web-tarball)\n' "$mode" >&2; exit 2 ;;
   esac
 done
+# A local developer's PATH may already provide pnpm, while a fresh runner's
+# npm-installed DSH does not. Fail before creating a profile with a useful error.
+for dependency in node npm dsh pnpm git jq flock awk tar timeout; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    printf 'Missing installation test dependency: %s (see PLUGIN.md)\n' "$dependency" >&2
+    exit 127
+  fi
+done
+run_logged() {
+  local log=$1 status
+  shift
+  if "$@" > "$log" 2>&1; then return 0; else status=$?; fi
+  printf 'Installation command failed (exit %s); last 80 lines of %s:\n' "$status" "$log" >&2
+  tail -n 80 -- "$log" >&2
+  return "$status"
+}
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 root=$(mktemp -d /tmp/mbot-plugin-install.XXXXXX)
 trap 'printf "Plugin installation artifacts: %s\n" "$root"' EXIT
@@ -238,7 +254,7 @@ for mode in "${modes[@]}"; do
   if [[ $mode == web-tarball ]]; then
     dsh --profile "$profile" --from-default-profile web --dump-config > "$root/$mode.default.yml"
   fi
-  dsh plugin --profile "$profile" add "$spec" --store-dir "$root/pnpm-store" --ignore-scripts > "$root/$mode.install.log" 2>&1
+  run_logged "$root/$mode.install.log" dsh plugin --profile "$profile" add "$spec" --store-dir "$root/pnpm-store" --ignore-scripts
   jq -e '.dsh.profile.bundles | index("dsh-mbot") != null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
   dsh --profile "$profile" --dump-config > "$root/$mode.config.yml"
   [[ $(cat "$root/$mode.config.yml") == *'# == dsh-mbot'* ]]
@@ -246,7 +262,7 @@ for mode in "${modes[@]}"; do
   printf '%s\n' '- id: mbot' '  config:' "    workspace: '$ws'" '- id: sandbox-policy' '  config:' '    mode: danger-full-access' '- id: approval' '  config:' '    policy: never' '- insert:' '    - id: mbot-install-probe' "      name: '$root/probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
   app_args=()
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
-  MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/$mode.runtime.log" 2>&1
+  MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" run_logged "$root/$mode.runtime.log" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}"
   jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|test("^[0-9]{3,9}")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
   jq -e '.registry.schemaVersion==2 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
@@ -261,10 +277,10 @@ for mode in "${modes[@]}"; do
   fi
   if [[ $mode == web-tarball ]]; then
     printf '%s\n' '- insert:' '    - id: mbot-binding-probe' "      name: '$repo/tests/binding-probe.mjs'" > "$DSH_HOME/profiles/$profile/cordis.patch.yml"
-    MBOT_BINDING_WS="$root/binding-faults" MBOT_BINDING_RESULT="$root/binding.result.json" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}" > "$root/binding.runtime.log" 2>&1
+    MBOT_BINDING_WS="$root/binding-faults" MBOT_BINDING_RESULT="$root/binding.result.json" run_logged "$root/binding.runtime.log" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}"
     jq -e '.success and .bot.binding.state=="ready"' "$root/binding.result.json" >/dev/null
   fi
-  dsh plugin --profile "$profile" remove dsh-mbot --store-dir "$root/pnpm-store" > "$root/$mode.remove.log" 2>&1
+  run_logged "$root/$mode.remove.log" dsh plugin --profile "$profile" remove dsh-mbot --store-dir "$root/pnpm-store"
   jq -e '.dsh.profile.bundles | index("dsh-mbot") == null' "$DSH_HOME/profiles/$profile/package.json" >/dev/null
   [[ -f $ws/BOARD.md && -z $(git -C "$ws" status --porcelain) ]]
   printf 'Plugin install PASS: %s install/activation/native tool/command/schema/bin/metadata/removal\n' "$mode"

@@ -35,7 +35,7 @@ npm pack --ignore-scripts --pack-destination /tmp
 
 `engines.dsh` 与 DSH peers 均固定 `0.2.2-rc.5`；扩大支持前补对应版本验收。Node 下限对齐该 DSH 发布包的 `>=24.9.0`，CI 覆盖最低版本 24.9.0 与 24 系列。历史 Node 22 验收只代表当时结果，不作为正式支持声明。Linux/WSL 与 GNU/Bash 工具依赖继续保留。
 
-`.github/workflows/ci.yml` 已配置 push（main/dev）、pull_request 与手动触发；[随包模板](../ops/ci.yml.example) 与其保持同步。Node 24.9.0 / 24 各运行 `npm test`，以及 source/tarball/Git/Web tarball 四种安装任务；每个任务独立 runner，Host/Runtime 保持串行。使用固定 Action commit、只读仓库权限，失败日志保留 14 天。工作流本地验证与 GitHub 远端运行分别记录，推送后检查实际 Actions 结果。R5 性能测试暂缓；真实模型与浏览器作为专项，避免恢复全进程检查与 Chromium 并行。
+`.github/workflows/ci.yml` 已配置 push（main/dev）、pull_request 与手动触发；[随包模板](../ops/ci.yml.example) 与其保持同步。Node 24.9.0 / 24 各运行 `npm test`，以及 source/tarball/Git/Web tarball 四种安装任务；每个任务独立 runner，Host/Runtime 保持串行。安装任务显式安装 DSH `0.2.2-rc.5` 与 pnpm `12.23.0`，不依赖开发机已有命令或 Corepack。checkout/setup-node/upload-artifact 使用固定 commit 的 v6（Node 24 runtime），只读仓库权限，失败日志保留 14 天。工作流本地验证与 GitHub 远端运行分别记录，推送后检查实际 Actions 结果。R5 性能测试暂缓；真实模型与浏览器作为专项，避免恢复全进程检查与 Chromium 并行。
 
 2026-11-28 的 `npm audit` 检出 DSH `0.2.2-rc.5` 的 `dsh-http-proxy → undici@8.11.2` 固定依赖存在已知漏洞（修复版本 8.12.2）；当前包仍沿用该上游版本，发布前须核实实际 Host 的依赖与修复兼容性。已发布候选 `0.2.3-alpha.2` 使用 `undici@8.12.4`，同时将 Node 要求改为 `^24.22.3 || >=26.13.1`，不能未经 SDK/安装回归直接切换。插件根目录的开发用 override 不会自动更新 DSH 宿主，不能作为安装环境已经修复的证据。
 

@@ -16,6 +16,12 @@
 - 本地验收：Node 24.9.0 完整回归通过（198 项 Host/Runtime 通过、1 项真实 API 跳过，64 组 Bash）；四类安装通过。Node 24.22.3 首次完整回归有 1 项 Worker 恢复被短命 `/proc` 进程拒绝，确认 PID 退出并检查原现场后专项复跑通过，随后 64 组 Bash 和四类安装全部通过（`/tmp/mbot-plugin-install.QY3dSJ`）。保留失败日志及原夹具，没有放宽生产写者核验。
 - `actionlint`、Bash 语法、测试失败退出码、恢复夹具重试约束、package/lock/peers 一致性、322 条文档链接及包资源检查通过。日志分别为 `/tmp/dsh-mbot-node249-test.log`、`/tmp/dsh-mbot-node249-install-retry.log`、`/tmp/dsh-mbot-node2422-test.log`、`/tmp/dsh-mbot-node2422-worker-retry.log`、`/tmp/dsh-mbot-node2422-bash.log` 和 `/tmp/dsh-mbot-node2422-install.log`。本阶段不运行 R5/真实 API/浏览器，GitHub 远端结果留待推送后确认。
 
+### 首次 CI 修复
+
+- GitHub run `46121170070`（`bed565a`）的两个回归任务通过，8 个安装任务均返回 127，另有 10 条 Actions Node 20 弃用警告。详细日志未取得；隔离 PATH 重跑相同提交，复现 `spawn pnpm ENOENT`：原 workflow 安装了 DSH，但遗漏其插件安装命令需要的 pnpm，先前本地验收使用了开发机已有命令。
+- 安装任务显式安装 `pnpm@12.23.0`；脚本在创建 profile 前检查依赖，安装/启动/卸载失败时输出日志末尾并保留退出码。checkout/setup-node/upload-artifact 更新为固定 commit 的 v6（Node 24 runtime），同步随包模板和安装说明。
+- 本地在 `bed565a` 的独立副本中仅应用 CI 安装脚本修复，使用隔离 PATH、DSH `0.2.2-rc.5` 和新安装的 pnpm `12.23.0`，Node 24.9.0 / 24.22.3 各通过四类安装（`/tmp/mbot-plugin-install.ET5UGn`、`/tmp/mbot-plugin-install.0jSwgl`）。缺失依赖/失败退出码、`actionlint`、Bash 语法、324 条文档链接和包资源检查通过。未混入在途 P1 功能，也未重复完整业务回归；修复后的 GitHub 实际运行仍待推送验收。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。
