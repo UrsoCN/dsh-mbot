@@ -150,7 +150,14 @@ async function restoreContextNow(state, { update = true } = {}, attempt = 0) {
     await runtime.ctx.sessions.flush(agent.session)
     if (state.closing || runtime.closed) throw new Error('MBot context owner is unavailable')
     const verified = checkpoint ? (({ actors, ...value }) => value)(checkpoint) : null
-    if (update) { state.checkpoint = verified; state.compactionCatalog = compactions }
+    if (update) {
+      state.checkpoint = verified; state.compactionCatalog = compactions
+      if (state.domainScope) {
+        const turns = restored.domainTurns ?? []
+        state.domainVerifiedEvents = new Map(log.events.filter(event => turns.some(turn => event.seq >= turn.startSeq && event.seq <= turn.endSeq))
+          .map(event => [event.seq, contextHash(event)]))
+      }
+    }
     return verified
   } catch (error) {
     if (error instanceof ContextObservationChanged) {

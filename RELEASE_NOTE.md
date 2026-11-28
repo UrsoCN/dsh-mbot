@@ -53,6 +53,14 @@
 - Node 24.9.0 完整回归通过：217 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-messages-full-final.log`）；补充测试覆盖原生派生展示、未执行排队消息、未结算 journal、动态凭据规则及能力撤销。所有者路由错误提示保持兼容。
 - 四类实际安装全部通过（`/tmp/mbot-plugin-install.rI4Fpd`、`/tmp/dsh-mbot-domain-messages-install-final.log`）；安装夹具现在分别用两个域验证内部事务和原生 mailbox，并同步修正登记数量断言。tarball Chromium 验收通过收信/去重、双窗口拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复、原 MessageId 重试和私人主 Session 续聊；实际截图已检查（`/tmp/mbot-gui-conversations.CZ5FgN`、`/tmp/dsh-mbot-domain-messages-gui.log`）。346 条文档链接、包资源、Bash 语法及 `git diff --check` 通过。未运行 R5 或真实 API。
 
+### 原生域上下文与只读工具接线
+
+- 域提示仅使用显式发布的协议/SOUL/记忆和本轮域身份；通过官方 scoped context 空掩码覆盖 DSH required refresh，最终 LLM 边界验证原生消息、投影、历史与精确工具 schema。外来/迟到上下文、准备阶段改写、未审计历史和额外工具/PTC 拒绝，普通模型请求不在中间件中改写。详见 [域上下文](docs/conversations.md#原生提示读工具与历史隔离)。
+- 原生 scoped botctl 只声明固定快照 boot/view，每次核对持久域权限、本轮 lease 与精确参数，并保留原生审批。域历史从 Git/context 验证的回合恢复；失败准入从原 Inbox cut 验证输入，提交中断使用公开恢复接口单次结算。修正同一私人 Agent 切换 Worker 开关时将 Cordis Fiber 误作函数释放的问题。
+- 公开 registry/准入仍为 reserved，模型测试仅在内部夹具中接线，不代表域激活、候选/Dreaming、摘要/维护或真实适配器已经交付。18 项原生域边界与 Worker 开关专项通过（`/tmp/dsh-mbot-domain-context-boundaries2.log`）；包含迟到 required provider 零模型调用、原生审批拒绝、多轮知识更新、Runtime 重载和域提交失败恢复。
+- Node 24.9.0 完整 Host/Runtime 回归 234 项通过、1 项真实 API 跳过、1 项精简 Host 冷启动失败：其没有全局 botctl，旧 restriction 却依赖该名称。修正为拒绝所有继承工具、保留 scoped 域工具后，22 项相关专项全部通过，随后 64 组 Bash 回归通过。日志 `/tmp/dsh-mbot-domain-context-full.log`、`/tmp/dsh-mbot-domain-context-final-scope.log`、`/tmp/dsh-mbot-domain-context-bash.log`；保留首轮失败证据，未重复不受影响的完整矩阵。
+- 四类安装通过并核验实际域 schema 与私人工具不可见（`/tmp/mbot-plugin-install.8phoFy`、`/tmp/dsh-mbot-domain-context-install.log`）。tarball Chromium 的双窗口拒绝、收信重试、刷新、SIGKILL/同 ID 恢复及私人主 Session 续聊通过，实际截图已检查（`/tmp/mbot-gui-conversations.JZlx5s`、`/tmp/dsh-mbot-domain-context-gui-final.log`）。首轮 GUI 暴露 Controller 可在 agent/created 回调结束前返回 live Agent；夹具改为等待 Runtime 真实 attach，新增受控延迟测试证明未就绪 mailbox 拒绝、同一附着等待完成后收信（`/tmp/dsh-mbot-domain-attachment.log`）。348 条文档链接、包资源与 `git diff --check` 通过；未运行 R5 或真实 API。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

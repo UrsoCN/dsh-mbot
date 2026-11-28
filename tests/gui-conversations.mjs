@@ -108,6 +108,7 @@ try {
   await page.goto(`${url}#mbot-session=${record.sessionId}`); await page.locator('[contenteditable=true]').waitFor()
   state = JSON.parse((await command(page, '/mbot_fixture_domain_state')).text)
   assert.equal(state.pending.length, 3)
+  assert.equal(state.descriptor.state, 'reserved')
   assert.deepEqual(state.registry.conversations[0], record)
   const retried = JSON.parse((await command(page, '/mbot_fixture_domain_mailbox')).text)
   assert.equal(retried.delivery.messageId, submitted.delivery.messageId)

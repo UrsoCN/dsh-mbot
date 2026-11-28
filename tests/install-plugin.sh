@@ -200,6 +200,10 @@ async function probe(ctx) {
       allowedSenders: ['alice'], replyRoute: 'mailbox-group-route' })
     const domainAgent = (await ctx.agents.create({ sessionId: inboxDomain.sessionId, meta: { cwd: bot.workspacePath },
       agentOptions: { provider: 'mbot-installation', model: 'scripted' } })).agent
+    const { domainToolSchema } = await installed('plugin/domain-tools.js')
+    const { projectToolSchema } = await import(fromPackage.resolve('@deepseek-ai/dsh-tools'))
+    assert.deepEqual(projectToolSchema(ctx.tools.get('botctl', domainAgent), false), domainToolSchema)
+    for (const name of ['bash', 'read', 'write', 'spawn_agent']) assert.equal(ctx.tools.get(name, domainAgent), undefined)
     const domainMailbox = ctx.mbotRuntime.conversationMailbox(domainAgent, { ...inboxDomain.source, senderId: 'alice', replyRoute: inboxDomain.replyRoute })
     const domainDelivery = await domainMailbox.send({ requestId: 'install-domain-event', text: 'installed mailbox queued input' })
     const domainRetry = await domainMailbox.send({ requestId: 'install-domain-event', text: 'installed mailbox queued input' })

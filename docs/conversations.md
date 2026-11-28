@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；实际模型提示/工具接线、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复，conversationMailbox 已支持可信来源收信、去重与域回复证明；原生提示/工具与历史隔离已接线并通过内部模型夹具验收。公开准入、域激活、适配器、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -39,6 +39,8 @@ const permitted = ctx.mbot.authorizeConversation(botId, {
 `reserveConversation` 使用官方 ConfigEditor 的最新配置和可选 revision 校验，串行保存同 profile 的预留。相同 Bot/source/许可的重复请求返回原记录，不增加 revision；ACL 或 replyRoute 冲突拒绝。调用时捕获输入，返回分离快照，调用者后续修改对象不会改变待保存或已保存权限。失败保存保留旧有效配置。
 
 `authorizeConversation` 只验证可信适配器提供的身份与现有许可一致；它不是平台认证或模型执行许可。域 mailbox 还要求相同 Session 已存在且被当前 Runtime 附着；不能改用 ownerMailbox。主 Session 的所有者入口见 [消息准入](message-admission.md)。
+
+官方 Controller 的 live Agent 查询可能早于 `agent/created` 的异步附着完成；可信 Host 调用者须等待当前 Runtime 的 `attach(agent, { botId })` 完成后取得 mailbox。该调用复用同一在途附着，不创建替代 Agent；未就绪时 mailbox 保持拒绝。
 
 ## 域 mailbox 与回复证明
 
@@ -95,7 +97,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。内部域事务通过下述 context snapshot v2 将知识版本封存到原生/Git 证明；单独的视图检查仍不构成事务证明。既有私人主 Session 的知识与快照保留 v1。
 
-`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；后续读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。当前没有对模型开放这个工具。内部数据桥已提供脱敏/预算检查后的固定快照读取，域候选、Dreaming、模型提示与摘要/维护接齐之前，公开域闸门继续拒绝执行。
+`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。内部数据桥已提供脱敏/预算检查后的固定快照读取，下述原生工具复用同一快照；公开准入、域候选、Dreaming 与摘要/维护接齐之前，公开域闸门继续拒绝执行。
 
 ## 内部域事务与 checkpoint
 
@@ -109,6 +111,18 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 - 恢复要求 Host 原生所有权核验及 `recorded-domain-v1` proof，检查 registry 域归属、原 journal/私有 ledger/context hash、原生事件和 Git 审计；使用原始受限 guard，保持单次提交/结算与 PAUSED，不运行模型。Runtime 重载后可恢复 checkpoint，输入继续留在同一 reserved Session 的 Inbox。
 
 域回复使用独立 conversationMailbox，不能改用 ownerMailbox。当前不支持实际 IM/peer/outbox、候选/Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
+
+## 原生提示、读工具与历史隔离
+
+`domain-context.js` 从已捕获域快照生成协议、SOUL 与记忆段，参考文档只列发布路径；记忆按引用数据包装，不合并私人模板、任务或 Worker 规则。原生 `mbot:turn` 绑定本域身份、知识版本与已准入发送者。组装结果清除外来段与变量，并核对最终完整结果；无法覆盖的 complete/scope-local 冲突明确拒绝。
+
+DSH `0.2.2-rc.5` 在原生 step 内再次执行 `refreshContext`，仅过滤 assemble 返回值不足以隔离 required provider。Runtime 用官方 Agent-scoped 空 context 覆盖已观察到的外来 provider；掩码随 Agent 保留，Runtime 重载可继续使用。最终 `llm/stream` 验证原生请求标记、Session/surface、原始事件投影、消息与工具历史；迟到 required context、输入改写、外来工具/PTC 或额外消息拒绝，普通模型请求不在中间件中改写。
+
+`domain-tools.js` 安装只含 `boot`/`view` 的独立 botctl schema，同时限制继承的工具。每次执行核对持久域归属、本轮 lease 和精确参数，再走原生 sandboxPolicy/approval。`boot` 只能选当前角色；`view` 只能读快照清单内的路径，不能传宿主目录、私人路径或写操作。scope-local 工具不受 DSH inherited restriction 约束，因此最终 schema 仍须精确核验。
+
+历史 user/assistant/tool 事件须来自本轮原生记录或已经 Git/context 联合验证的回合；不收养预先写入的私人历史，也不继承父 Session。旧派生系统/运行上下文通过原生 surface replacement 退役，原始日志保留。恢复时从 snapshot 捕获的 Inbox cut 取原消息并验 hash；准入失败而尚无 user/message 的回合也能验证，展示消息不能替代原输入字节。准备阶段失败保留未派发输入；最终模型检查发生在原生派发后时，保留真实失败终态，不伪造 queued 状态。
+
+当前测试夹具只在测试内接入内部 `openTurn` 并放行内存测试状态，使用真实原生 Agent、工具、审计、持久化与公开恢复接口验证链路；持久 registry 始终为 reserved。该夹具不构成公开激活接口。域 compaction 明确拒绝，域维护仍待独立契约。
 
 ## 持久化、执行与退役
 
@@ -129,5 +143,6 @@ registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2
 - 资料视图测试覆盖私人 canary 不泄露、群/其他用户/peer 隔离、固定 commit 与未提交草稿、权限/正文版本变化、清单越界、符号链接、缺文件、非法 UTF-8/NUL 和字节限额；安装矩阵通过真实 Host API 检查包内 helper，确认只返回元数据且不激活域。
 - 域 mailbox 测试覆盖并发重试、输入捕获、不同发送者/群的同 ID 隔离、来源/路线拒绝、flush 不确定、原生队列篡改、Runtime 重载和注销；GUI 使用实际安装后的能力收信，并在 SIGKILL 重启后以原 ID 查回同一 MessageId。
 - 域桥测试覆盖固定快照/只读命令、私人路径拒绝、越权写入回滚、取消计数、正文脱敏、合并记忆预算、原生/Git checkpoint 及中断单次结算；原生 Agent 测试通过公开恢复接口核验重载后的持久域身份、checkpoint 和 Inbox。安装矩阵实际执行包内 v4 桥，公开域执行仍拒绝。
+- 内部原生域模型夹具覆盖 boot/view、多轮知识更新、重载、提交失败后的单次恢复与续聊；私人 canary、迟到 required context、scope-local 冲突、输入改写、额外工具、未审计历史与审批拒绝均有反向验收。安装矩阵核对实际域 schema 和私人 Bash/文件/派活工具不可见；同一私人 Agent 的 Worker 开关往返切换继续通过。
 
 上述验收证明预留拒绝边界与内部域事务，不代表已完成实际域模型对话、候选治理、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。

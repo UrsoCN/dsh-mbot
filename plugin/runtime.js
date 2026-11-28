@@ -15,6 +15,7 @@ import { foregroundTools, installGates, createGateCell } from './gate-driver.js'
 import { ConversationSession, runtimeRecordType, validReceipt } from './conversation-session.js'
 import { BotCoordinator } from './bot-coordinator.js'
 import { createOwnerMailbox, createConversationMailbox } from './mailbox-facade.js'
+import { registerDomainBotctl } from './domain-tools.js'
 import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
 import { sleepBot, wakeBot, recoverSleepMaintenance, botOverview } from './sleep.js'
 import { readMaintenanceJournal } from './maintenance-journal.js'
@@ -200,7 +201,7 @@ export class MBotRuntime extends Service {
         }
       } catch {}
       if (cell.handoff) for (const key of ['lastReceipt', 'error', 'failedAuditRunId', 'failedAuditRecord']) state[key] = cell.handoff[key]
-      if (!cell.bashInstalled && this.ctx.tools.get('bash', agent)) {
+      if (!conversation && !cell.bashInstalled && this.ctx.tools.get('bash', agent)) {
         // The official foreground-only composition kills and joins commands
         // at timeout; a returned job receipt is not writer-quiescence proof.
         for (const name of ['shell', 'shellEnv', 'workingDirectory']) {
@@ -237,9 +238,19 @@ export class MBotRuntime extends Service {
         })
       }
       if (this.closed) throw new Error('MBot Runtime disposed during attachment')
-      const workerControls = this.workersEnabled && this.workerManager && this.ctx.mbot.bot({ botId: state.botId }).defaultRole === 'chief'
-      if (workerControls && !cell.controlTool) cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerBotctl(child, { workers: true }))
-      if (!workerControls && cell.controlTool) { cell.controlTool(); cell.controlTool = undefined }
+      const workerControls = !conversation && this.workersEnabled && this.workerManager && this.ctx.mbot.bot({ botId: state.botId }).defaultRole === 'chief'
+      if (conversation) {
+        // Refresh owned handlers after the previous Runtime has drained. The
+        // restriction itself survives reload with the Agent-owned gate.
+        await cell.controlTool?.dispose()
+        cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerDomainBotctl(child, state.domainScope))
+        // Scope-local botctl stays visible; an empty inherited allowlist also
+        // works in minimal Hosts without the global/private botctl plugin.
+        cell.domainToolRestriction ??= agent.ctx.tools.restrict({ allow: [] })
+      } else {
+        if (workerControls && !cell.controlTool) cell.controlTool = agent.ctx.inject(['tools', 'mbot', 'sandboxPolicy'], child => registerBotctl(child, { workers: true }))
+        if (!workerControls && cell.controlTool) { await cell.controlTool.dispose(); cell.controlTool = undefined }
+      }
       cell.driver = driver
       state.initializing = false
       if (this.ready) cell.handoff = undefined

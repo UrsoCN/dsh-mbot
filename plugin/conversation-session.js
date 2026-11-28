@@ -78,10 +78,11 @@ export class ConversationSession {
     if (event.type === runtimeRecordType) return
     if (event.type === 'turn/start') {
       this.current = { turn: event.data.turn, step: 1, messages: [], events: [], calls: new Set(), ended: false,
-        end: Promise.withResolvers(), admitted: new Set(), dispatched: new Set() }
+        end: Promise.withResolvers(), admitted: new Set(), dispatched: new Set(), ...(this.domainScope ? { domainEvents: new Set() } : {}) }
     }
     const record = this.current
     if (!record || record.ended) return
+    record.domainEvents?.add(event.seq)
     if (event.type.startsWith('compaction/') || ['plugin:mbot/compact-input', 'plugin:mbot/compact-output'].includes(event.type)) record.compactionSeen = true
     if (event.type === 'user/message') record.dispatched.add(event.data.id)
     if (event.type === 'assistant/message') record.text = event.data.message.content
@@ -215,6 +216,7 @@ export class ConversationSession {
       record.result = await record.lease.finish({ reason: record.reason, text: record.text ?? '' })
       await this.publish(record, record.result.success ? 'committed' : 'rejected')
       await this.runtime.ctx.sessions.flush(this.agent.session)
+      if (this.domainScope) await restoreContext(this)
       if (record.context) this.checkpoint = { ...record.context, commit: record.result.head, meta: record.result.meta, turn: record.turn }
       for (const proof of record.compactions ?? []) this.compactionCatalog.set(proof.compactionId, proof)
       if (record.compactions?.length && this.checkpoint) this.checkpoint.compactions = record.compactions

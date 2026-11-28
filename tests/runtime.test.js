@@ -49,6 +49,7 @@ import { conversationViewScope } from '../plugin/conversation-view.js'
 import { captureContext } from '../plugin/context-checkpoint.js'
 import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
 import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/compaction-data.js'
+import { domainToolSchema } from '../plugin/domain-tools.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -197,6 +198,213 @@ async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntim
 const conversationAccess = (spaceId = 'group-a') => ({ source: { adapterId: 'test-adapter', platform: 'qq',
   accountId: 'bot-account', spaceId, threadId: null, visibility: 'group', principalId: null },
   allowedSenders: ['alice'], replyRoute: `${spaceId}-route` })
+
+// Exercise the real Agent/prompt/tool/audit stack before publishing domain
+// activation. Only this fixture replaces reserved admission with openTurn;
+// persistent registry and all production/public activation gates stay closed.
+async function domainNativeFixture(t, script, options = {}) {
+  const f = await app(t, script, { main: true, persistence: true, bash: true, ...options })
+  const { ctx, ws, bot } = f
+  const registration = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
+  const directory = `memory/conversations/${registration.conversationId}`
+  await mkdir(join(ws, directory), { recursive: true })
+  const policy = { schemaVersion: 1, botId: bot.botId, conversationId: registration.conversationId,
+    conversationKey: registration.conversationKey, role: 'chief', protocol: `${directory}/AGENTS.md`,
+    soul: `${directory}/SOUL.md`, memory: [`${directory}/MEMORY.md`], references: [`${directory}/reference.md`] }
+  for (const path of [policy.protocol, policy.soul, ...policy.memory, ...policy.references]) await writeFile(join(ws, path), `Published ${path.split('/').at(-1)}.\n`)
+  await writeFile(join(ws, directory, 'VIEW.json'), JSON.stringify(policy))
+  await writeFile(join(ws, 'MEMORY.md'), '# PRIVATE_MEMORY_CANARY\n')
+  await writeFile(join(ws, 'bots/chief/SOUL.md'), '# PRIVATE_SOUL_CANARY\n')
+  git(ws, 'add', '.'); git(ws, 'commit', '-m', 'human: publish domain prompt fixture')
+  ctx.systemPrompt.section({ name: 'private:canary', order: 3, text: 'PRIVATE_SYSTEM_CANARY' })
+  ctx.systemPrompt.context({ name: 'private:canary', order: 3, text: 'PRIVATE_CONTEXT_CANARY', required: true })
+  const handle = await ctx.agents.create({ sessionId: registration.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  const agent = handle.agent, scope = conversationViewScope(registration)
+  const begin = ctx.mbot.beginTurn.bind(ctx.mbot)
+  await assert.rejects(begin({ sessionId: agent.id, turn: 1, request: 'public remains blocked' }), /Reserved conversation/u)
+  ctx.mbot.beginTurn = request => request.sessionId !== agent.id ? begin(request)
+    : openTurn(ctx.mbot, mbot.packageRoot, bot, { ...request, conversation: scope, runtimeOwnership: domainOwnership, compactionPolicyVersion: undefined })
+  const openFixtureGate = () => {
+    const state = ctx.mbotRuntime.states.get(agent)
+    state.conversation = Object.freeze({ ...state.conversation, state: 'fixture-only' })
+    return state
+  }
+  openFixtureGate()
+  const mailbox = () => ctx.mbotRuntime.conversationMailbox(agent, { ...registration.source, senderId: 'alice', replyRoute: registration.replyRoute })
+  return { ...f, agent, domainHandle: handle, registration, scope, policy, mailbox, openFixtureGate }
+}
+
+test('domain native prompts and scoped tools retain only published knowledge across turns and Runtime reload', { timeout: 30000 }, async t => {
+  let reference
+  const f = await domainNativeFixture(t, (_request, count) => count === 1 ? response('', { name: 'botctl', args: { action: 'boot', bot: 'chief' } })
+    : count === 2 ? response('', { name: 'botctl', args: { action: 'view', path: reference } }) : response('domain answer'))
+  const { ctx, ws, agent, requests, owner, policy, mailbox } = f
+  reference = policy.references[0]
+  await mailbox().send({ requestId: 'domain-1', text: 'read the published view' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3, f.errors.map(error => error.stack).join('\n'))
+  for (const request of requests) {
+    assert.deepEqual(request.tools, [domainToolSchema])
+    assert.ok(!JSON.stringify(request).includes('PRIVATE_'))
+    assert.match(JSON.stringify(request), /Published SOUL.md/u)
+    assert.ok(!JSON.stringify(request).includes('worker_spawn'))
+  }
+  assert.ok(JSON.stringify(requests.at(-1)).includes('Published reference.md'))
+  const first = await mailbox().receipt('domain-1')
+  assert.equal(first.result.final, true)
+  assert.equal(first.result.reply.schemaVersion, 2)
+  const firstKnowledge = (await ctx.mbotRuntime.checkpoint(agent)).snapshot.knowledge.version
+  await writeFile(join(ws, policy.memory[0]), 'Updated public memory.\n')
+  git(ws, 'add', policy.memory[0]); git(ws, 'commit', '-m', 'human: publish updated domain memory')
+  await mailbox().send({ requestId: 'domain-2', text: 'use updated memory' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 4)
+  assert.ok(JSON.stringify(requests.at(-1)).includes('Updated public memory'))
+  assert.notEqual((await ctx.mbotRuntime.checkpoint(agent)).snapshot.knowledge.version, firstKnowledge)
+  assert.equal((await mailbox().receipt('domain-2')).result.final, true)
+  await owner.dispose()
+  await ctx.plugin(runtime, { workers: false })
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+  f.openFixtureGate()
+  await mailbox().send({ requestId: 'domain-3', text: 'retain domain history after reload' })
+  await settle(ctx, agent)
+  assert.equal(requests.length, 5)
+  assert.ok(!JSON.stringify(requests.at(-1)).includes('PRIVATE_'))
+  assert.equal((await mailbox().receipt('domain-1')).result.reply.replyId, first.result.reply.replyId)
+  assert.equal((await mailbox().receipt('domain-3')).result.final, true)
+})
+
+test('domain prompt validation rejects foreign producers, transformed input, extra tools and unaudited history', { timeout: 60000 }, async t => {
+  for (const variant of ['producer', 'transform', 'runtime-body', 'complete', 'tool', 'history', 'late-context', 'local-context']) await t.test(variant, async t => {
+    const f = await domainNativeFixture(t, () => response('must not execute'))
+    const { ctx, agent, requests } = f
+    if (variant === 'complete') agent.ctx.systemPrompt.section({ name: 'foreign:complete', order: 0, complete: true, text: 'PRIVATE_COMPLETE_CANARY' })
+    else if (variant === 'tool') agent.ctx.tools.register(defineTool({ name: 'foreign_scope_tool', description: 'PRIVATE_TOOL_CANARY', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'must not run' }))
+    else if (variant === 'history') agent.session.append('user/message', message('PRIVATE_HISTORY_CANARY'), { surfaceOp: 'append' })
+    else if (variant === 'local-context') agent.ctx.systemPrompt.context({ name: 'private:local', order: 5, required: true, text: 'PRIVATE_LOCAL_CANARY' })
+    else agent.ctx.on('agent/pre-step', async (_input, next) => {
+      const decision = await next()
+      if (decision.kind !== 'enter') return decision
+      if (variant === 'late-context') {
+        agent.ctx.systemPrompt.context({ name: 'private:late', order: 5, required: true, text: 'PRIVATE_LATE_CANARY' })
+        return decision
+      }
+      if (variant === 'producer') return { ...decision, messages: [...decision.messages,
+        createUserMessage({ content: [{ type: 'text', text: 'PRIVATE_INSTRUCTIONS_CANARY' }], source: { kind: 'agent-instructions' } })] }
+      const selected = decision.messages.find(message => variant === 'transform' ? message.source.kind === 'user' : message.source.kind === 'runtime-context')
+      return { ...decision, messages: decision.messages.map(message => message !== selected ? message : { ...message, content: [{ type: 'text', text: 'PRIVATE_TRANSFORM_CANARY' }] }) }
+    })
+    await f.mailbox().send({ requestId: variant, text: 'domain input' })
+    await settle(ctx, agent)
+    assert.equal(requests.length, 0)
+    assert.ok((await ctx.mbotRuntime.status(agent)).lastReceipt)
+    const result = (await f.mailbox().receipt(variant)).result
+    // After refreshContext the native input is already dispatched. Preserve
+    // its real failed outcome instead of claiming it is still queued.
+    assert.equal(result.final, variant === 'late-context')
+    if (variant === 'late-context') { assert.equal(result.reply.outcome, 'failed'); assert.equal(result.reply.text, '') }
+  })
+})
+
+test('domain native tools reject private paths, foreign roles, writes and approval denial before data execution', { timeout: 60000 }, async t => {
+  for (const variant of ['private-path', 'foreign-role', 'write', 'extra-field', 'approval']) await t.test(variant, async t => {
+    const args = variant === 'private-path' ? { action: 'view', path: 'MEMORY.md' }
+      : variant === 'foreign-role' ? { action: 'boot', bot: 'coder' }
+        : variant === 'write' ? { action: 'board', text: 'forbidden' }
+          : variant === 'extra-field' ? { action: 'boot', bot: 'chief', workspace: '/tmp' }
+            : { action: 'boot', bot: 'chief' }
+    const f = await domainNativeFixture(t, (_request, count) => count === 1 ? response('', { name: 'botctl', args }) : response('read denied'))
+    const { ctx, agent, ws } = f
+    const executed = [], approvals = []
+    const begin = ctx.mbot.beginTurn
+    ctx.mbot.beginTurn = async request => {
+      const lease = await begin(request), execute = lease.execute.bind(lease)
+      lease.execute = (...args) => { executed.push(args); return execute(...args) }
+      return lease
+    }
+    if (variant === 'approval') {
+      ctx.sandboxPolicy.resolve = () => ({ mode: 'read-only', workspaceRoot: ws })
+      class Approval extends Service {
+        constructor(ctx) { super(ctx, 'approval') }
+        async request(input) { approvals.push(input); return 'rejected' }
+      }
+      await ctx.plugin(Approval)
+    }
+    const privateMemory = await readFile(join(ws, 'MEMORY.md'), 'utf8')
+    await f.mailbox().send({ requestId: variant, text: 'attempt a forbidden operation' })
+    await settle(ctx, agent)
+    assert.equal(executed.length, 0)
+    const log = await ctx.sessionQuery.readSession(agent.id)
+    const results = log.events.filter(event => event.type === 'tool/result')
+    assert.equal(results.length, 1)
+    assert.equal(results[0].data.message.isError, true)
+    assert.ok(!JSON.stringify(f.requests).includes('PRIVATE_'))
+    assert.equal(await readFile(join(ws, 'MEMORY.md'), 'utf8'), privateMemory)
+    assert.equal(git(ws, 'status', '--porcelain'), '')
+    if (variant === 'approval') {
+      assert.equal(approvals.length, 1); assert.equal(approvals[0].toolName, 'botctl')
+      assert.match(results[0].data.message.content[0].text, /user rejected escalating/u)
+    }
+  })
+})
+
+test('domain native turn recovers its answer once after failed commit and resumes verified history after reload', { timeout: 30000 }, async t => {
+  const f = await domainNativeFixture(t, () => response('recover domain answer'))
+  const { ctx, agent, ws, bot, owner } = f
+  await removalController(ctx, agent)
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess), shim = join(root, `domain-commit-failure-${++sequence}`)
+  await mkdir(shim)
+  await writeFile(join(shim, 'git'), '#!/bin/sh\nfor arg do\n  if [ "$arg" = commit ]; then exit 1; fi\ndone\nexec /usr/bin/git "$@"\n')
+  await chmod(join(shim, 'git'), 0o700)
+  ctx.subprocess.spawn = spec => spec.argv[0].endsWith('/bin/mbot-turn')
+    ? spawn({ ...spec, env: { ...spec.env, PATH: `${shim}:${spec.env.PATH}` } }) : spawn(spec)
+  await f.mailbox().send({ requestId: 'interrupted', text: 'keep this domain answer' })
+  await agent.whenIdle()
+  await assert.rejects(ctx.mbotRuntime.settled(agent))
+  ctx.subprocess.spawn = spawn
+  assert.equal(f.requests.length, 1)
+  const base = git(ws, 'rev-parse', 'HEAD')
+  await owner.dispose()
+  await ctx.plugin(runtime, { workers: false })
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal((await f.mailbox().receipt('interrupted')).result.reply.text, 'recover domain answer')
+  assert.equal((await ctx.mbotRuntime.checkpoint(agent)).commit, recovered.head)
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+  assert.equal((await ctx.mbot.execute('mbot', ['resume'], { botId: bot.botId })).exitCode, 0)
+  f.openFixtureGate()
+  await f.mailbox().send({ requestId: 'continued', text: 'continue the verified history' })
+  await settle(ctx, agent)
+  assert.equal(f.requests.length, 2)
+  assert.ok(!JSON.stringify(f.requests).includes('PRIVATE_'))
+  assert.equal((await f.mailbox().receipt('continued')).result.final, true)
+})
+
+test('Runtime can disable and reenable Worker controls on the same private Agent', { timeout: 30000 }, async t => {
+  const { ctx, agent, owner, requests } = await app(t, () => response('private answer'), { workers: true, main: true })
+  agent.followup(message('with Workers'))
+  await settle(ctx, agent)
+  assert.ok(JSON.stringify(requests.at(-1).tools).includes('worker_spawn'))
+  await owner.dispose()
+  const disabled = ctx.plugin(runtime, { workers: false })
+  await disabled
+  agent.followup(message('without Workers'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 2)
+  assert.ok(!JSON.stringify(requests.at(-1).tools).includes('worker_spawn'))
+  assert.equal(ctx.mbotRuntime.states.get(agent).current.lease.runtimeOwnership.schemaVersion, 1)
+  await disabled.dispose()
+  await ctx.plugin(runtime, { workers: true })
+  agent.followup(message('with Workers again'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 3)
+  assert.ok(JSON.stringify(requests.at(-1).tools).includes('worker_spawn'))
+  assert.equal((await ctx.mbotRuntime.status(agent)).lastReceipt.outcome, 'completed')
+})
 
 test('Runtime recovers an internal domain v4 turn after reload and keeps native input reserved', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, owner, requests } = await app(t, () => response('must not execute'), { main: true, persistence: true })
@@ -376,6 +584,38 @@ test('reserved conversations retain input across Runtime reload and remain gated
   assert.equal(requests.length, 1)
   assert.ok(JSON.stringify(requests[0]).includes('# MBot role: chief'))
   assert.ok(!JSON.stringify(requests[0]).includes('group queued input'))
+})
+
+test('domain mailbox waits for the shared Runtime attachment after native Agent publication', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, requests } = await app(t, () => response('must not run'))
+  const record = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  const readSession = ctx.sessionQuery.readSession.bind(ctx.sessionQuery)
+  ctx.sessionQuery.readSession = async (...args) => {
+    if (args[0] === record.sessionId) { entered.resolve(); await release.promise }
+    return readSession(...args)
+  }
+  t.after(() => release.resolve())
+  const creating = ctx.agents.create({ sessionId: record.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  await entered.promise
+  const agent = ctx.agents.get(record.sessionId)
+  assert.ok(agent, 'native Agent is visible before Runtime initialization completes')
+  const attestation = { ...record.source, senderId: 'alice', replyRoute: record.replyRoute }
+  assert.throws(() => ctx.mbotRuntime.conversationMailbox(agent, attestation), /attached domain Session/u)
+  let attached = false
+  const joining = ctx.mbotRuntime.attach(agent, { botId: bot.botId }).then(() => { attached = true })
+  await delay(20)
+  assert.equal(attached, false)
+  release.resolve()
+  await Promise.all([creating, joining])
+  ctx.sessionQuery.readSession = readSession
+  const mailbox = ctx.mbotRuntime.conversationMailbox(agent, attestation)
+  await mailbox.send({ requestId: 'after-attachment', text: 'safe queued input' })
+  await settle(ctx, agent)
+  assert.equal((await mailbox.receipt('after-attachment')).result.status, 'queued')
+  assert.equal(requests.length, 0)
+  mailbox.dispose()
 })
 
 test('cold Host restart restores reserved ownership and flushed native Inbox after SIGKILL', { timeout: 30000 }, async t => {

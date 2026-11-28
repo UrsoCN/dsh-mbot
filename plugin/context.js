@@ -1,7 +1,9 @@
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { parseManagedSummaryMessage } from './compaction-data.js'
+import { domainSections, validateDomainAssembly } from './domain-context.js'
 
 export function botSections(snapshot, { worker = false } = {}) {
+  if (snapshot.conversation) return domainSections(snapshot)
   return [
     { name: 'deployment:persona-prefix', text: `# MBot role: ${snapshot.role}\n\n${snapshot.soul}`, interpolate: false },
     { name: 'mbot:protocol', text: `${snapshot.protocol}\n\nUse the native botctl tool for structured data operations. In Bash use "$DSH_MBOT_BOTCTL"; the Host binds it to this turn. Never print private transaction permission variables.\n\n${worker
@@ -24,11 +26,13 @@ export function turnContext(record) {
   if (!record?.lease) return ''
   return JSON.stringify({ botId: record.lease.identity.botId, sessionId: record.lease.identity.sessionId,
     turn: record.turn, memoryCommit: record.lease.snapshot.head, runId: record.lease.identity.runId,
+    ...(record.lease.snapshot.conversation ? { conversation: record.lease.snapshot.conversation } : {}),
     ...(record.context ? { contextEpoch: record.context.snapshot.contextEpoch, knowledgeVersion: record.context.snapshot.knowledge.version,
       contextSnapshotSeq: record.context.snapshotSeq, sourceCut: record.context.snapshot.sourceCut.throughSeq } : {}),
     requests: record.messages.map(message => ({ messageId: message.id, source: message.source.kind,
       ...(message.source.rpcId ?? message.source.requestId ? { requestId: message.source.rpcId ?? message.source.requestId } : {}),
-      ...(message.source.mbot ? { adapterId: message.source.mbot.adapterId, ownerId: message.source.mbot.ownerId,
+      ...(message.source.mbot ? { adapterId: message.source.mbot.adapterId,
+        ...(record.lease.snapshot.conversation ? { senderId: message.source.mbot.senderId } : { ownerId: message.source.mbot.ownerId }),
         conversationKey: message.source.mbot.conversationKey, visibility: message.source.mbot.visibility } : {}) })) })
 }
 
@@ -37,6 +41,7 @@ export async function reconcileContext(ctx, agent, assembly, record, signal) {
   const { renderPrompt } = await import('@deepseek-ai/dsh-system-prompt')
   const rendered = renderPrompt(assembly)
   const expected = botSections(record.lease.snapshot, { worker: record.worker === true })
+  if (record.lease.snapshot.conversation) validateDomainAssembly(assembly, record.lease.snapshot, turnContext(record))
   for (const section of expected) {
     if (!assembly.sections.some(candidate => candidate.name === section.name && candidate.text === section.text)) {
       throw new Error('MBot context was replaced or suppressed by another prompt provider')
@@ -60,7 +65,9 @@ export async function reconcileContext(ctx, agent, assembly, record, signal) {
     for (const event of surface.events) {
       if (event.type !== 'user/message' || event.data.source.kind !== 'runtime-context' || event.data.source.form !== 'snapshot') continue
       const sections = event.data.source.sections
-      const kept = sections.filter(section => !section.name.startsWith('mbot:') || section.text === turnContext(record))
+      const kept = sections.filter(section => record.lease.snapshot.conversation
+        ? section.name === 'mbot:turn' && section.text === turnContext(record)
+        : !section.name.startsWith('mbot:') || section.text === turnContext(record))
       if (kept.length === sections.length) continue
       updates.push(['user/message', createUserMessage({
         content: [{ type: 'text', text: kept.length ? `<system-reminder>\n${kept.map(section => section.text).join('\n\n')}\n</system-reminder>` : 'Earlier MBot context retired; current context is provided by the managed runtime.' }],

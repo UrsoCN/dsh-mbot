@@ -35,6 +35,10 @@ async function setup(ctx) {
     async handler(invocation) {
       const resolved = await ctx.sessionController.resolveAgent(invocation.agent.id)
       if ('error' in resolved) throw resolved.error
+      const record = ctx.mbot.registry().conversations.find(item => item.sessionId === resolved.agent.id)
+      // Controller's live-Agent shortcut can precede agent/created listeners.
+      // Join the actual Runtime attachment instead of relying on UI timing.
+      await ctx.mbotRuntime.attach(resolved.agent, { botId: record.botId })
       await ctx.mbotRuntime.settled(resolved.agent)
       await ctx.sessions.flush(resolved.agent.session)
       return { kind: 'success', text: JSON.stringify({ registry: ctx.mbot.registry(),
@@ -44,6 +48,7 @@ async function setup(ctx) {
   ctx.commands.register({ name: 'mbot_fixture_domain_mailbox', description: 'Send or retry a disposable authenticated domain envelope.', recordInput: false,
     async handler(invocation) {
       const record = ctx.mbot.registry().conversations.find(item => item.sessionId === invocation.agent.id)
+      await ctx.mbotRuntime.attach(invocation.agent, { botId: record.botId })
       const mailbox = ctx.mbotRuntime.conversationMailbox(invocation.agent, { ...record.source, senderId: 'alice', replyRoute: record.replyRoute })
       try {
         const delivery = await mailbox.send({ requestId: 'gui-domain-message', text: 'Authenticated domain message😀' })

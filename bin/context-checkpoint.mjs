@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Restore context identities from native snapshots AND reachable Git audits.
 import { isDeepStrictEqual } from 'node:util'
-import { contextSnapshotType, contextAuditEvent } from '../plugin/context-state.js'
+import { contextSnapshotType, contextAuditEvent, contextHash } from '../plugin/context-state.js'
 import { contextGit, createGitBatchReader, readKnowledge, sealContextAudit } from '../plugin/context-audit.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
 import { readJournal } from '../plugin/recovery-proof.js'
@@ -90,9 +90,23 @@ try {
         const events = eventsByTurn.get(meta.runtime.turn) ?? []
         const knowledge = await gitBatch.readKnowledge(meta.base_head, meta.bot, conversation)
         const sealed = sealContextAudit(meta, events, workspace, knowledge)
+        let messages = events.filter(event => event.type === 'user/message').map(event => event.data)
+        if (conversation) {
+          // Failed admission may never append user/message. The captured native
+          // Inbox cut is still the initial reply-target authority for that turn.
+          const accepted = new Map()
+          for (const event of log.events) if (event.seq <= snapshot.data.sourceCut.throughSeq && event.type === 'agent/inbox/spliced') {
+            for (const message of event.data.inserted) accepted.set(message.id, message)
+          }
+          messages = snapshot.data.input.map(input => {
+            const message = accepted.get(input.messageId)
+            if (!message || contextHash(message) !== input.hash) throw new Error('Domain reply input is missing from its captured native cut')
+            return message
+          })
+        }
         const result = { head, meta: value, runId: meta.run_id, success: meta.success, outcome: meta.outcome, failureCountEffect: meta.failure_count_effect }
         verifyRecoveryAudit(workspace, { botId, sessionId: log.session.id, turn: meta.runtime.turn, ...(conversation ? { conversation } : {}),
-          ...(meta.runtime.reply ? { messages: events.filter(event => event.type === 'user/message').map(event => event.data) } : {}) }, events, result, meta.runtime.actors,
+          ...(meta.runtime.reply ? { messages } : {}) }, events, result, meta.runtime.actors,
           { meta, parentHash, commitBody: commitBody.replace(/\n$/u, '') + '\n\n', knowledge, sealedContext: sealed })
         if (!isDeepStrictEqual(sealed, meta.runtime.context)) throw new Error('Git context seal contradicts its native snapshot')
         proofs.push({ ...sealed, commit: head, meta: value, actors: meta.runtime.actors, turn: meta.runtime.turn,
@@ -112,7 +126,9 @@ try {
       checkpoint = proof
     }
     process.stdout.write(JSON.stringify({ checkpoint, snapshots: proofs.map(proof => ({ seq: proof.snapshotSeq, hash: proof.snapshotHash })),
-      compactions: proofs.flatMap(proof => proof.compactions ?? []) }) + '\n')
+      compactions: proofs.flatMap(proof => proof.compactions ?? []),
+      ...(conversation ? { domainTurns: proofs.map(proof => ({ turn: proof.turn, startSeq: turnStarts.get(proof.turn).seq,
+        endSeq: turnEnds.get(proof.turn).seq, commit: proof.commit })) } : {}) }) + '\n')
   } else throw new Error('Invalid context checkpoint operation')
 } catch (error) {
   if (error.code === 'MBOT_CONTEXT_OBSERVATION_CHANGED') {

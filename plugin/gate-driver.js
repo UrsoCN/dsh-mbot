@@ -4,6 +4,7 @@ import { botSections, reconcileContext, turnContext } from './context.js'
 import { operationalSource } from './messages.js'
 import { managedCompaction } from './compaction.js'
 import { runtimeCells as cells, gateSchemaVersion } from './runtime-cells.js'
+import { domainPresentation, maskForeignDomainContexts, validateDomainStep, validateDomainSurface, validateDomainRequest } from './domain-context.js'
 
 export const foregroundTools = ['botctl', 'bash', 'read', 'read_image', 'write', 'edit', 'apply_patch', 'glob', 'grep',
   'web_search', 'web_fetch', 'ask_user_question', 'session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
@@ -57,8 +58,10 @@ export function installGates(agent, cell) {
     const state = cell.state
     if (options.purpose === 'compaction' || options.purpose === 'mbot-compaction') {
       const allowMaintenance = Boolean(cell.activeMaintenanceCompaction)
+      if (state?.domainScope) throw new Error('Domain compaction requires its own managed maintenance contract')
       return managedCompaction(requireState(cell, { allowMaintenance }), cell, options, next)
     }
+    if (state?.domainScope) validateDomainRequest(options, requireState(cell), turnContext(state.current))
     return state ? managedCompaction(state, cell, options, next) : next()
   }, { prepend: true })
   const layout = botSections({ role: 'chief', soul: '', protocol: '', memory: '', roleMemory: '' })
@@ -86,32 +89,51 @@ export function installGates(agent, cell) {
     // Diagnostics never acquire a transaction or retain their cancellation.
     if (!input.signal) return next()
     const record = await state.admit(input.signal)
-    const assembled = await next()
-    const owned = new Map(botSections(record.lease.snapshot, { worker: state.worker === true }).map(section => [section.name, section]))
-    return { ...assembled, sections: assembled.sections.map(section => owned.get(section.name) ?? section),
-      contexts: assembled.contexts.map(context => context.name === 'mbot:turn' ? { ...context, text: turnContext(record) } : context) }
+    try {
+      const assembled = await next()
+      if (state.domainScope) {
+        maskForeignDomainContexts(ctx, cell, assembled)
+        return domainPresentation(assembled, record.lease.snapshot, turnContext(record))
+      }
+      const owned = new Map(botSections(record.lease.snapshot, { worker: state.worker === true }).map(section => [section.name, section]))
+      return { ...assembled, sections: assembled.sections.map(section => owned.get(section.name) ?? section),
+        contexts: assembled.contexts.map(context => context.name === 'mbot:turn' ? { ...context, text: turnContext(record) } : context) }
+    } catch (error) {
+      if (state.domainScope) state.parkInput(record, input.signal)
+      throw error
+    }
   }, { prepend: true })
   on('agent/pre-step', async (input, next) => {
     const state = requireState(cell)
     const record = await state.admit(input.signal)
     record.step = input.step
-    // Reassembly verifies the final public result (including complete sections)
-    // and refreshes the head before native automatic compaction sees history.
-    const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: input.signal, modelSelection: input.modelSelection })
-    const changed = await reconcileContext(state.runtime.ctx, agent, assembly, record, input.signal)
-    const decision = await next()
-    if (decision.kind === 'enter') {
-      const claimed = new Map(record.messages.map(message => [message.id, message]))
-      for (const message of decision.messages) {
-        const original = claimed.get(message.id)
-        if (operationalSource(message)) continue
-        if (!original || JSON.stringify(original.source) !== JSON.stringify(message.source)) {
-          state.parkInput(record, input.signal)
-          throw new Error('Pre-step producer bypassed MBot message admission')
+    try {
+      // Reassembly verifies the final public result (including complete sections)
+      // and refreshes the head before native automatic compaction sees history.
+      const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: input.signal, modelSelection: input.modelSelection })
+      const changed = await reconcileContext(state.runtime.ctx, agent, assembly, record, input.signal)
+      if (state.domainScope) validateDomainSurface(await state.runtime.ctx.sessionQuery.readSurface(agent.id), state, record, turnContext(record))
+      const decision = await next()
+      if (decision.kind === 'enter') {
+        if (state.domainScope) {
+          validateDomainStep(decision.messages, record, turnContext(record))
+          return changed ? { ...decision, startsRequestSeries: true } : decision
+        }
+        const claimed = new Map(record.messages.map(message => [message.id, message]))
+        for (const message of decision.messages) {
+          const original = claimed.get(message.id)
+          if (operationalSource(message)) continue
+          if (!original || JSON.stringify(original.source) !== JSON.stringify(message.source)) {
+            state.parkInput(record, input.signal)
+            throw new Error('Pre-step producer bypassed MBot message admission')
+          }
         }
       }
+      return changed && decision.kind === 'enter' ? { ...decision, startsRequestSeries: true } : decision
+    } catch (error) {
+      if (state.domainScope) state.parkInput(record, input.signal)
+      throw error
     }
-    return changed && decision.kind === 'enter' ? { ...decision, startsRequestSeries: true } : decision
   }, { prepend: true })
   guard(exec => {
     try {
