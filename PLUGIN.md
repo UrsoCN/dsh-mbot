@@ -1,6 +1,6 @@
 # Cordis 插件集成与验证
 
-当前基线 `dsh-mbot@0.2.0-rc.1`，Linux/WSL、Node 22+，实测 DSH `0.2.2-rc.5`。本文件维护插件安装、公开入口、生命周期和验证方式；用户操作见 [README](README.md)，架构/规划见 [DESIGN](DESIGN.md)，版本记录见 [RELEASE_NOTE](RELEASE_NOTE.md)。
+当前基线 `dsh-mbot@0.2.0-rc.1`，Linux/WSL、Node 24.9+，实测 DSH `0.2.2-rc.5`。本文件维护插件安装、公开入口、生命周期和验证方式；用户操作见 [README](README.md)，架构/规划见 [DESIGN](DESIGN.md)，版本记录见 [RELEASE_NOTE](RELEASE_NOTE.md)。
 
 ## 安装与资源
 
@@ -47,9 +47,9 @@ npm run test:install
 npm run bench:runtime
 ```
 
-`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、bin/资源及卸载；不使用真实用户 profile。
+`npm test` 执行公开类型、串行 Host/Runtime 和 Bash 回归，普通模型请求用本地 scripted adapter。`test:install` 默认遍历四种模式，也可用 `npm run test:install -- source`（或 `tarball`、`git`、`web-tarball`）单独复跑。它使用真实 DSH installer，在 `/tmp` 隔离 source、tarball、无开发依赖 Git fixture 与 Web tarball，验证元数据、服务/工具/命令、主 Session、事务/恢复/checkpoint、bin/资源及卸载；不使用真实用户 profile。
 
-`bench:runtime` 测量 100/300/1000 轮恢复、Worker 事件与 ignored 快照；`--quick` 供 CI 冒烟。数据及局限见 [Runtime 架构与基准](docs/runtime-architecture.md)。CI 模板见 [ops/ci.yml.example](ops/ci.yml.example)，启用及发布核对见 [发布检查](docs/plugin-standard-review.md)。
+`bench:runtime` 测量 100/300/1000 轮恢复、Worker 事件与 ignored 快照；`--quick` 供 CI 冒烟。数据及局限见 [Runtime 架构与基准](docs/runtime-architecture.md)。仓库已配置 `.github/workflows/ci.yml`：Node 24.9.0 / 24 各执行串行回归与四种安装模式，失败保留日志。随包镜像见 [ops/ci.yml.example](ops/ci.yml.example)，兼容范围与发布核对见 [发布检查](docs/plugin-standard-review.md)。R5 基准暂缓，不纳入本次 CI。
 
 ## 浏览器验收
 

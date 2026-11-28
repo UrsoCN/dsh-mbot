@@ -2,7 +2,7 @@
 
 以 `0.2.0-rc.1` 为当前基线（2026-11-28）。本文件只保留未完成的执行事项；架构、路线依赖和远期大纲以 [DESIGN](DESIGN.md) 为准，已交付事项见 [RELEASE_NOTE](RELEASE_NOTE.md)。R1–R4 及 R5 首批热点优化已移出待办。
 
-## R5：持续运行与性能
+## R5：持续运行与性能 -- 等待稳定发布后考虑集中测试验证
 
 - [ ] 在真实隔离 Bot 连续观察至少 7 天，逐日人工核对预算、nightly 提交/报告、异常和恢复，并保存 `wiki/ops-log.md`；按 [运维验收](docs/operations.md#长期观察验收) 结算。
 - [ ] 验证持续收信下维护准入的公平性，并设计/验收活动回合后的 sleep 调度；当前 sleep 遇活动回合返回 busy，先 stop/等待收尾。
@@ -30,8 +30,9 @@
 
 ## 发布与配套交付
 
-- [ ] 启用 [CI 模板](ops/ci.yml.example) 并补安装矩阵；当前已有模板和快速基准，仓库尚未启用 workflow。按需增加 tag 产物/校验和的 Release Action。
-- [ ] 对齐 `engines.dsh`、固定 peers 和实际测试矩阵；验证旧 `0.1` 数据/profile、登记及配置版本迁移，不覆盖自定义角色/协议。
+- [ ] 推送后确认 `.github/workflows/ci.yml` 的回归与四类安装矩阵在 GitHub 实际通过（PAT 已具备 workflow 权限）；按需增加 tag 产物/校验和的 Release Action。
+- [ ] 验证旧 `0.1` 数据/profile、登记及配置版本迁移，不覆盖自定义角色/协议；Node/DSH 声明与安装矩阵以 [兼容范围](docs/plugin-standard-review.md#兼容范围与-ci) 为准。
+- [ ] 核验上游 DSH 固定 `undici@8.11.2` 的已知漏洞与修复版本兼容性；候选 `0.2.3-alpha.2` 已采用 `undici@8.12.4`，但须验证 SDK/Node 要求与实际 Host 安装，不以本仓库开发环境 override 代替宿主修复。
 - [ ] 完成上述正式版范围的联合回归和发布核对，再推进 `0.2.0`；版本/lock/tag 与验收证据一致，发布规则见 [发布检查](docs/plugin-standard-review.md)。
 - [ ] 验证 Worker 结果文件隔离、数据仓库恢复与原生 Session 丢失的解耦，以及 transcript 月归档/`git gc` 流程。
 - [ ] 打包 mbot skill；将“源”/“u”作为真实 Bot 恢复，tether 等入口复用同一消息门面。

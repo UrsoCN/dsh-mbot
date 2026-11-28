@@ -2,6 +2,17 @@
 # Keyless acceptance of the actual DSH installer and installed Cordis runtime.
 set -Eeuo pipefail
 umask 077
+if (( $# )); then
+  modes=("$@")
+else
+  modes=(tarball source git web-tarball)
+fi
+for mode in "${modes[@]}"; do
+  case $mode in
+    tarball|source|git|web-tarball) ;;
+    *) printf 'Unknown installation mode: %s (expected tarball, source, git or web-tarball)\n' "$mode" >&2; exit 2 ;;
+  esac
+done
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 root=$(mktemp -d /tmp/mbot-plugin-install.XXXXXX)
 trap 'printf "Plugin installation artifacts: %s\n" "$root"' EXIT
@@ -24,10 +35,50 @@ git -C "$root/git-source" commit -qm 'fixture: packaged Git plugin source'
 git_commit=$(git -C "$root/git-source" rev-parse HEAD)
 git clone --bare --no-hardlinks "$root/git-source" "$root/plugin.git" > "$root/git-fixture.log" 2>&1
 cat > "$root/probe.mjs" <<'JS'
-import { writeFile } from 'node:fs/promises'
-import { setImmediate } from 'node:timers/promises'
+import { readFile, writeFile } from 'node:fs/promises'
+import { setImmediate, setTimeout as delay } from 'node:timers/promises'
+import { execFileSync } from 'node:child_process'
+import assert from 'node:assert/strict'
 export const inject = ['mbot', 'mbotRuntime', 'mbotIpc', 'agents', 'llm', 'tools', 'commands', 'pluginManager', 'appExit', 'subprocess']
 export function apply(ctx) { void setImmediate().then(() => probe(ctx)) }
+// /proc can lose an unrelated process between listing and inspection. Retry
+// only a verified exit, preserving evidence and re-entering the public API.
+async function recoverDataTurn(ctx, botId) {
+  const workspace = ctx.mbot.bot({ botId }).workspacePath
+  const evidence = async () => ({
+    head: execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+    status: execFileSync('git', ['-C', workspace, 'status', '--porcelain'], { encoding: 'utf8' }),
+    diff: execFileSync('git', ['-C', workspace, 'diff', 'HEAD', '--binary'], { encoding: 'utf8' }),
+    journal: await readFile(`${workspace}/.mbot/runs/active-turn.json`, 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    }),
+  })
+  const before = await evidence()
+  for (let attempt = 0; ; attempt++) {
+    try { return await ctx.mbot.recoverTurn({ botId }) }
+    catch (error) {
+      const pid = /Cannot inspect possible writer pid (\d+)/u.exec(error.message)?.[1]
+      if (!pid || attempt >= 3) throw error
+      let exited = false
+      const deadline = Date.now() + 500
+      while (Date.now() < deadline) {
+        try {
+          const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+          if (stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/u)[0] === 'Z') { exited = true; break }
+        } catch (inspection) {
+          if (inspection.code === 'ENOENT') { exited = true; break }
+          throw error
+        }
+        await delay(20)
+      }
+      if (!exited) throw error
+      const after = await evidence()
+      // Do not let an assertion serialize the journal's private permit token.
+      assert.ok(Object.keys(before).every(key => before[key] === after[key]), 'Recovery refusal changed installation evidence')
+    }
+  }
+}
 async function probe(ctx) {
   try {
     await setImmediate()
@@ -66,9 +117,9 @@ async function probe(ctx) {
     const interrupted = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 2, request: 'installed recovery' })
     interrupted.child.stdin.end()
     await interrupted.child.done
-    const recovered = await ctx.mbot.recoverTurn({ botId: bot.botId })
+    const recovered = await recoverDataTurn(ctx, bot.botId)
     if (recovered.kind !== 'recovered' || !recovered.needed || recovered.success) throw new Error('installed recovery failed')
-    if ((await ctx.mbot.recoverTurn({ botId: bot.botId })).needed) throw new Error('installed recovery was not idempotent')
+    if ((await recoverDataTurn(ctx, bot.botId)).needed) throw new Error('installed recovery was not idempotent')
     if ((await ctx.mbot.execute('mbot', ['resume'])).exitCode) throw new Error('installed recovery cannot resume')
     const { createRequire } = await import('node:module')
     const { realpath } = await import('node:fs/promises')
@@ -177,7 +228,7 @@ async function probe(ctx) {
   }
 }
 JS
-for mode in tarball source git web-tarball; do
+for mode in "${modes[@]}"; do
   case $mode in
     tarball|web-tarball) spec=$tarball ;;
     source) spec=$repo ;;

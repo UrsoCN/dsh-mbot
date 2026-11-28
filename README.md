@@ -15,7 +15,7 @@ DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记�
 
 ## 安装
 
-支持 Linux/WSL 本地环境，Node.js 22+；当前实测 DSH `0.2.2-rc.5`。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8，先配置 Git 姓名/邮箱。
+支持 Linux/WSL 本地环境，Node.js 24.9+；当前实测 DSH `0.2.2-rc.5`。需要 Bash 4.3+、Git、jq、flock、awk、GNU coreutils 和 C.UTF-8，先配置 Git 姓名/邮箱。
 
 ```bash
 # 源码目录安装
@@ -120,7 +120,7 @@ npm run test:install
 npm run bench:runtime
 ```
 
-默认回归使用隔离数据与本地 scripted adapter，Host/Runtime 文件串行执行；安装覆盖源码链接、tarball、Git fixture 与 Web tarball。真实模型、GUI 和长跑按需另验，不能由类型/schema 检查替代。浏览器与恢复的全进程核验不要并行，复跑命令及环境见 [PLUGIN](PLUGIN.md)。
+默认回归使用隔离数据与本地 scripted adapter，Host/Runtime 文件串行执行；安装覆盖源码链接、tarball、Git fixture 与 Web tarball。仓库 CI 在 Node 24.9.0 和 24 系列分别执行回归与安装矩阵，DSH 固定为 0.2.2-rc.5。真实模型、GUI 和长跑按需另验，不能由类型/schema 检查替代。浏览器与恢复的全进程核验不要并行，复跑命令及环境见 [PLUGIN](PLUGIN.md)。
 
 规划新增和范围调整先更新 [DESIGN](DESIGN.md)，可执行事项列入 [TODO](TODO.md)，交付后归入 [RELEASE_NOTE](RELEASE_NOTE.md)。模块契约见 [文档索引](docs/README.md)，早期验收合并保存在 [历史档案](docs/archive/0.1-acceptance.md)。
 

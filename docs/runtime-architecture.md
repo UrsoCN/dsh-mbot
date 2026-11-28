@@ -50,5 +50,5 @@
 
 ## CI 与验证
 
-- 新增 CI 模板 [ops/ci.yml.example](../ops/ci.yml.example)（尚未启用仓库 workflow；具备目标仓库的 workflow 写权限后再安装）：在 Node 22 上运行 `check:types`、`bash tests/run.sh`、串行 `plugin.test.js` + `runtime.test.js`、`npm pack` 产物审查与 `bench-runtime.mjs --quick`。
+- rc.1 提供 CI 模板；正式版准备阶段已配置 `.github/workflows/ci.yml` 与 [随包模板](../ops/ci.yml.example)，Node 24.9.0 / 24 各执行类型、Bash、串行 Host/Runtime 和四类安装矩阵。R5 额外性能验证暂缓，以上历史基准保留。
 - 合成基准用于定位热点，不替代完整审计路径、四类安装与真实浏览器验收。
