@@ -26,8 +26,9 @@ Config.registry 是 profile-owned 的单个 volatile 文档：
 
 | 字段 | 内容 |
 |---|---|
-| schemaVersion / revision | 2（兼容读取 v1） / 每次修改递增，用于迁移和并发保存检查 |
+| schemaVersion / revision | 开发分支为 3（兼容读取 v1/v2；rc.1 为 v2） / 每次修改递增，用于迁移和并发保存检查 |
 | retiredBots | 不可变的 Bot 登记快照、全部旧 Session ID 及退役时间 |
+| conversations | v3 新增的域身份、来源权限和 Session 预留；当前只允许 reserved，见 [conversation 契约](conversations.md) |
 | selectedBotId | 此 profile 的默认实例，可为 null |
 | bots[].schemaVersion / botId | 1 / 稳定 bot-UUID |
 | name / workspacePath / defaultRole / createdAt | 名称、真实目录、角色及 ISO 时间 |
@@ -38,7 +39,7 @@ Config.registry 是 profile-owned 的单个 volatile 文档：
 
 创建/导入/选择/注销在当前 Host 内串行；ConfigEditor 提供 profile 文件锁、最新值重读、验证、原子写入和 Loader reconciliation。传 revision 的管理调用拒绝旧页面保存；只登记的导入重试复用已有身份且不增加 revision；原生绑定各阶段按实际状态更新 revision。初始化成功后的目录与登记/默认选择在一次配置编辑中保存，期间的新选择不被覆盖。失败保留此前状态，已建仓库而保存失败明确报告部分成功。
 
-业务操作选择顺序为显式 botId → 调用 Session 的已存 mainSessionId 绑定 → profile selectedBotId → 旧 workspace/Bash 来源。已绑定 A 的操作不会因另一窗口选择 B 而重定向；原生工具在权限等待前捕获目录。运行参数、选项与目录按调用固定，不写可变全局 process.env。Bash CLI 继续使用 -C/MBOT_WS/用户配置，不读取 DSH profile。
+业务操作选择顺序为显式 botId → 调用 Session 的持久绑定 → profile selectedBotId → 旧 workspace/Bash 来源。持久绑定包括主/预留 Session 和 v3 conversation；后者当前只确定归属，数据工具与管理命令继续拒绝。已绑定 A 的操作不会因另一窗口选择 B 而重定向；原生工具在权限等待前捕获目录。运行参数、选项与目录按调用固定，不写可变全局 process.env。Bash CLI 继续使用 -C/MBOT_WS/用户配置，不读取 DSH profile。
 
 Session 绑定路由已接入实际工作区/主 Session，跨进程数据锁、预留 Agent 接管、部分失败修复和实体校验见 [主会话](main-session.md)。注销与持久旧 Session 闸门见 [Bot 退役](bot-removal.md)；原生工作区删除不会自动注销身份。前台 Runtime journal 已接入 [协调恢复](runtime-recovery.md)，[checkpoint](context-checkpoints.md) 与 [睡眠维护](sleep-wake.md) 已交付；其他未支持写者仍按契约拒绝。
 

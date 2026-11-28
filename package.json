@@ -67,6 +67,7 @@
     "test:real-compaction": "bash tests/real-compaction.sh",
     "test:runtime": "node --test tests/runtime.test.js",
     "test:gui-runtime": "node tests/gui-runtime.mjs",
+    "test:gui-conversations": "node tests/gui-conversations.mjs",
     "test:gui-compaction": "node tests/gui-compaction.mjs",
     "test:gui-migration": "node tests/gui-migration.mjs",
     "test:gui-handoff": "node tests/gui-handoff.mjs",

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { isDeepStrictEqual } from 'node:util'
 import { BotRegistry, emptyRegistry, findBot, revise } from './instances.js'
+import { botSessionIds } from './conversations.js'
 
 /** Registry retirement also works when the data directory has gone missing. */
 async function withDataLock(host, bot, operation) {
@@ -49,7 +50,7 @@ export async function removeBot(host, identity, options) {
   return withDataLock(host, bot, async () => {
     check()
     if ([...host.leases].some(lease => lease.identity.botId === bot.botId && !lease.transportEnded)) throw new Error('Bot turn is busy; stop and settle it before removal')
-    const ids = [bot.mainSessionId, bot.binding?.pendingSessionId].filter(Boolean)
+    const ids = botSessionIds(host.registry(), bot)
     const runtime = host.ctx.get('mbotRuntime')
     if (ids.length && !runtime) throw new Error('Bound Bot removal requires MBot Runtime')
     check()

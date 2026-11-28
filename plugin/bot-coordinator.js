@@ -2,6 +2,7 @@
 // Single Bot maintenance operations (manual compact, sleep/wake, removal, recovery)
 // serialize through this layer without creating a second model queue.
 import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+import { botSessionIds } from './conversations.js'
 
 export class BotCoordinator {
   constructor(runtime) {
@@ -119,7 +120,7 @@ export class BotCoordinator {
     if (states.some(state => state.closing || state.retiring || state.agent.status !== 'idle' || state.current && !state.current.settled)) throw new Error('Bot is busy; stop and settle its current turn before removal')
     for (const state of states) state.retiring = true
     runtime.removals.add(botId)
-    const sessionIds = [...new Set([bot.mainSessionId, bot.binding?.pendingSessionId, ...states.map(state => state.agent.id)].filter(Boolean))]
+    const sessionIds = [...new Set([...botSessionIds(runtime.ctx.mbot.registry(), bot), ...states.map(state => state.agent.id)])]
     const handles = []
     let committed = false, verified = false
     return {

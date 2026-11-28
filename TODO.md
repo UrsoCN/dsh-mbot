@@ -12,7 +12,7 @@
 
 ## P1：对话域、消息与写者扩展
 
-- [ ] 实现持久 conversation 绑定、来源权限及记忆可见域过滤；覆盖多窗口、不同用户/群/线程，过滤接齐后才开放额外域。
+- [ ] 在 [conversation 预留基线](docs/conversations.md) 上接通记忆/工具可见域、原生实体激活、逐域消息与 checkpoint/摘要/维护；覆盖不同用户/群/线程及跨域拒绝，完整验收后才开放额外域。
 - [ ] 接入真实 IM 适配器：所有者专用私聊可绑定主 Session，群/其他用户隔离；验证 QQ `@alias`、附件/路由恢复和回复不串域。
 - [ ] 实现按已验证 replyRoute 的 outbox、ack 与投递不确定状态；覆盖 IM 重试、断连和提交前/后崩溃。
 - [ ] 接入独立 Bot 的异步 peer 信封、目标权限、correlation/causation 与 hops/TTL；验证 A/B 互相请求不持锁等待。

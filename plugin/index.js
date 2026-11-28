@@ -10,6 +10,8 @@ import { openTurn } from './turn.js'
 import { nativeBindingAvailable, provisionBinding, resolveBinding, sessionResult } from './binding.js'
 import { removeBot } from './removal.js'
 import { recoverSelected } from './runtime-recovery.js'
+import { conversationAccess, conversationKey, reserveConversationRecord, authorizeConversationSource, conversationForSession, botSessionIds } from './conversations.js'
+import { isDeepStrictEqual } from 'node:util'
 
 export const name = 'mbot'
 export const inject = ['subprocess']
@@ -51,7 +53,7 @@ export class MBotService extends Service {
     const registry = this.registry()
     if (options.botId !== undefined) return findBot(registry, options.botId)
     if (options.sessionId && registry.retiredBots.some(entry => entry.sessionIds.includes(options.sessionId))) throw new Error('Bot was removed; choose an active Bot explicitly')
-    const bound = options.sessionId === undefined ? undefined : registry.bots.find(bot => bot.mainSessionId === options.sessionId || bot.binding?.pendingSessionId === options.sessionId)
+    const bound = options.sessionId === undefined ? undefined : registry.bots.find(bot => botSessionIds(registry, bot).includes(options.sessionId))
     return bound ?? (registry.selectedBotId === null ? undefined : findBot(registry, registry.selectedBotId))
   }
 
@@ -85,6 +87,45 @@ export class MBotService extends Service {
     })
     this.initializing = pending.catch(() => {})
     return pending
+  }
+
+  /** Reserve durable ownership only; visibility-aware execution is a separate stage. */
+  async reserveConversation(identity, input, options = {}) {
+    const access = conversationAccess(input)
+    options = { ...options }
+    return this.manage(async () => {
+      const { editor, entry } = this.configurationEntry()
+      let saved
+      await editor.edit(entry, current => {
+        options.signal?.throwIfAborted()
+        if (this.closed) throw new Error('mbot plugin is disposed')
+        const registry = BotRegistry(current.registry ?? emptyRegistry)
+        if (options.revision !== undefined && registry.revision !== options.revision) throw new Error('Bot registry changed; reload before saving')
+        const bot = findBot(registry, identity)
+        const key = conversationKey(access.source)
+        saved = registry.conversations.find(item => item.botId === bot.botId && item.conversationKey === key)
+        if (saved) {
+          if (!isDeepStrictEqual({ source: saved.source, allowedSenders: saved.allowedSenders, replyRoute: saved.replyRoute }, access)) throw new Error('Conversation permission or reply route changed; existing ownership retained')
+          return current
+        }
+        saved = reserveConversationRecord(bot.botId, access)
+        return { ...current, registry: revise(registry, { conversations: [...registry.conversations, saved] }) }
+      })
+      return structuredClone(saved)
+    })
+  }
+
+  conversation(identity, source) {
+    const registry = this.registry(), bot = findBot(registry, identity)
+    const key = conversationKey(source)
+    return structuredClone(registry.conversations.find(item => item.botId === bot.botId && item.conversationKey === key))
+  }
+
+  authorizeConversation(identity, attestation) {
+    const { senderId, replyRoute, ...source } = attestation
+    const record = this.conversation(identity, source)
+    if (!record) throw new Error('Conversation source has no persistent permission')
+    return authorizeConversationSource(record, { ...source, senderId, replyRoute })
   }
 
   async importBot(directory, options = {}) {
@@ -211,6 +252,7 @@ export class MBotService extends Service {
 
   async execute(program, args, options = {}) {
     if (this.closed) throw new Error('mbot plugin is disposed')
+    if (conversationForSession(this.registry(), options.sessionId)) throw new Error('Reserved conversation has no data tool or management permission')
     if (!['mbot', 'botctl'].includes(program)) throw new Error('unknown mbot executable')
     if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) throw new Error('invalid mbot arguments')
     args = [...args]
@@ -262,6 +304,7 @@ export class MBotService extends Service {
 
   beginTurn(options) {
     if (this.closed) return Promise.reject(new Error('mbot plugin is disposed'))
+    if (conversationForSession(this.registry(), options.sessionId)) return Promise.reject(new Error('Reserved conversation requires memory and tool visibility filtering before execution'))
     const bot = this.bot(options)
     if (!bot) return Promise.reject(new Error('Managed turn requires a registered Bot'))
     return openTurn(this, packageRoot, bot, { ...options })

@@ -264,7 +264,7 @@ for mode in "${modes[@]}"; do
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" run_logged "$root/$mode.runtime.log" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}"
   jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|test("^[0-9]{3,9}")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
-  jq -e '.registry.schemaVersion==2 and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
+  jq -e '.registry.schemaVersion==3 and .registry.conversations==[] and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
   installed_task_id=$(jq -r '.output | rtrimstr("\n")' "$root/$mode.result.json")

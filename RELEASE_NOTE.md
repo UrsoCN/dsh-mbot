@@ -22,6 +22,13 @@
 - 安装任务显式安装 `pnpm@12.23.0`；脚本在创建 profile 前检查依赖，安装/启动/卸载失败时输出日志末尾并保留退出码。checkout/setup-node/upload-artifact 更新为固定 commit 的 v6（Node 24 runtime），同步随包模板和安装说明。
 - 本地在 `bed565a` 的独立副本中仅应用 CI 安装脚本修复，使用隔离 PATH、DSH `0.2.2-rc.5` 和新安装的 pnpm `12.23.0`，Node 24.9.0 / 24.22.3 各通过四类安装（`/tmp/mbot-plugin-install.ET5UGn`、`/tmp/mbot-plugin-install.0jSwgl`）。缺失依赖/失败退出码、`actionlint`、Bash 语法、324 条文档链接和包资源检查通过。未混入在途 P1 功能，也未重复完整业务回归；修复后的 GitHub 实际运行仍待推送验收。
 
+### Conversation 身份与权限预留
+
+- registry v3 兼容 v1/v2，持久保存不同用户/群/线程/peer 的来源、发送者许可、回复路线与稳定 Session ID；ConfigEditor 保存支持并发 revision、幂等和失败保留，既有归属不能重置、降级或改绑。预留记录随 Bot 退役保留，详见 [conversation 模块](docs/conversations.md)。
+- 本阶段只提供 `reserved` 基础，不创建原生实体或开放额外域执行。已物化的预留 Session 自动取得 Runtime 闸门，拒绝模型、数据工具、摘要和所有者命令；拒绝时 Inbox 保留，Runtime 重载和 Host 崩溃恢复后仍受同一身份约束。记忆/工具可见域、实际激活与逐域消息仍在 P1。
+- Node 24.9.0 完整回归通过：204 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash。随后补充状态与 Unicode 边界校验，类型及 8 项相关测试通过。安装曾发现字符串长度约束不能导出为 DSH JSON Schema，改为字符正则后，源码/tarball/Git/Web tarball 四类安装全部通过（`/tmp/mbot-plugin-install.gzHj4d`）。
+- tarball Web GUI 验收通过双窗口拒绝、所有者命令拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复及私人主 Session 续聊，已检查实际渲染截图（`/tmp/mbot-gui-conversations.aUpXKJ`）。独立子进程测试同时核验持久 Inbox 字节和零模型调用；显式 Agent dispose 会由 DSH 取消队列，不作为崩溃替代。日志见 `/tmp/dsh-mbot-conversations-full.log`、`/tmp/dsh-mbot-conversations-test-final.log`、`/tmp/dsh-mbot-conversations-install-final.log`、`/tmp/dsh-mbot-conversations-gui.log`。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

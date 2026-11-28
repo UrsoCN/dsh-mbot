@@ -190,6 +190,139 @@ async function app(t, script, options = {}) {
 
 async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntime.settled(agent) }
 
+const conversationAccess = (spaceId = 'group-a') => ({ source: { adapterId: 'test-adapter', platform: 'qq',
+  accountId: 'bot-account', spaceId, threadId: null, visibility: 'group', principalId: null },
+  allowedSenders: ['alice'], replyRoute: `${spaceId}-route` })
+
+test('reserved conversations retain input across Runtime reload and remain gated after explicit disposal/resume', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent: main, owner, requests } = await app(t, () => response('private main response'), { main: true, persistence: true, compaction: 'scoped' })
+  const registration = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
+  assert.equal(ctx.agents.get(registration.sessionId), undefined, 'reservation does not create a native Agent')
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const created = await ctx.agents.create({ sessionId: registration.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  const agent = created.agent
+  assert.ok(ctx.mbotRuntime.managed(agent))
+  assert.equal(ctx.mbotRuntime.states.get(agent).conversation.visibility, 'group')
+  assert.equal(ctx.mbotRuntime.states.get(agent).conversation.conversationId, registration.conversationId)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+  agent.followup(message('group queued input'))
+  await settle(ctx, agent)
+  assert.equal(requests.length, 0)
+  assert.equal(ctx.mbot.leases.size, 0)
+  assert.equal(agent.inbox.nextTurn.length, 1)
+  assert.equal(await ctx.mbotRuntime.checkpoint(agent), null)
+  await assert.rejects(ctx.mbotRuntime.compact(agent), /visibility filtering/u)
+  assert.throws(() => ctx.mbotRuntime.ownerMailbox(agent, { visibility: 'owner-private', adapterId: 'test-adapter',
+    ownerId: 'alice', conversationKey: 'main', replyRoute: 'owner-route' }), /main Session/u)
+  const tool = await ctx.tools.execute({ agent, calls: [{ type: 'tool-call', id: 'denied-domain', name: 'botctl',
+    arguments: JSON.stringify({ action: 'boot' }) }], signal: new AbortController().signal })
+  assert.equal(tool.results[0].result.isError, true)
+  assert.ok(!JSON.stringify(tool).includes('# MBot role'))
+  await owner.dispose()
+  agent.followup(message('input while Runtime absent'))
+  await agent.whenIdle()
+  assert.equal(agent.inbox.nextTurn.length, 2)
+  await ctx.plugin(runtime, { workers: false })
+  assert.equal(ctx.mbotRuntime.states.get(agent).conversation.state, 'reserved')
+  assert.equal(ctx.mbotRuntime.coordinator.conversationSessions(bot.botId)[registration.conversationKey], agent.id)
+  await created.dispose()
+  const resumed = await ctx.agents.resume({ resumeSessionId: registration.sessionId,
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  assert.ok(ctx.mbotRuntime.managed(resumed.agent))
+  assert.equal(resumed.agent.inbox.nextTurn.length, 0, 'Explicit native handle disposal durably discards pending input')
+  resumed.agent.followup(message('second window input after resume'))
+  await settle(ctx, resumed.agent)
+  assert.equal(resumed.agent.inbox.nextTurn.length, 1)
+  assert.equal(requests.length, 0)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  await assert.rejects(readFile(join(ws, '.mbot/runs/active-turn.json')), { code: 'ENOENT' })
+  const log = await ctx.sessionQuery.readSession(resumed.agent.id)
+  assert.ok(!log.events.some(event => event.type === contextSnapshotType || event.type === 'assistant/message'))
+  main.followup(message('private main remains usable'))
+  await settle(ctx, main)
+  assert.equal(requests.length, 1)
+  assert.ok(JSON.stringify(requests[0]).includes('# MBot role: chief'))
+  assert.ok(!JSON.stringify(requests[0]).includes('group queued input'))
+})
+
+test('cold Host restart restores reserved ownership and flushed native Inbox after SIGKILL', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot } = await app(t, () => response('must not run'))
+  const record = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
+  const config = join(root, `conversation-config-${++sequence}.json`)
+  const storage = join(root, `conversation-native-${sequence}`)
+  await writeFile(config, JSON.stringify({ workspace: ws, registry: ctx.mbot.registry() }))
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const run = mode => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./conversation-host.mjs', import.meta.url)), mode, config, storage],
+      { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = '', ready
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Conversation Host startup timed out')) }, 10000)
+    t.after(() => { clearTimeout(timer); if (child.exitCode === null) child.kill('SIGKILL') })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+      const line = stdout.split('\n').find(line => line.startsWith('CONVERSATION_READY '))
+      if (!ready && line && stdout.includes(line + '\n')) {
+        try { ready = JSON.parse(line.slice('CONVERSATION_READY '.length)); child.kill('SIGKILL') }
+        catch (error) { child.kill('SIGKILL'); reject(error) }
+      }
+    })
+    child.on('error', reject)
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer)
+      if (signal !== 'SIGKILL' || !ready) reject(new Error(`Conversation Host exited ${code}/${signal}: ${stderr}`))
+      else resolve(ready)
+    })
+  })
+  const first = await run('create'), second = await run('resume')
+  assert.deepEqual(first.record, record)
+  assert.deepEqual(second.record, record)
+  assert.equal(second.sessionId, first.sessionId)
+  assert.deepEqual(second.descriptor, first.descriptor)
+  assert.equal(second.descriptor.state, 'reserved')
+  assert.deepEqual(first.before, [])
+  assert.deepEqual(second.before, [first.pending[0].id])
+  assert.deepEqual(second.pending.map(item => item.text), ['input-create', 'input-resume'])
+  for (const result of [first, second]) {
+    assert.equal(result.requests, 0); assert.equal(result.modelEvents, 0); assert.equal(result.leases, 0)
+  }
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+})
+
+test('retiring a Bot preserves active and cold conversation reservations and prevents reassignment', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, agent: main, requests } = await app(t, () => response('must not run'), { main: true, persistence: true })
+  const active = await ctx.mbot.reserveConversation(bot.botId, conversationAccess('active-group'))
+  const cold = await ctx.mbot.reserveConversation(bot.botId, conversationAccess('cold-group'))
+  const handle = await ctx.agents.create({ sessionId: active.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  class Controller extends Service {
+    constructor(ctx) { super(ctx, 'sessionController') }
+    async resolveAgent(id) {
+      assert.ok([main.id, active.sessionId].includes(id))
+      return { agent: ctx.agents.get(id) }
+    }
+  }
+  await ctx.plugin(Controller)
+  handle.agent.followup(message('retain after retirement'))
+  await settle(ctx, handle.agent)
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const removed = await ctx.mbot.removeBot(bot.botId)
+  assert.deepEqual(new Set(removed.sessionIds), new Set([main.id, active.sessionId, cold.sessionId]))
+  assert.deepEqual(ctx.mbot.registry().conversations, [active, cold])
+  handle.agent.followup(message('blocked retired group'))
+  await handle.agent.whenIdle()
+  assert.equal(handle.agent.inbox.nextTurn.length, 2)
+  const fresh = await ctx.mbot.importBot(ws, { name: 'Fresh identity' })
+  await assert.rejects(ctx.mbotRuntime.attach(handle.agent, { botId: fresh.botId }), /removed|Removed/u)
+  await assert.rejects(ctx.mbot.reserveConversation(bot.botId, conversationAccess('new-group')), /removed/u)
+  assert.throws(() => ctx.mbot.workspace({ sessionId: cold.sessionId }), /removed/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(requests.length, 0)
+})
+
 test('failed native creation drains attachment work without waiting on its own publication', { timeout: 15000 }, async t => {
   let failedId, failedAgent
   const { ctx, ws, bot, requests } = await app(t, () => response('must not run during failed publication'), {

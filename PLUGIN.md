@@ -73,6 +73,7 @@ npm run test:gui
 |---|---|
 | `test:gui` | tarball 安装、命令反馈、目录保存、多窗口/刷新/重启、无业务模型调用 |
 | `test:gui-runtime` | 主 Session、审计/停止、队列、晚到写者及 Worker 崩溃恢复 |
+| `test:gui-conversations` | tarball 安装、域预留拒绝、双窗口、刷新/Host 重启、私人主 Session 续聊 |
 | `test:gui-compaction` | 原生摘要、Git checkpoint、刷新和维护闸门 |
 | `test:gui-handoff` | 实际 Runtime 模块替换、原主 Session 与故障证明保留 |
 | `test:gui-migration` | 隔离旧安装包、只读旧回合迁移及同 Session 后续对话 |

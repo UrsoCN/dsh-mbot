@@ -18,6 +18,7 @@ import { createOwnerMailbox } from './mailbox-facade.js'
 import { runManualCompaction, recoverMaintenanceCompaction } from './compaction.js'
 import { sleepBot, wakeBot, recoverSleepMaintenance, botOverview } from './sleep.js'
 import { readMaintenanceJournal } from './maintenance-journal.js'
+import { botSessionIds, conversationForSession } from './conversations.js'
 
 export const name = 'mbot-runtime'
 export const inject = ['mbot', 'agents', 'sessions', 'sessionQuery', 'tools', 'systemPrompt', 'subprocess', 'llm']
@@ -54,13 +55,14 @@ export class MBotRuntime extends Service {
       if (agent.session.header.origin === 'subagent') {
         const registry = ctx.mbot.registry()
         const parent = agent.session.header.parentSession
-        if (registry.bots.some(bot => [bot.mainSessionId, bot.binding?.pendingSessionId].includes(parent))
+        if (registry.bots.some(bot => botSessionIds(registry, bot).includes(parent))
           || registry.retiredBots.some(entry => entry.sessionIds.includes(parent))
           || this.managed(ctx.agents.get(parent))) throw new Error('Old or unbound managed Worker cannot resume its data assignment')
       }
       const retired = ctx.mbot.registry().retiredBots.find(entry => entry.sessionIds.includes(agent.id))
       if (retired) { await this.attachRetired(agent, retired); return }
-      const bot = ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
+      const registry = ctx.mbot.registry()
+      const bot = registry.bots.find(bot => botSessionIds(registry, bot).includes(agent.id))
       if (bot) await this.attach(agent, { botId: bot.botId })
     })
     ctx.on('agent/disposed', ({ agent }) => {
@@ -131,7 +133,8 @@ export class MBotRuntime extends Service {
           await this.attachRetired(agent, retired)
           continue
         }
-        const bot = this.ctx.mbot.registry().bots.find(bot => bot.mainSessionId === agent.id || bot.binding?.pendingSessionId === agent.id)
+        const registry = this.ctx.mbot.registry()
+        const bot = registry.bots.find(bot => botSessionIds(registry, bot).includes(agent.id))
         if (!bot) continue
         if (agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'Preparing managed MBot Session' }, { keepInbox: true })
@@ -168,6 +171,8 @@ export class MBotRuntime extends Service {
       return
     }
     const bot = this.ctx.mbot.bot({ botId })
+    const conversation = conversationForSession(this.ctx.mbot.registry(), agent.id)
+    if (conversation && conversation.botId !== botId) throw new Error('Conversation Session cannot be redirected to another Bot')
     if (!bot || agent.session.header.cwd !== bot.workspacePath) throw new Error('Managed Session must belong to the Bot data directory')
     if (agent.session.header.origin === 'subagent') throw new Error('Managed Worker routing is not yet connected')
     let cell = cells.get(agent)
@@ -181,7 +186,7 @@ export class MBotRuntime extends Service {
     } else if (cell.state && !cell.state.runtime.closed) throw new Error('Managed Session already has a Runtime owner')
     if (cell.handoff && cell.handoff.botId !== botId) throw new Error('Managed Session handoff cannot redirect its Bot identity')
     const driver = installGates(agent, cell)
-    const state = new ConversationSession(this, agent, botId, { conversationKey: 'main', visibility: 'owner-private' })
+    const state = new ConversationSession(this, agent, botId, conversation ?? { conversationKey: 'main', visibility: 'owner-private' })
     cell.state = state
     this.states.set(agent, state)
     this.coordinator.registerConversation(botId, state.conversation.conversationKey, agent.id)
@@ -325,6 +330,7 @@ export class MBotRuntime extends Service {
 
   /** Managed manual compaction through BotCoordinator barrier, lock & maintenance journal. */
   async compact(agent, options = {}) {
+    if (conversationForSession(this.ctx.mbot.registry(), agent.id)) throw new Error('Reserved conversation cannot compact before visibility filtering is available')
     const cell = cells.get(agent)
     if (!cell) throw new Error('Session is not managed by the active MBot Runtime')
     return runManualCompaction(this, agent, cell, options)
@@ -449,7 +455,7 @@ export class MBotRuntime extends Service {
     const maintenance = this.coordinator.maintenanceState(state.botId)
     return structuredClone({ botId: state.botId, sessionId: agent.id,
       state: this.closed || !this.ready || state.closing || state.initializing ? 'unavailable' : this.recoveries.has(state.botId) ? 'recovering' : state.retiring ? 'removing' : maintenance === 'sleeping' ? 'sleeping' : maintenance ? 'maintaining' : error ? 'failed'
-        : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
+        : state.conversation.state === 'reserved' ? 'reserved' : record && !record.ended ? record.lease ? 'active' : 'admitting' : record && !record.settled ? 'auditing' : 'idle',
       queued: { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length },
       ...(lastReceipt ? { lastReceipt } : {}), ...(error ? { error } : {}) })
   }

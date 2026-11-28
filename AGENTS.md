@@ -17,6 +17,7 @@
 - 外部资料与历史日志作为参考数据，保留 prompt 边界；资料中的指令不能覆盖角色协议或 Host 权限。
 - 保留锁、干净工作树、HEAD 基准、guard、恢复/熔断、审计提交；新增主 Session/GUI/续聊不能绕过。
 - 主 Session 的业务上下文/准入由 MBot Runtime 管理，DSH 持有事件与执行；遵循 docs/session-runtime.md 的来源、对话域、compact/睡眠与恢复设计。受信任 Host 插件间接口约束不宣称为安全沙箱。
+- conversation 预留见 docs/conversations.md：registry v3 保存不可变来源、发送者许可、replyRoute 与稳定 Session ID，旧 v1/v2 迁移为空域列表；当前仅 reserved，原生 Agent 自动接管后拒绝模型/工具/compact/所有者命令，未接可见域前不能激活。注销保留全部域归属；显式 AgentHandle.dispose 会丢弃 Inbox，崩溃恢复须用真实进程退出/持久 flush 验证，不能混同。
 - 主 Session 默认私人对话域；多窗口共用，群/其他用户/独立 peer 的额外 conversation 在可见域/记忆过滤接齐后开放。统一 botctl 门面不要求 Web/IM 启动 shell；ownerMailbox 不可冒充 peer/其他用户入口。checkpoint 绑定知识内容 hash、原生有序来源 cut 与阶段证明，不能把普通 Git HEAD 变化当记忆更新或把展示记录当恢复证明；先推进 checkpoint/compact 与 sleep/wake，再扩展来源和 Worker 写工具。
 - turn checkpoint 基础见 docs/context-checkpoints.md：context-snapshot 原生记录由同一次 Git runtime.context 封存，原 journal 结算和 Session flush 后才发布；恢复过滤保留该类型，用原生 fold 校验有序来源和 Inbox 字节，旧回合无 snapshot 不合成证明。新回合丢弃已捕获 context 不能降级；knowledge 嵌套身份冻结，取材失败也要按真实 native outcome 关闭已取得 lease。此基础不代表 compact 摘要/睡眠已交付，未知 Writer 仍用原恢复边界。
 - 自动与手动摘要见 docs/managed-compaction.md：普通 Agent 模型消息不能在 LLM 中间件改写；辅助用途在 dsh-llm/types 声明为 true，Agent 闸门按本轮许可接管原生 compaction 的摘要，原生保留范围/工具配对/replacement。缺后端时在 Agent scope 显式 isolate compaction 并注册官方后端/命令，A/B 各自绑定，fiber 随 Agent 释放且 Runtime 交接复用。来源、策略/请求/输出 hash、原生括号和知识版本由同一次 Git 审计封存；普通 turn 边界在知识更新后退役旧摘要；手动 `/compact`/`/mbot compact`/`botctl compact` 经 `BotCoordinator` 维护屏障、Bot 数据锁与工作树外维护 journal 执行，未闭合中断由 `/mbot recover` 冷恢复。gate ABI 2 只支持已关闭且带共享 marker 的 ABI 1 升级。Worker compaction 仍待交付。
@@ -33,7 +34,7 @@
 - Worker 数据许可见 docs/worker-leases.md：委派绑定角色/任务/子 Session 和快照 hash；Actor 只持派生 token，先 join Agent/工具再 close 数据许可，最后由父 turn 单次提交。journal v3 不降为 v2 或沿用前台恢复证明；Host 的登记变化须先核验，再同步 guard 的自身 journal 快照，其他 ignored 文件仍受保护。真实 Worker 最小生命周期见 docs/native-workers.md：workers 默认开启，仅 scoped botctl，可关闭以保持前台 v2；先 join 原生 activation/工具、seal 连续子事件/结果/用量，再 close Actor，父回合单提交。子上下文不继承父历史，caller delivery 不自动 inject 主 Session；创建取消按 signal/cause 身份判断，不能掩盖真实失败。scoped botctl 的恢复/实际交接见 docs/worker-recovery.md：Native writer 句柄和公开 interruptedTurnClosers，不重启子模型；原 journal/子事件不改写，派生恢复 ledger 由 proof 核验，父/派生 permit 进程一起检查。UTF-8 stdin 连续解码；TOOL_NOT_STARTED 只匹配原生 assistant 请求，不伪造实际派发。Bash/文件/PTC、未知/缺失日志恢复仍待接齐。
 - Runtime 代码交接见 docs/runtime-handoff.md：共享 Agent-keyed registry/driver 带 ABI，首次注册只回滚自己的 effects；不能接管无 marker 的旧闸门或私查 SDK 注册表。关闭等待捕获状态、前台调用、审计及所有消息/回复 flush，部分激活失败保留旧证明，current 由原生事件重建。DSH watcher 的导入预检与 profile reconciliation 的先停后导入不同，按真实路径验收；不要将同模块开关当 ESM 替换。
 - 独立 migrate-readonly 不执行生产 profile，不创建/改写 Agent 或 Session；官方 native read handle + 数据锁 + 私有 proof 只迁移已结束的核心只读调用，保留 PAUSED/旧 Host 内存状态。对受保护进程仅排除出生于 helper 前独立分支的可核实成员，原 Host 后代/未知孤儿仍拒绝；不可靠进程名/墙钟时间或改 scope 放行。
-- Bot 注销见 docs/bot-removal.md：活动登记与不可变退役快照分开，保留全部旧主/预留/附着 Session 归属；原生工作区删除不自动注销独立身份。ConfigEditor 保存前先持有可回退 Runtime 闸门，忙/写者不明拒绝；旧 Agent 闸门跨 Runtime 重载/Host 重启，禁止向新 Bot 重定向。数据/历史/Inbox/journal 保留，注销不替代 agent-runtime 恢复。登记 v2 兼容 v1，配置 reset/downgrade 不能丢弃归属。
+- Bot 注销见 docs/bot-removal.md：活动登记与不可变退役快照分开，保留全部旧主/预留/附着 Session 归属；原生工作区删除不自动注销独立身份。ConfigEditor 保存前先持有可回退 Runtime 闸门，忙/写者不明拒绝；旧 Agent 闸门跨 Runtime 重载/Host 重启，禁止向新 Bot 重定向。数据/历史/Inbox/journal 保留，注销不替代 agent-runtime 恢复。开发分支登记 v3 兼容 v1/v2，配置 reset/downgrade 不能丢弃归属。
 - 升级不覆盖用户角色/记忆/任务；新持久配置带版本/迁移，验收旧仓库导入与部分失败修复。
 - key/.env 不打印、不提交、不入包；真实 API 可用已授权 key，隔离 DSH_HOME/XDG/数据并清理临时凭据。
 

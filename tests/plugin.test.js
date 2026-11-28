@@ -17,6 +17,7 @@ import * as commands from '../plugin/commands.js'
 import { redact } from '../plugin/redact.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BotRegistry } from '../plugin/instances.js'
+import { conversationKey, conversationSource, conversationAccess, reserveConversationRecord, validateConversation } from '../plugin/conversations.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
 process.env.XDG_CONFIG_HOME = join(root, 'config')
@@ -295,6 +296,117 @@ test('import preserves an existing dirty repository and deduplicates canonical d
   assert.equal(ctx.mbot.registry().bots[0].name, '源')
 })
 
+const groupSource = () => ({ adapterId: 'fixture', platform: 'qq', accountId: 'bot-account', spaceId: 'group-a',
+  threadId: null, visibility: 'group', principalId: null })
+
+test('conversation identities separate domains and require explicit source and access fields', () => {
+  const source = groupSource()
+  const key = conversationKey(source)
+  assert.equal(conversationKey(Object.fromEntries(Object.entries(source).reverse())), key)
+  assert.equal(conversationSource({ ...source, spaceId: '😀'.repeat(1024) }).spaceId, '😀'.repeat(1024))
+  assert.throws(() => conversationSource({ ...source, spaceId: '😀'.repeat(1025) }))
+  for (const field of ['adapterId', 'platform', 'accountId', 'spaceId', 'threadId']) {
+    assert.notEqual(conversationKey({ ...source, [field]: 'other' }), key)
+  }
+  for (const visibility of ['user-private', 'peer']) {
+    assert.notEqual(conversationKey({ ...source, visibility, principalId: 'alice' }), key)
+    assert.notEqual(conversationKey({ ...source, visibility, principalId: 'alice' }),
+      conversationKey({ ...source, visibility, principalId: 'bob' }))
+  }
+  for (const invalid of [
+    { ...source, extra: 'ignored?' }, { ...source, sessionId: 'private-main' }, { ...source, visibility: 'owner-private' },
+    { ...source, principalId: 'alice' }, { ...source, visibility: 'user-private' },
+    { ...source, threadId: undefined }, { ...source, principalId: undefined },
+    ...['', ' alice', 'alice ', 'a\nb', 'a\0b', 'x'.repeat(1025)].map(accountId => ({ ...source, accountId })),
+    Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'threadId')),
+  ]) assert.throws(() => conversationSource(invalid))
+  const access = { source, allowedSenders: ['bob', 'alice'], replyRoute: 'group-a-route' }
+  assert.deepEqual(conversationAccess(access).allowedSenders, ['alice', 'bob'])
+  for (const invalid of [
+    { ...access, allowedSenders: [] }, { ...access, allowedSenders: ['alice', 'alice'] },
+    { ...access, allowedSenders: [' alice'] }, { ...access, replyRoute: '' }, { ...access, extra: true },
+    { ...access, source: { ...source, visibility: 'peer', principalId: 'alice' } },
+  ]) assert.throws(() => conversationAccess(invalid))
+  const record = reserveConversationRecord('bot-00000000-0000-0000-0000-000000000001', access)
+  for (const invalid of [
+    { ...record, extra: true }, { ...record, conversationKey: 'domain:' + '0'.repeat(64) },
+    { ...record, state: 'ready' }, { ...record, createdAt: '2026-11-28' },
+    { ...record, source: { ...source, threadId: undefined } },
+  ]) assert.throws(() => validateConversation(invalid))
+})
+
+test('concurrent conversation reservations are persistent, immutable and bound to their own Bot', async t => {
+  const { ctx, ws, owner } = await app(t)
+  const editor = await configEditor(ctx, owner, ws)
+  const a = await ctx.mbot.importBot(ws, { name: 'Conversation A' })
+  const access = { source: groupSource(), allowedSenders: ['bob', 'alice'], replyRoute: 'group-route' }
+  const original = structuredClone(access), before = ctx.mbot.registry()
+  const head = git(ws, 'rev-parse', 'HEAD')
+  const first = ctx.mbot.reserveConversation(a.botId, access)
+  access.source.spaceId = 'mutated-after-call'; access.allowedSenders.push('mallory'); access.replyRoute = 'redirect'
+  const [one, two] = await Promise.all([first, ctx.mbot.reserveConversation(a.botId, original)])
+  assert.deepEqual(one, two)
+  assert.equal(one.state, 'reserved')
+  assert.equal(ctx.mbot.registry().revision, before.revision + 1)
+  assert.equal(editor.raw().registry.conversations.length, 1)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(ctx.mbot.leases.size, 0)
+  one.source.spaceId = 'returned-mutation'; one.allowedSenders.push('mallory')
+  assert.deepEqual(ctx.mbot.conversation(a.botId, original.source), two)
+  assert.deepEqual(ctx.mbot.authorizeConversation(a.botId, { ...original.source, senderId: 'alice', replyRoute: 'group-route' }), two)
+  for (const change of [{ senderId: 'mallory' }, { replyRoute: 'redirect' }, { accountId: 'other' }, { extra: true }]) {
+    assert.throws(() => ctx.mbot.authorizeConversation(a.botId, { ...original.source, senderId: 'alice', replyRoute: 'group-route', ...change }))
+  }
+  await assert.rejects(ctx.mbot.reserveConversation(a.botId, { ...original, replyRoute: 'redirect' }), /permission or reply route/u)
+  await assert.rejects(ctx.mbot.reserveConversation(a.botId, { ...original, allowedSenders: ['alice'] }), /permission or reply route/u)
+  await assert.rejects(ctx.mbot.reserveConversation(a.botId, original, { revision: before.revision }), /registry changed/u)
+  const bPath = join(root, `conversation-B-${++seq}`)
+  assert.equal((await ctx.mbot.initialize(bPath)).exitCode, 0)
+  const b = ctx.mbot.bot(), other = await ctx.mbot.reserveConversation(b.botId, original)
+  assert.notEqual(other.sessionId, two.sessionId)
+  assert.notEqual(other.conversationId, two.conversationId)
+  assert.equal(ctx.mbot.workspace({ sessionId: two.sessionId }), ws)
+  assert.equal(ctx.mbot.workspace({ sessionId: other.sessionId }), bPath)
+  const persisted = editor.raw()
+  assert.deepEqual(BotRegistry(JSON.parse(JSON.stringify(persisted.registry))), ctx.mbot.registry())
+  const registry = ctx.mbot.registry()
+  for (const mutate of [
+    r => ({ ...r, conversations: [] }),
+    r => ({ ...r, schemaVersion: 2, conversations: undefined }),
+    r => ({ ...r, conversations: r.conversations.map(c => ({ ...c, replyRoute: 'redirect' })) }),
+    r => ({ ...r, conversations: r.conversations.map(c => ({ ...c, extra: true })) }),
+    r => ({ ...r, conversations: r.conversations.map(c => ({ ...c, source: { ...c.source, threadId: undefined } })) }),
+    r => ({ ...r, conversations: [...r.conversations, r.conversations[0]] }),
+    r => ({ ...r, bots: r.bots.map(c => ({ ...c, workspaceId: 'workspace', mainSessionId: two.sessionId })) }),
+  ]) {
+    await assert.rejects(editor.edit(current => ({ ...current, registry: mutate(current.registry) })))
+    assert.deepEqual(ctx.mbot.registry(), registry)
+  }
+  editor.fail()
+  await assert.rejects(ctx.mbot.reserveConversation(a.botId, { ...original, source: { ...original.source, threadId: 'new-thread' } }), /disk write failed/u)
+  assert.deepEqual(ctx.mbot.registry(), registry)
+})
+
+test('reserved conversation cannot invoke data tools or owner commands without a Runtime', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const conversation = await ctx.mbot.reserveConversation(bot.botId, { source: groupSource(), allowedSenders: ['alice'], replyRoute: 'route' })
+  const agent = { id: conversation.sessionId, session: Session.create(conversation.sessionId) }
+  const signal = new AbortController().signal, head = git(ws, 'rev-parse', 'HEAD')
+  await assert.rejects(ctx.mbot.beginTurn({ botId: bot.botId, sessionId: agent.id, turn: 1, request: 'must not start' }), /visibility filtering/u)
+  await assert.rejects(ctx.mbot.execute('botctl', ['boot', 'chief'], { sessionId: agent.id }), /no data tool/u)
+  await assert.rejects(ctx.tools.get('botctl').execute({ action: 'boot' }, { agent, callId: 'reserved', signal }), /no data tool/u)
+  for (const command of ['/mbot status', '/mbot select ' + bot.botId, '/mbot remove ' + bot.botId]) {
+    const result = await ctx.commands.execute(agent, command, [], signal)
+    assert.equal(result.result.kind, 'error')
+    assert.match(result.result.text, /owner management/u)
+  }
+  await assert.rejects(ctx.mbot.removeBot(bot.botId), /requires MBot Runtime/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(ctx.mbot.leases.size, 0)
+})
+
 test('default names remain unique across directories and import errors leave the registry unchanged', async t => {
   const { ctx, ws, owner } = await app(t)
   await configEditor(ctx, owner, ws)
@@ -371,7 +483,7 @@ test('registry revisions and invalid persisted references reject without changin
   const before = ctx.mbot.registry()
   await assert.rejects(ctx.mbot.selectBot(bot.botId, { revision: stale }), /registry changed/u)
   for (const change of [
-    registry => ({ ...registry, schemaVersion: 3 }),
+    registry => ({ ...registry, schemaVersion: 4 }),
     registry => ({ ...registry, selectedBotId: 'bot-00000000-0000-0000-0000-000000000000' }),
     registry => ({ ...registry, bots: [...registry.bots, registry.bots[0]] }),
     registry => ({ ...registry, bots: registry.bots.map(bot => ({ ...bot, mainSessionId: 'unbound-session' })) }),
@@ -392,7 +504,7 @@ test('removal preserves Bot data, clears its selection and permits a fresh impor
   const head = git(ws, 'rev-parse', 'HEAD')
   const result = await ctx.mbot.removeBot(bot.botId)
   assert.equal(result.alreadyRemoved, false)
-  assert.equal(ctx.mbot.registry().schemaVersion, 2)
+  assert.equal(ctx.mbot.registry().schemaVersion, 3)
   assert.equal(ctx.mbot.registry().bots.length, 0)
   assert.equal(ctx.mbot.registry().selectedBotId, null)
   assert.equal(editor.raw().workspace, '')
@@ -427,7 +539,8 @@ test('removal keeps another selected Bot and works after the target data directo
 
 test('registry migration is explicit and retired references cannot be discarded by config edits', async t => {
   const legacy = { schemaVersion: 1, revision: 4, selectedBotId: null, bots: [] }
-  assert.deepEqual(BotRegistry(legacy), { schemaVersion: 2, revision: 4, selectedBotId: null, bots: [], retiredBots: [] })
+  assert.deepEqual(BotRegistry(legacy), { schemaVersion: 3, revision: 4, selectedBotId: null, bots: [], retiredBots: [], conversations: [] })
+  assert.deepEqual(BotRegistry({ ...legacy, schemaVersion: 2, retiredBots: [] }), BotRegistry(legacy))
   const { ctx, ws, owner } = await app(t)
   const editor = await configEditor(ctx, owner, ws)
   const bot = await ctx.mbot.importBot(ws)

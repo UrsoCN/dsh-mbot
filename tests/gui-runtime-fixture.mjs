@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { setTimeout as delay, setImmediate } from 'node:timers/promises'
 
-export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents', 'sessions', 'commands', 'workspaceController']
+export const inject = ['llm', 'mbot', 'mbotRuntime', 'tools', 'subprocess', 'agents', 'sessions', 'commands', 'workspaceController', 'sessionController']
 if (process.env.MBOT_GUI_RUNTIME_ROOT) await writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-imported'), '')
 export function apply(ctx) {
   void writeFile(join(process.env.MBOT_GUI_RUNTIME_ROOT, 'fixture-applied'), '')
@@ -17,6 +17,30 @@ async function setup(ctx) {
   const { LlmAdapter } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
   const { defineTool } = await import(fromPackage.resolve('@deepseek-ai/dsh-tools'))
   const marker = name => join(root, name)
+  ctx.commands.register({ name: 'mbot_fixture_conversation', description: 'Reserve a domain in this disposable GUI fixture.', recordInput: false,
+    async handler(invocation) {
+      const bot = ctx.mbot.bot({ sessionId: invocation.agent.id })
+      const record = await ctx.mbot.reserveConversation(bot.botId, { source: { adapterId: 'gui-fixture', platform: 'qq',
+        accountId: 'fixture-account', spaceId: 'fixture-group', threadId: null, visibility: 'group', principalId: null },
+        allowedSenders: ['alice'], replyRoute: 'fixture-group-route' })
+      // Test-only publication: production reservation deliberately creates no entity.
+      const created = await ctx.sessionController.create({ workspaceId: bot.workspaceId, sessionId: record.sessionId })
+      if (created.sessionId !== record.sessionId) throw new Error('Fixture Session reservation changed')
+      const resolved = await ctx.sessionController.resolveAgent(record.sessionId)
+      if ('error' in resolved) throw resolved.error
+      await ctx.sessions.flush(resolved.agent.session)
+      return { kind: 'success', text: JSON.stringify(record) }
+    } })
+  ctx.commands.register({ name: 'mbot_fixture_domain_state', description: 'Inspect reserved domain state inside this disposable fixture.', recordInput: false,
+    async handler(invocation) {
+      const resolved = await ctx.sessionController.resolveAgent(invocation.agent.id)
+      if ('error' in resolved) throw resolved.error
+      await ctx.mbotRuntime.settled(resolved.agent)
+      await ctx.sessions.flush(resolved.agent.session)
+      return { kind: 'success', text: JSON.stringify({ registry: ctx.mbot.registry(),
+        descriptor: ctx.mbotRuntime.states.get(resolved.agent)?.conversation,
+        pending: resolved.agent.inbox.nextTurn.map(message => message.content) }) }
+    } })
   ctx.commands.register({ name: 'mbot_fixture_checkpoint', description: 'Inspect the installed Runtime checkpoint inside this disposable fixture.', recordInput: false,
     async handler(invocation) {
       return { kind: 'success', text: JSON.stringify(await ctx.mbotRuntime.checkpoint(invocation.agent)) }

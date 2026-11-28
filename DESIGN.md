@@ -15,6 +15,8 @@
 
 正式版准备已配置 CI 回归与安装矩阵（Node 24.9.0 / 24、DSH 0.2.2-rc.5），仓库 workflow 与随包模板同步维护；远端运行结果与本地验收分别记录。
 
+开发分支的 P1 首步为 [conversation 预留](docs/conversations.md)：registry v3 持久保存来源、发送者许可、回复路线与稳定 Session ID，兼容 v1/v2；仅允许 `reserved` 状态。它建立额外域的归属和拒绝闸门，尚未交付可对话的群/其他用户/peer Session。
+
 rc.1 是单实例持久运行里程碑。R1 持久证据、R2 架构/基准、R3 compact、R4 sleep/wake 已完成；这些阶段的旧“dev/未发布”限制不再代表当前实现。
 
 ## 原则与真相源
@@ -95,6 +97,8 @@ sleep 固定 cutoff，独立 Dreaming 后按需 compact/checkpoint，再持久�
 所有入口共用 Runtime 的来源、准入与生命周期，DSH Inbox 保持唯一模型队列。Web 使用原生提交，适配器直接调用 Cordis service，CLI 走 IPC；运行内数据工具使用当前 lease，不能等待同一 Session 的外部 FIFO。
 
 默认私人主 Session 只接所有者对话；专用 TG 私聊可共用它，群/其他用户/独立 peer 使用隔离 conversation。conversationKey 由可信 Host 确认平台、账号、空间/线程、发送者和 visibility，正文不能指定私人 Session 或冒充所有者。记忆过滤接齐前不开放额外域。QQ 单账号按 `@alias` 路由；传话 Session 仅做路由/展示，不持有目标完整记忆。
+
+落地顺序：先持久预留来源/权限和不可重定向的 Session 归属，再版本化定义共享/域内记忆视图及工具读取范围；旧 MEMORY/wiki、任务和历史默认属于所有者私人域，不因增加 conversation 自动公开。上下文、boot/读工具、remember 候选、摘要/checkpoint 与 Dreaming 必须使用同一域身份，经过恢复验证后才将预留状态升级为可执行。跨域管理操作继续由所有者入口执行，平台发送者认证由可信适配器负责。
 
 outbox 复用已核验 replyId/replyRoute，区分投递确认与不确定；原生 confirmed 只证明 flush，ended 不证明 Git 成功。独立 Bot 用异步信封与目标授权，A 不持锁等待 B，树内 send_message 仅用于本轮 Worker。外部副作用不承诺跨系统 exactly-once，设计细节见 [Session Runtime](docs/session-runtime.md)。
 

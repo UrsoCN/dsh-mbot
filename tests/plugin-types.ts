@@ -19,6 +19,12 @@ commands.commandArgs('status')
 const registry: plugin.BotRegistrySnapshot = ctx.mbot.registry()
 const bot: Promise<plugin.BotRegistration> = ctx.mbot.importBot('/tmp/mbot-types', { name: 'example', revision: registry.revision })
 void bot
+const domain: plugin.ConversationAccess = { source: { adapterId: 'fixture', platform: 'telegram', accountId: 'bot',
+  spaceId: 'chat', threadId: null, visibility: 'user-private', principalId: 'alice' }, allowedSenders: ['alice'], replyRoute: 'chat' }
+const conversation: Promise<plugin.ConversationRegistration> = ctx.mbot.reserveConversation('example', domain, { revision: registry.revision })
+void conversation
+ctx.mbot.conversation('example', domain.source)
+ctx.mbot.authorizeConversation('example', { ...domain.source, senderId: 'alice', replyRoute: 'chat' })
 ctx.mbot.workspace({ sessionId: 'main-session' })
 ctx.mbot.selectBot('example', { revision: registry.revision })
 const binding: Promise<plugin.BotRegistration> = ctx.mbot.ensureBinding('example', { revision: registry.revision })

@@ -1,5 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { approveEscalation } from '@deepseek-ai/dsh-sandbox'
+import { conversationForSession } from './conversations.js'
 
 export const name = 'tool-mbot'
 export const inject = ['tools', 'mbot', 'sandboxPolicy']
@@ -52,6 +53,7 @@ export function registerBotctl(ctx, options = {}) {
     async execute(args, exec) {
       if (process.env.MBOT_RUN_ID !== undefined) throw new Error('Managed runs use Bash botctl under the host guard; native botctl is unavailable here')
       const selection = { sessionId: exec.agent?.id ?? exec.agent?.session?.id }
+      if (conversationForSession(ctx.mbot.registry(), selection.sessionId)) throw new Error('Reserved conversation has no data tool permission')
       const runtime = ctx.get('mbotRuntime')
       if (args.action.startsWith('worker_')) {
         if (!exec.agent || !runtime) throw new Error('Worker operations require an active native Chief Session')

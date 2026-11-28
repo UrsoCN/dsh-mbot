@@ -151,7 +151,7 @@ rc.1 已有受管理主 Session 直接对话、固定上下文、准入/租约�
 |---|---|---|
 | 1 · checkpoint/compact | 已交付 | 来源协议、自动/手动 compaction、旧版本退役、持久化与支持范围内中断恢复 |
 | 2 · sleep/wake | 已交付单私人主 Session 闭环 | Bot 屏障、阶段 journal、睡眠收信、同 ID 唤醒与单次冷恢复 |
-| 3 · 对话域与入口 | 待交付 | 持久绑定、来源/可见域、IM、异步 peer、outbox/ack |
+| 3 · 对话域与入口 | 开发分支已实现身份/来源权限预留，执行仍待交付 | [registry v3 与 reserved 闸门](conversations.md)；记忆/工具可见域、激活、IM、异步 peer、outbox/ack 待接齐 |
 | 4 · Worker 写工具 | 待交付 | 目录 grants、Bash/文件/PTC、并发/取消和扩展 Writer 恢复契约 |
 
 每阶段以真实 Agent/Session 路径验收；未知 Writer 或缺失证明继续拒绝。不同对话域与新写工具在自己的上下文/权限/恢复契约接齐后开放。

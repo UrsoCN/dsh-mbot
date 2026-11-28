@@ -17,6 +17,7 @@ export function requireState(cell, { allowMaintenance = false } = {}) {
   if (!cell.state || cell.state.closing || cell.state.runtime.closed) throw new Error('MBot Runtime is unavailable for this managed Session')
   if (!cell.state.runtime.ready || cell.state.initializing) throw new Error('MBot Runtime attachment is initializing; accepted input stays in the native Inbox')
   if (cell.state.retiring) throw new Error('Bot removal is in progress; this managed Session is blocked')
+  if (cell.state.conversation?.state === 'reserved') throw new Error('Reserved conversation requires memory and tool visibility filtering before execution')
   if (cell.state.runtime.recoveries.has(cell.state.botId)) throw new Error('Bot recovery is in progress; accepted input stays in the native Inbox')
   if (!allowMaintenance && cell.state.runtime.coordinator?.isSleeping(cell.state.botId)) throw new Error('Bot is sleeping; accepted input stays in the native Inbox until /mbot wake')
   if (!allowMaintenance && cell.state.runtime.coordinator?.isBlocked(cell.state.botId)) throw new Error('Bot maintenance is in progress; accepted input stays in the native Inbox')

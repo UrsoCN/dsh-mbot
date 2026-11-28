@@ -2,8 +2,10 @@ import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
 import type z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
+import type { ConversationSource, ConversationAccess, ConversationRegistration, ConversationAttestation } from './conversations.js'
 import type { TurnLease, BeginTurnOptions } from './turn.js'
 export type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
+export type { ConversationSource, ConversationAccess, ConversationRegistration, ConversationAttestation } from './conversations.js'
 export type { TurnLease, BeginTurnOptions, ContextSnapshot, ContextKnowledge, TurnResult, ManagedOutcome, FailureCountEffect } from './turn.js'
 
 export declare const name: 'mbot'
@@ -27,6 +29,10 @@ export declare class MBotService extends Service {
   static inject: string[]
   constructor(ctx: Context, config: Config)
   registry(): BotRegistrySnapshot
+  /** Reserve source/permissions and a stable Session ID; does not activate a model. */
+  reserveConversation(identity: string, input: ConversationAccess, options?: ManagementOptions): Promise<ConversationRegistration>
+  conversation(identity: string, source: ConversationSource): ConversationRegistration | undefined
+  authorizeConversation(identity: string, source: ConversationAttestation): ConversationRegistration
   bot(options?: BotSelection): BotRegistration | undefined
   workspace(options?: BotSelection & { workspace?: string }): string
   importBot(directory: string, options?: ImportOptions): Promise<BotRegistration>

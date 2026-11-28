@@ -2,6 +2,7 @@ import z from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { ConversationRegistration, validateConversation, botSessionIds } from './conversations.js'
 
 const botId = z.string().pattern(/^bot-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u).required()
 const name = z.string().pattern(/^[^\0\r\n]{1,80}$/u).required()
@@ -32,16 +33,18 @@ export const RetiredBot = z.object({
   sessionIds: z.array(z.string().min(1).pattern(/^[^\0\r\n]+$/u)).required(),
   retiredAt: z.string().pattern(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u).required(),
 })
-export const emptyRegistry = { schemaVersion: 2, revision: 0, selectedBotId: null, bots: [], retiredBots: [] }
+export const emptyRegistry = { schemaVersion: 3, revision: 0, selectedBotId: null, bots: [], retiredBots: [], conversations: [] }
 export const BotRegistrySchema = z.union([
-  z.object({ schemaVersion: z.const(1).required(), ...registryFields, retiredBots: z.never() }),
-  z.object({ schemaVersion: z.const(2).required(), ...registryFields, retiredBots: z.array(RetiredBot).required() }),
+  z.object({ schemaVersion: z.const(1).required(), ...registryFields, retiredBots: z.never(), conversations: z.never() }),
+  z.object({ schemaVersion: z.const(2).required(), ...registryFields, retiredBots: z.array(RetiredBot).required(), conversations: z.never() }),
+  z.object({ schemaVersion: z.const(3).required(), ...registryFields, retiredBots: z.array(RetiredBot).required(), conversations: z.array(ConversationRegistration).required() }),
 ])
 
 /** One profile-owned document; references never copy the DSH entities or history. */
 export function BotRegistry(input) {
   const parsed = BotRegistrySchema(input)
-  const registry = parsed.schemaVersion === 1 ? { schemaVersion: 2, revision: parsed.revision, selectedBotId: parsed.selectedBotId, bots: parsed.bots, retiredBots: [] } : parsed
+  const registry = { ...parsed, schemaVersion: 3, retiredBots: parsed.retiredBots ?? [],
+    conversations: (parsed.conversations ?? []).map(validateConversation) }
   for (const field of ['botId', 'name', 'workspacePath', 'workspaceId', 'mainSessionId']) {
     const values = registry.bots.map(bot => bot[field]).filter(value => value !== null)
     if (new Set(values).size !== values.length) throw new Error(`Duplicate Bot ${field}`)
@@ -50,7 +53,7 @@ export function BotRegistry(input) {
   if (new Set(allBots.map(bot => bot.botId)).size !== allBots.length) throw new Error('Duplicate active/retired Bot identity')
   for (const entry of registry.retiredBots) {
     if (!Number.isFinite(Date.parse(entry.retiredAt)) || new Date(entry.retiredAt).toISOString() !== entry.retiredAt) throw new Error('Invalid Bot retirement time')
-    if ([entry.bot.mainSessionId, entry.bot.binding?.pendingSessionId].filter(Boolean).some(id => !entry.sessionIds.includes(id))) throw new Error('Retired Bot must retain every reserved/main Session')
+    if (botSessionIds(registry, entry.bot).some(id => !entry.sessionIds.includes(id))) throw new Error('Retired Bot must retain every reserved/main/conversation Session')
   }
   for (const bot of allBots) {
     if (bot.name.trim() !== bot.name || !bot.name.trim()) throw new Error('Bot name must be trimmed and nonempty')
@@ -61,7 +64,15 @@ export function BotRegistry(input) {
     if (bot.binding?.state === 'provisioning' && !bot.mainSessionId && !bot.binding.pendingSessionId) throw new Error('Provisioning Bot binding requires a reserved Session')
     if (registry.bots.some(other => other.botId !== bot.botId && other.botId === bot.name)) throw new Error('Bot name collides with another Bot id')
   }
-  const sessions = [...registry.bots.flatMap(bot => [bot.mainSessionId, bot.binding?.pendingSessionId].filter(Boolean)), ...registry.retiredBots.flatMap(entry => entry.sessionIds)]
+  for (const conversation of registry.conversations) {
+    if (!allBots.some(bot => bot.botId === conversation.botId)) throw new Error('Conversation belongs to an unknown Bot')
+    if (allBots.some(bot => [bot.mainSessionId, bot.binding?.pendingSessionId].includes(conversation.sessionId))) throw new Error('Conversation cannot reuse a private main Session')
+  }
+  for (const identity of [item => item.conversationId, item => item.sessionId, item => `${item.botId}:${item.conversationKey}`]) {
+    const values = registry.conversations.map(identity)
+    if (new Set(values).size !== values.length) throw new Error('Duplicate conversation identity or Session')
+  }
+  const sessions = [...registry.bots.flatMap(bot => botSessionIds(registry, bot)), ...registry.retiredBots.flatMap(entry => entry.sessionIds)]
   if (new Set(sessions).size !== sessions.length) throw new Error('Duplicate Bot reserved Session')
   if (registry.selectedBotId !== null && !registry.bots.some(bot => bot.botId === registry.selectedBotId)) throw new Error('Selected Bot is not registered')
   return registry
@@ -94,6 +105,15 @@ export function findBot(registry, identity) {
 /** Tombstones cannot disappear through config resets or schema downgrade. */
 export function registryTransition(previous, next) {
   const before = BotRegistry(previous), after = BotRegistry(next)
+  for (const conversation of before.conversations) {
+    if (!isDeepStrictEqual(after.conversations.find(item => item.conversationId === conversation.conversationId), conversation)) {
+      throw new Error('Conversation source, permission and Session ownership are immutable; do not reset or downgrade the registry')
+    }
+  }
+  for (const conversation of after.conversations) {
+    if (!before.conversations.some(item => item.conversationId === conversation.conversationId)
+      && !after.bots.some(bot => bot.botId === conversation.botId)) throw new Error('Cannot add a conversation to a retired Bot')
+  }
   for (const retired of before.retiredBots) {
     const retained = after.retiredBots.find(entry => entry.bot.botId === retired.bot.botId)
     if (!isDeepStrictEqual(retained, retired)) throw new Error('Retired Bot references must remain intact; do not reset or downgrade the registry')

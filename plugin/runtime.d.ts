@@ -22,7 +22,7 @@ export interface RuntimeTurnReceipt {
 }
 export interface RuntimeStatus {
   botId: string; sessionId: string
-  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'removing' | 'recovering' | 'maintaining' | 'sleeping'
+  state: 'idle' | 'active' | 'admitting' | 'auditing' | 'failed' | 'unavailable' | 'retired' | 'reserved' | 'removing' | 'recovering' | 'maintaining' | 'sleeping'
   queued: { nextTurn: number; nextStep: number }
   lastReceipt?: RuntimeTurnReceipt & { seq: number }; error?: string
 }

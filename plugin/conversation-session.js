@@ -41,8 +41,9 @@ export class ConversationSession {
       schemaVersion: 1,
       botId,
       conversationKey: options.conversationKey ?? 'main',
-      visibility: options.visibility ?? 'owner-private',
+      visibility: options.source?.visibility ?? options.visibility ?? 'owner-private',
       sessionId: agent.id,
+      ...(options.conversationId ? { conversationId: options.conversationId, state: options.state } : {}),
     })
     this.pending = Promise.resolve()
     this.closing = false

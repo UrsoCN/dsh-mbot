@@ -1,5 +1,6 @@
 import { redact } from './redact.js'
 import { nativeBindingAvailable, sessionResult } from './binding.js'
+import { conversationForSession } from './conversations.js'
 
 export const name = 'command-mbot'
 export const inject = ['commands', 'mbot']
@@ -37,6 +38,7 @@ export function apply(ctx) {
         const command = commandArgs(invocation.rawInput)
         if (!command) return { kind: 'success', text: usage }
         const options = { signal: invocation.signal, sessionId: invocation.agent?.id ?? invocation.agent?.session?.id }
+        if (conversationForSession(ctx.mbot.registry(), options.sessionId)) throw new Error('Conversation inputs cannot invoke owner management commands')
         if (command.program === 'host') {
           if (['runtime', 'stop', 'compact'].includes(command.argv[0])) {
             const runtime = ctx.get('mbotRuntime')
