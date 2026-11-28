@@ -53,6 +53,15 @@ void removalVerification
 void removalRelease
 const contextCheckpoint: Promise<runtime.ContextCheckpoint | null> = ctx.mbotRuntime.checkpoint(managedAgent)
 void contextCheckpoint
+declare const contextSnapshot: runtime.ContextCheckpoint['snapshot']
+if (contextSnapshot.schemaVersion === 2) {
+  const domainKnowledge: plugin.ConversationKnowledge = contextSnapshot.knowledge
+  const domainId: string = domainKnowledge.scope.conversationId
+  void domainId
+} else {
+  const privateKnowledgeVersion: 1 = contextSnapshot.knowledge.schemaVersion
+  void privateKnowledgeVersion
+}
 const compactedResult = ctx.mbotRuntime.compact(managedAgent)
 void compactedResult
 const sleptResult = ctx.mbotRuntime.sleep('example', { skipDream: true, compact: false })

@@ -40,7 +40,7 @@
 
 - 内部域桥新增 journal v4/runtimeOwnership v3：只从显式域清单捕获知识，boot/view 只读固定脱敏快照；检查合并记忆预算和 SOUL/参考预算，禁止私人任务/看板、候选及 Worker 调用，guard 回滚业务写入。公开 beginTurn 与 reserved Agent 继续拒绝域执行。
 - context snapshot v2 绑定持久域身份、knowledge v2、原生来源和 Inbox；私有 context 字节 hash 先持久化再发布 journal，Git 审计封存同一证明。Host 恢复核对登记/原生/私有快照/Git，保留取消计数、PAUSED 与单次结算；拒绝降级、权限变化、快照篡改和已捕获证明丢失。纯 Node/Git helper 与 Host schema 分离，独立 Bash 入口保持可用。契约见 [域事务](docs/conversations.md#内部域事务与-checkpoint)。
-- Node 24.9.0 完整回归通过（212 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash，`/tmp/dsh-mbot-domain-turn-full.log`）。之后补充聚合预算/证明丢失校验，类型及 11 项域专项通过（`/tmp/dsh-mbot-domain-final-scope.log`）；新增原生 Agent 测试经公开 recoverTurn 验证 Runtime 重载、登记冲突拒绝、checkpoint 恢复及 Inbox 保留，零模型调用（`/tmp/dsh-mbot-domain-runtime-recovery.log`）。测试中的域回合从内部桥建立，尚不代表实际域模型流程交付。
+- Node 24.9.0 完整回归通过（212 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash，`/tmp/dsh-mbot-domain-turn-full.log`）。之后补充聚合预算/证明丢失校验，类型及 11 项域专项通过（`/tmp/dsh-mbot-domain-final-scope.log`）；新增原生 Agent 测试经公开 recoverTurn 验证 Runtime 重载、登记冲突拒绝、checkpoint 恢复及 Inbox 保留，零模型调用（`/tmp/dsh-mbot-domain-runtime-recovery.log`）。测试中的域回合从内部桥建立，尚不代表实际域模型流程交付。 公开 checkpoint/plugin-record 类型已区分私人 v1 与域 v2，新增分支收窄检查通过。
 - source/tarball/Git/Web tarball 四类安装实际执行域 v4 helper、快照读取及 Git 封存，保留公开域拒绝与原有私人 Runtime 回归（`/tmp/mbot-plugin-install.a5VImi`、`/tmp/dsh-mbot-domain-turn-install.log`）。tarball Chromium 通过双窗口拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复和私人主 Session 续聊，实际截图已检查（`/tmp/mbot-gui-conversations.5WhvAB`、`/tmp/dsh-mbot-domain-turn-gui.log`）。未调用真实 API或执行 R5；域消息、提示、候选/Dreaming、摘要/维护仍列 P1。
 
 ## 0.2.0-rc.1（2026-11-28）

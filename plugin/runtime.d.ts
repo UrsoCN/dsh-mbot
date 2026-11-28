@@ -33,11 +33,11 @@ export interface RuntimeStopResult extends RuntimeStatus {
 export interface ContextCheckpoint {
   schemaVersion: 1; snapshotSeq: number; snapshotHash: string; commit: string; meta: string; turn: number
   compactions?: CompactionProof[]
-  snapshot: {
-    schemaVersion: 1; kind: 'turn-input'; visibility: 'owner-private'; botId: string; sessionId: string; conversationId: string
+  snapshot: ({ schemaVersion: 1; visibility: 'owner-private'; knowledge: import('./turn.js').ContextKnowledge; compactionPolicyVersion?: 1 }
+    | { schemaVersion: 2; visibility: import('./conversation-view.js').ConversationViewScope['visibility'];
+        knowledge: import('./conversation-view.js').ConversationKnowledge; compactionPolicyVersion?: never }) & {
+    kind: 'turn-input'; botId: string; sessionId: string; conversationId: string
     turn: number; runId: string; role: string; memoryCommit: string; contextEpoch: number
-    knowledge: import('./turn.js').ContextKnowledge
-    compactionPolicyVersion?: 1
     sourceCut: { throughSeq: number; events: { seq: number; type: string; hash: string }[] }
     input: { messageId: string; hash: string }[]
     previous: null | { schemaVersion: 1; snapshotHash: string; knowledgeVersion: string; contextEpoch: number; commit: string }
