@@ -23,7 +23,7 @@ export function createGitBatchReader(workspace) {
 
   const start = () => {
     if (child) return
-    child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', workspace, 'cat-file', '--batch'],
+    child = spawn('git', ['--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', workspace, 'cat-file', '--batch'],
       { stdio: ['pipe', 'pipe', 'pipe'] })
     child.stdout.on('data', chunk => {
       buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk

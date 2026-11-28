@@ -5,7 +5,9 @@ import * as commands from 'dsh-mbot/commands'
 import * as runtime from 'dsh-mbot/runtime'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 const managedSummaryPurpose: GenerateOptions['purpose'] = 'mbot-compaction'
+const managedDomainDreamPurpose: GenerateOptions['purpose'] = 'mbot-domain-dream'
 void managedSummaryPurpose
+void managedDomainDreamPurpose
 import * as ipc from 'dsh-mbot/ipc'
 
 const ctx = new Context()

@@ -8,6 +8,7 @@ import { contentHash } from '../plugin/context-hash.js'
 import { redactValue } from '../plugin/redact.js'
 import { contextGit } from '../plugin/context-git.js'
 import { appendCandidate, candidatePath, readCandidateFile, sealDomainCandidates } from '../plugin/domain-candidates.js'
+import { validateDomainBudgets } from '../plugin/domain-budget.js'
 
 async function json(path) {
   const stat = await lstat(path)
@@ -26,18 +27,7 @@ try {
     if (values.length !== 4 || values.some(value => !/^[1-9][0-9]{0,8}$/u.test(value))) throw new Error('Invalid domain context budgets')
     const [memoryLines, memoryChars, soulChars, wikiLines] = values.map(Number)
     const view = readDomainView(workspace, commit, scope, role)
-    const memory = view.documents.filter(document => document.kind === 'memory').map(document => document.text).join('\n\n')
-    if ([...memory].length > memoryChars || memory.split('\n').length - (memory.endsWith('\n') ? 1 : 0) > memoryLines) {
-      throw new Error('Domain knowledge exceeds its configured budget')
-    }
-    for (const document of view.documents) {
-      const lines = document.text.split('\n').length - (document.text.endsWith('\n') ? 1 : 0)
-      const chars = [...document.text].length
-      if (document.kind === 'memory' && (lines > memoryLines || chars > memoryChars)
-        || document.kind === 'soul' && chars > soulChars || document.kind === 'reference' && lines > wikiLines) {
-        throw new Error('Domain knowledge exceeds its configured budget')
-      }
-    }
+    validateDomainBudgets(view.documents, { memoryLines, memoryChars, soulChars, wikiLines })
     // Redact bodies only; knowledge and routing identities remain exact for recovery.
     const texts = await redactValue(view.documents.map(document => document.text), workspace)
     const documents = view.documents.map(({ bytes, text, ...document }, i) => ({ ...document, text: texts[i] }))

@@ -13,7 +13,8 @@
 ## P1：对话域、消息与写者扩展
 
 - [ ] 在 [原生域上下文](docs/conversations.md#原生提示读工具与历史隔离) 基础上接通域信封的公开回合准入及实体激活；复用 conversationMailbox 和域回复证明，将当前内部模型夹具改为公开完整流程，覆盖不同用户/群/线程、跨域拒绝、重载与中断；与域维护一起验收后才开放 reserved 闸门。
-- [ ] 在 [域候选事务](docs/conversations.md#域候选事务) 基础上实现独立域 Dreaming（只摄入已验证且已完成回合的候选、独立模型与写集、增量 checkpoint/失败回滚），以及域摘要、sleep/wake 和维护恢复；验证私人任务/历史/摘要不串域，完整验收后才开放额外域。
+- [ ] 将 [独立域 Dreaming](docs/domain-dreaming.md) 已实现的来源捕获、隔离请求与写集校验接入模型执行和持久维护事务：认证旧消费 checkpoint、保存模型结果、同次提交记忆/报告/新 checkpoint、guard/失败回滚及中断单次恢复。当前没有公开执行入口。
+- [ ] 接通域摘要、sleep/wake 和维护恢复，验证私人任务/历史/摘要不串域，联合域 Dreaming 完整验收后才开放额外域。
 - [ ] 接入真实 IM 适配器：所有者专用私聊可绑定主 Session，群/其他用户隔离；验证 QQ `@alias`、附件/路由恢复和回复不串域。
 - [ ] 实现按已验证 replyRoute 的 outbox、ack 与投递不确定状态；覆盖 IM 重试、断连和提交前/后崩溃。
 - [ ] 接入独立 Bot 的异步 peer 信封、目标权限、correlation/causation 与 hops/TTL；验证 A/B 互相请求不持锁等待。

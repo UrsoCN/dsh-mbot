@@ -102,6 +102,8 @@ sleep 固定 cutoff，独立 Dreaming 后按需 compact/checkpoint，再持久�
 
 开发分支已提供每域 `memory/conversations/<conversationId>/VIEW.json` 与固定 Git 版本读取器：人类显式发布共享/本域协议、人格、记忆和参考文件，来源与权限共同进入知识 hash；检查只返回文件身份与大小，不激活域。内部数据桥已用 journal v4/runtimeOwnership v3 捕获同一视图，仅允许只读 boot/view，落实合并记忆预算、正文脱敏和上下文 snapshot v2；恢复绑定持久域归属、私有 context hash、原生来源与 Git 审计，拒绝降为私人契约。公开 beginTurn 和原生 reserved 闸门仍关闭。conversationMailbox 已按持久来源/发送者许可向已存在的域 Inbox 收信，独立信封和回复证明绑定同一域与路线，支持重试、重载和持久化不确定状态。原生提示和 scoped boot/view 已接线：只组装发布的域文档，使用官方 scoped context 空掩码阻止 required 刷新补入私人上下文；LLM 边界只校验原生消息、历史证明和精确工具 schema，不改写普通请求。已审计历史按 Git/context 证明恢复，迟到贡献和未审计历史拒绝。新 journal v5/runtimeOwnership v4 已增加仅本域的候选 JSONL：原生工具调用、脱敏跨度、知识版本和文件 hash 同次封存，context 标记阻止降级，v4 只读恢复仍保留。私人 Dreaming 根据原始 Git 审计排除域 transcript，候选不会直接更新记忆。下一步接通公开域回合准入、独立域 Dreaming、摘要及维护，最后启用实体；不能继承私人主 Session 的系统提示、任务、摘要或旧知识证明。具体格式与限制见 [域资料视图](docs/conversations.md#显式域资料视图)。
 
+独立域 Dreaming 采用 fresh、无工具的辅助模型请求，只接受显式资料与完成回合中已联合核验的候选。开发分支已实现固定原生/Git 来源捕获、预算内增量取材和结构化逐行写集校验；共享资料/协议/SOUL 只读，删除必须保留来源与依据。它尚未调用模型或更新记忆。下一阶段通过 Bot 屏障、数据锁和工作树外持久 journal 保存模型结果与 commit intent，再把本域记忆、报告和消费 checkpoint 同次提交；恢复复用已保存结果，不能把读取 cursor 当消费证明。详细契约与阶段区分见 [独立域 Dreaming](docs/domain-dreaming.md)。
+
 outbox 复用已核验 replyId/replyRoute，区分投递确认与不确定；原生 confirmed 只证明 flush，ended 不证明 Git 成功。独立 Bot 用异步信封与目标授权，A 不持锁等待 B，树内 send_message 仅用于本轮 Worker。外部副作用不承诺跨系统 exactly-once，设计细节见 [Session Runtime](docs/session-runtime.md)。
 
 ### 完整管理与配置

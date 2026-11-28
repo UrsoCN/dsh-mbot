@@ -145,7 +145,7 @@ declare module '@deepseek-ai/dsh-session/types' { interface PluginRecordMap {
   'plugin:mbot/compact-output': NonNullable<CompactionProof['output']>
 } }
 declare module '@deepseek-ai/dsh-llm/types' {
-  interface LlmRequestPurposeMap { 'mbot-compaction': true }
+  interface LlmRequestPurposeMap { 'mbot-compaction': true; 'mbot-domain-dream': true }
 }
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

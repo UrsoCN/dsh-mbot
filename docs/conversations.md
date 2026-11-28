@@ -124,7 +124,7 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 候选是待审查建议。文件留存不证明回合成功，也不证明内容真实；失败/取消回合可保留已验证候选并明确保留原 outcome，后续独立域 Dreaming 只自动接收完成回合，其他状态须复核。当前没有域候选消费/记忆合并入口，也不直接改 MEMORY/wiki 或知识版本。私人 Dreaming 排除域 transcript（含旧 pending）且不扫描候选目录；分类依据原始添加 commit 的审计，当前 metadata 改写不能扩大可见域。
 
-公开域仍为 reserved，候选流程只在内部原生夹具中接通。独立域 Dreaming、摘要、sleep/wake 和维护恢复完成后，才联合验收实体激活。
+公开域仍为 reserved，候选流程只在内部原生夹具中接通。[独立域 Dreaming](domain-dreaming.md) 已实现完成候选的原生/Git 取材、增量预算和逐行写集校验，尚不调用模型或写入记忆。持久 Dreaming、摘要、sleep/wake 和维护恢复完成后，才联合验收实体激活。
 
 ## 原生提示、读工具与历史隔离
 

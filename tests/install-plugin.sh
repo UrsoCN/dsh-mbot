@@ -159,7 +159,7 @@ async function probe(ctx) {
     const { realpath } = await import('node:fs/promises')
     const { randomUUID } = await import('node:crypto')
     const fromPackage = createRequire(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
-    const { LlmAdapter, createUserMessage, createAssistantMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
+    const { LlmAdapter, createUserMessage, createAssistantMessage, createToolResultMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
     // Exercise the installed internal v4 bridge while the public domain gate stays closed.
     const { dirname, join } = await import('node:path')
     const { pathToFileURL } = await import('node:url')
@@ -208,10 +208,13 @@ async function probe(ctx) {
     const candidateArguments = JSON.stringify({ action: 'remember', text: 'Installed per-domain candidate' })
     session.append('assistant/message', { turn: 2, step: 1,
       message: createAssistantMessage({ content: [{ type: 'tool-call', id: 'installed-candidate', name: 'botctl', arguments: candidateArguments }], source: { provider: 'fixture', model: 'fixture' } }) }, { surfaceOp: 'append' })
-    session.append('tool/call', { turn: 2, step: 1, callId: 'installed-candidate', name: 'botctl', arguments: candidateArguments })
+    const candidateCall = session.append('tool/call', { turn: 2, step: 1, callId: 'installed-candidate', name: 'botctl', arguments: candidateArguments })
     for (const event of session.snapshotEvents().filter(event => event.seq >= candidateStart.seq)) await candidateLease.record(event)
     const candidateWrite = await candidateLease.execute('botctl', ['remember', 'Installed per-domain candidate', '--call', 'installed-candidate'])
     assert.equal(candidateWrite.exitCode, 0, candidateWrite.stderr)
+    await candidateLease.record(session.append('tool/result', { turn: 2, step: 1,
+      message: createToolResultMessage({ callId: 'installed-candidate', isError: false, content: [{ type: 'text', text: candidateWrite.stdout }] }) },
+      { surfaceOp: 'append', sourceEventSeqs: [candidateCall.seq] }))
     await candidateLease.record(session.append('turn/end', { turn: 2, reason: { kind: 'completed' } }))
     const candidateResult = await candidateLease.finish({ reason: { kind: 'completed' }, text: '' })
     assert.equal(candidateResult.success, true)
@@ -220,6 +223,23 @@ async function probe(ctx) {
     assert.equal(candidateMeta.runtime.candidates.count, 1)
     const { verifyCandidateAudit } = await installed('plugin/domain-candidates.js')
     verifyCandidateAudit(bot.workspacePath, candidateResult.head, candidateMeta, session.snapshotEvents().filter(event => event.seq >= candidateStart.seq))
+    const { captureDomainDream } = await installed('plugin/domain-dream-source.js')
+    const { domainDreamRequest, validateDomainDreamPlan } = await installed('plugin/domain-dream-plan.js')
+    const capture = await captureDomainDream(bot.workspacePath, { scope: view.knowledge.scope, role: 'chief',
+      log: { session: session.header, inheritedEventCount: 0, events: session.snapshotEvents() } })
+    assert.equal(capture.input.sources.length, 1)
+    const dreamRequest = domainDreamRequest(capture, { provider: 'mbot-installation', model: 'scripted' })
+    assert.equal(dreamRequest.purpose, 'mbot-domain-dream')
+    assert.equal(dreamRequest.tools, undefined)
+    const target = capture.input.documents.find(document => document.path === policy.memory[0]), sourceId = capture.input.sources[0].id
+    const plan = await validateDomainDreamPlan(bot.workspacePath, capture, JSON.stringify({
+      decisions: [{ sourceId, action: 'merge', reason: 'Preserve attributed installation suggestion' }],
+      changes: [{ path: target.path, baseHash: target.textHash, edits: [{ startLine: 2, deleteCount: 0,
+        lines: ['Candidate says: installed per-domain suggestion (unconfirmed).'], sourceIds: [sourceId], reason: 'Append with attribution' }] }],
+      report: 'Installation fixture validates a plan without applying it.' }))
+    assert.equal(plan.writes.length, 1)
+    assert.equal(await readFile(`${bot.workspacePath}/${target.path}`, 'utf8'), target.text)
+    assert.equal(execFileSync('git', ['-C', bot.workspacePath, 'status', '--porcelain'], { encoding: 'utf8' }), '')
     assert.equal(ctx.agents.get(conversation.sessionId), undefined)
     const inboxDomain = await ctx.mbot.reserveConversation(bot.botId, { source: { ...conversation.source, spaceId: 'mailbox-group' },
       allowedSenders: ['alice'], replyRoute: 'mailbox-group-route' })
@@ -286,7 +306,7 @@ async function probe(ctx) {
         || receipt.result?.final !== true || receipt.result.reply.text !== 'installed Runtime succeeded'
         || runtimeCalls !== 2) throw new Error('installed owner mailbox failed native-history deduplication or audited reply proof')
     }
-    const { readdir, readFile } = await import('node:fs/promises')
+    const { readdir } = await import('node:fs/promises')
     const candidates = await readdir(`${ctx.mbot.workspace()}/inbox`)
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')
     if (!candidateText.includes('installed Runtime native candidate')) throw new Error('installed Runtime data tool did not commit its candidate')

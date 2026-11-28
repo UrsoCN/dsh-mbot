@@ -24,6 +24,8 @@ import { openTurn } from '../plugin/turn.js'
 import { contextHash, contextSnapshotType, contextReferences, verifyContextCut, validateContextSnapshot } from '../plugin/context-state.js'
 import { candidatePath, parseCandidates, candidateText, candidateLimits, readCandidateFile, verifyCandidateAudit } from '../plugin/domain-candidates.js'
 import { domainOwnership, domainCandidateOwnership } from '../plugin/domain-contract.js'
+import { captureDomainDream } from '../plugin/domain-dream-source.js'
+import { validateDomainDreamPlan, domainDreamRequest } from '../plugin/domain-dream-plan.js'
 import { sealContextAudit } from '../plugin/context-audit.js'
 import { recoveryInput, journalDigest, validateRecoveryProof } from '../plugin/recovery-proof.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
@@ -636,6 +638,74 @@ async function recordDomainCandidate(f, text, callId = 'domain-candidate-call', 
   if (dispatch) await f.lease.record(f.session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId, isError: result.exitCode !== 0, content: [{ type: 'text', text: result.stdout || result.stderr }] }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] }))
   return result
 }
+
+test('domain Dreaming excludes failed and cancelled candidates even when their audited files remain', async t => {
+  for (const outcome of ['failed', 'cancelled', 'completed']) await t.test(outcome, async t => {
+    const f = await domainTurn(t, { ownership: domainCandidateOwnership })
+    assert.equal((await recordDomainCandidate(f, 'retained candidate')).exitCode, 0)
+    if (outcome === 'failed') await writeFile(join(f.ws, 'MEMORY.md'), 'forbidden write')
+    const result = await f.lease.finish(await f.end(outcome === 'cancelled' ? { kind: 'aborted', reason: { kind: 'user' } } : { kind: 'completed' }))
+    assert.equal(result.outcome, outcome)
+    assert.equal(parseCandidates(await readFile(join(f.ws, candidatePath(f.scope, f.lease.identity.runId)))).length, 1)
+    const capture = await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: f.log() })
+    assert.equal(capture.input.sources.length, outcome === 'completed' ? 1 : 0)
+    assert.equal(capture.more, false)
+    assert.equal(git(f.ws, 'status', '--porcelain'), '')
+  })
+})
+
+test('domain Dreaming redacts source bodies, holds shared and sensitive files readonly and audits deletions', async t => {
+  const secret = 'domain-dream-secret-135791357913579'
+  const f = await domainTurn(t, { ownership: domainCandidateOwnership })
+  await recordDomainCandidate(f, `candidate ${secret}`)
+  const result = await f.lease.finish(await f.end())
+  // New credentials must redact older candidate bodies on subsequent capture.
+  await writeFile(join(f.ws, '.env'), `TEST_SECRET=${secret}\n`)
+  const directory = `memory/conversations/${f.scope.conversationId}`
+  const memory = `${directory}/MEMORY.md`, sensitive = `${directory}/sensitive.md`
+  await writeFile(join(f.ws, memory), 'Keep this fact.\nRemove this obsolete claim.\nKeep this too.\n')
+  await writeFile(join(f.ws, sensitive), `Sensitive ${secret}\n`)
+  const policy = { ...f.policy, memory: [...f.policy.memory, sensitive] }
+  await writeFile(join(f.ws, directory, 'VIEW.json'), JSON.stringify(policy))
+  git(f.ws, 'add', 'memory'); git(f.ws, 'commit', '-m', 'human: publish explicit editable domain memory')
+  const capture = await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: f.log() })
+  const request = domainDreamRequest(capture, { provider: 'test', model: 'test' })
+  assert.ok(!JSON.stringify(request).includes(secret))
+  assert.match(capture.input.sources[0].text, /\[REDACTED\]/u)
+  assert.equal(capture.input.sources[0].origin.commit, result.head)
+  const documents = new Map(capture.input.documents.map(item => [item.path, item]))
+  assert.equal(documents.get(f.policy.memory[0]).writable, false) // explicitly shared memory
+  assert.equal(documents.get(sensitive).writable, false)
+  const sourceId = capture.input.sources[0].id
+  const proposal = { decisions: [{ sourceId, action: 'merge', reason: 'Reconcile the attributed obsolete claim' }],
+    changes: [{ path: memory, baseHash: documents.get(memory).textHash,
+      edits: [{ startLine: 2, deleteCount: 1, lines: [], sourceIds: [sourceId], reason: 'Candidate explains why the second claim is obsolete' }] }],
+    report: 'Removed only the second line with its candidate provenance.' }
+  const plan = await validateDomainDreamPlan(f.ws, capture, JSON.stringify(proposal))
+  assert.equal(plan.writes[0].text, 'Keep this fact.\nKeep this too.\n')
+  assert.equal(plan.proposal.changes[0].edits[0].deleteCount, 1)
+  for (const path of [f.policy.memory[0], sensitive]) {
+    const changed = structuredClone(proposal)
+    changed.changes[0].path = path; changed.changes[0].baseHash = documents.get(path).textHash
+    await assert.rejects(validateDomainDreamPlan(f.ws, capture, JSON.stringify(changed)), /outside/u)
+  }
+  const echoed = structuredClone(proposal); echoed.report = secret
+  await assert.rejects(validateDomainDreamPlan(f.ws, capture, JSON.stringify(echoed)), /sensitive/u)
+  // Read-only masks cannot create space in the actual memory budget.
+  const rawMemory = (await Promise.all(policy.memory.map(path => readFile(join(f.ws, path), 'utf8')))).join('\n\n')
+  const budgeted = await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: f.log(),
+    limits: { memoryChars: [...rawMemory].length + 1 } })
+  const tooLarge = structuredClone(proposal)
+  tooLarge.changes[0].edits = [{ startLine: 4, deleteCount: 0, lines: ['A new fact exceeds the merged allowance.'], sourceIds: [sourceId], reason: 'budget test' }]
+  await assert.rejects(validateDomainDreamPlan(f.ws, budgeted, JSON.stringify(tooLarge)), /budget/u)
+  // A Git replacement cannot substitute a private blob into original provenance.
+  const path = candidatePath(f.scope, f.lease.identity.runId)
+  const candidateBlob = git(f.ws, 'rev-parse', `${result.head}:${path}`), otherBlob = git(f.ws, 'rev-parse', 'HEAD:MEMORY.md')
+  git(f.ws, 'replace', candidateBlob, otherBlob)
+  assert.deepEqual(await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: f.log() }), capture)
+  git(f.ws, 'replace', '-d', candidateBlob)
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+})
 
 test('domain candidates bind native provenance and redaction, deduplicate retries and reject audit downgrade', async t => {
   const secret = 'domain-candidate-secret-445566778899'

@@ -50,6 +50,8 @@ import { captureContext } from '../plugin/context-checkpoint.js'
 import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
 import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/compaction-data.js'
 import { domainCandidateToolSchema, domainToolSchema, registerDomainBotctl } from '../plugin/domain-tools.js'
+import { captureDomainDream } from '../plugin/domain-dream-source.js'
+import { domainDreamRequest, validateDomainDreamPlan } from '../plugin/domain-dream-plan.js'
 
 const root = await mkdtemp('/tmp/mbot-runtime-tests.')
 process.env.DSH_HOME = join(root, 'dsh')
@@ -310,6 +312,119 @@ test('domain native remember seals isolated candidates and preserves knowledge a
   assert.equal(next.final, true)
   assert.equal((await ctx.mbotRuntime.checkpoint(agent)).snapshot.knowledge.version, rows[0].knowledgeVersion)
   assert.equal((await f.mailbox().receipt('remember')).result.reply.replyId, receipt.reply.replyId)
+})
+
+test('domain Dreaming captures only proven candidates with fixed knowledge, native cut and incremental positions', { timeout: 30000 }, async t => {
+  const f = await domainNativeFixture(t, (_request, count) => [1, 3].includes(count)
+    ? response('', { name: 'botctl', args: { action: 'remember', text: count === 1 ? '中文 first suggestion' : 'Second suggestion' } }) : response('recorded'))
+  for (const id of ['first', 'second']) { await f.mailbox().send({ requestId: id, text: 'remember a suggestion' }); await settle(f.ctx, f.agent) }
+  const log = await f.ctx.sessionQuery.readSession(f.agent.id)
+  const options = { scope: f.scope, role: 'chief', log }
+  const capture = await captureDomainDream(f.ws, options)
+  assert.equal(capture.input.sources.length, 2)
+  assert.deepEqual(capture.input.sources.map(source => source.text), ['中文 first suggestion', 'Second suggestion'])
+  assert.equal(capture.more, false)
+  assert.ok(!JSON.stringify(capture).includes('PRIVATE_'))
+  assert.equal(Object.isFrozen(capture.input.documents[0]), true)
+  const firstOnly = structuredClone(capture.input); firstOnly.sources.pop()
+  const inputBytes = Buffer.byteLength(JSON.stringify(firstOnly))
+  const first = await captureDomainDream(f.ws, { ...options, limits: { inputBytes } })
+  assert.equal(first.more, true); assert.equal(first.input.sources.length, 1)
+  const second = await captureDomainDream(f.ws, { ...options, after: first.nextCursor })
+  assert.deepEqual(second.input.sources.map(source => source.text), ['Second suggestion'])
+  const empty = await captureDomainDream(f.ws, { ...options, after: second.nextCursor })
+  assert.equal(empty.input.sources.length, 0); assert.equal(empty.more, false)
+  assert.deepEqual(empty.nextCursor, second.nextCursor)
+  await assert.rejects(captureDomainDream(f.ws, { ...options, after: { ...first.nextCursor, index: 100 } }), /cursor/u)
+  await assert.rejects(captureDomainDream(f.ws, { ...options, limits: { inputBytes: inputBytes - 1 } }), /candidate exceeds/u)
+  const original = await readFile(join(f.ws, f.policy.memory[0]))
+  await writeFile(join(f.ws, f.policy.memory[0]), 'UNCOMMITTED_DOMAIN_DRAFT')
+  const fixed = await captureDomainDream(f.ws, { ...options, head: capture.head })
+  assert.deepEqual(fixed, capture)
+  await writeFile(join(f.ws, f.policy.memory[0]), original)
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+})
+
+test('domain Dreaming refuses missing native and Git evidence, foreign identity and pending settlement', { timeout: 30000 }, async t => {
+  const f = await domainNativeFixture(t, (_request, count) => count === 1
+    ? response('', { name: 'botctl', args: { action: 'remember', text: 'verified source' } }) : response('recorded'))
+  await f.mailbox().send({ requestId: 'source', text: 'source input' }); await settle(f.ctx, f.agent)
+  const log = await f.ctx.sessionQuery.readSession(f.agent.id)
+  const options = { scope: f.scope, role: 'chief', log }
+  const head = git(f.ws, 'rev-parse', 'HEAD')
+  for (const mutate of [
+    copy => { copy.session.id = 'foreign-session' },
+    copy => { copy.inheritedEventCount = 1 },
+    copy => { copy.events[1].seq = copy.events[0].seq },
+    copy => { copy.events = copy.events.filter(event => event.type !== 'turn/end') },
+    copy => { copy.events.find(event => event.type === 'tool/call').data.arguments = '{"action":"remember","text":"tampered"}' },
+    copy => { copy.events.find(event => event.type === 'agent/inbox/spliced' && event.data.inserted.length).data.inserted[0].content[0].text = 'tampered Inbox' },
+  ]) {
+    const changed = structuredClone(log); mutate(changed)
+    await assert.rejects(captureDomainDream(f.ws, { ...options, log: changed }))
+  }
+  await assert.rejects(captureDomainDream(f.ws, { ...options, scope: { ...f.scope, accessHash: '0'.repeat(64) } }))
+  await assert.rejects(captureDomainDream(f.ws, { ...options, head: git(f.ws, 'rev-parse', 'HEAD^') }), /without a verified context audit/u)
+  const journalPath = join(f.ws, '.mbot/runs/active-turn.json')
+  await writeFile(journalPath, JSON.stringify({ schemaVersion: 5, runId: 'pending' }))
+  await assert.rejects(captureDomainDream(f.ws, options), /settled/u)
+  await unlink(journalPath)
+  const capture = await captureDomainDream(f.ws, options)
+  assert.equal(capture.input.sources.length, 1)
+  assert.equal(git(f.ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
+})
+
+test('domain Dreaming validates attributed line edits without granting private or shared writes', { timeout: 30000 }, async t => {
+  const f = await domainNativeFixture(t, (_request, count) => count === 1
+    ? response('', { name: 'botctl', args: { action: 'remember', text: '用户建议：周报使用中文，待确认。' } }) : response('recorded'))
+  await f.mailbox().send({ requestId: 'source', text: 'source input' }); await settle(f.ctx, f.agent)
+  const capture = await captureDomainDream(f.ws, { scope: f.scope, role: 'chief', log: await f.ctx.sessionQuery.readSession(f.agent.id) })
+  const document = capture.input.documents.find(item => item.path === f.policy.memory[0]), sourceId = capture.input.sources[0].id
+  const raw = { decisions: [{ sourceId, action: 'merge', reason: '记录有来源的待确认偏好' }],
+    changes: [{ path: document.path, baseHash: document.textHash, edits: [{ startLine: 2, deleteCount: 0,
+      lines: [`用户建议：周报使用中文，待确认。 [[${f.policy.references[0]}]]`], sourceIds: [sourceId], reason: '只追加候选偏好，不覆盖既有资料' }] }], report: '保留待确认标记。' }
+  const request = domainDreamRequest(capture, { provider: 'runtime-test', model: 'scripted', maxTokens: 1024 })
+  assert.equal(request.purpose, 'mbot-domain-dream')
+  assert.equal(request.messages.length, 2); assert.equal(request.tools, undefined)
+  assert.ok(!JSON.stringify(request).includes('PRIVATE_'))
+  assert.throws(() => domainDreamRequest(capture, { provider: 'p', model: 'm', tools: [] }), /options/u)
+  const plan = await validateDomainDreamPlan(f.ws, capture, JSON.stringify(raw))
+  assert.equal(plan.writes.length, 1)
+  assert.match(plan.writes[0].text, /待确认/u)
+  assert.ok(plan.writes[0].text.startsWith(document.text))
+  assert.equal(await readFile(join(f.ws, document.path), 'utf8'), document.text)
+  for (const mutate of [
+    copy => { copy.changes[0].path = 'MEMORY.md' },
+    copy => { copy.changes[0].path = f.policy.soul },
+    copy => { copy.changes[0].path = 'memory/shared/fact.md' },
+    copy => { copy.changes[0].baseHash = '0'.repeat(64) },
+    copy => { copy.changes[0].edits[0].sourceIds = ['foreign-source'] },
+    copy => { copy.changes[0].edits[0].reason = '' },
+    copy => { copy.changes[0].edits[0].startLine = 0 },
+    copy => { copy.changes[0].edits[0].deleteCount = 2 },
+    copy => { copy.changes[0].edits.push(structuredClone(copy.changes[0].edits[0])) },
+    copy => { copy.changes[0].edits[0].lines = ['[[MEMORY.md]]'] },
+    copy => { copy.changes[0].edits[0].lines = ['[private](../../MEMORY.md)'] },
+    copy => { copy.changes[0].edits[0].lines = ['<img src="file:///private">'] },
+    copy => { copy.changes[0].edits[0].lines = [`[[${f.policy.references[0]}|<img src="file:///private">]]`] },
+    copy => { copy.changes[0].edits[0].lines = ['multiline\ntext'] },
+    copy => { copy.changes[0].edits[0].lines = ['😀'.repeat(3001)] },
+    copy => { copy.changes[0].edits[0].lines = ['x'.repeat(65537)] },
+    copy => { copy.changes[0].edits[0].lines = ['\ud800'] },
+    copy => { copy.decisions[0].action = 'defer' },
+    copy => { copy.decisions = [] },
+    copy => { copy.changes = [] },
+    copy => { copy.privatePath = 'MEMORY.md' },
+  ]) {
+    const changed = structuredClone(raw); mutate(changed)
+    await assert.rejects(validateDomainDreamPlan(f.ws, capture, JSON.stringify(changed)))
+  }
+  const deferred = { decisions: [{ sourceId, action: 'defer', reason: '需要人工确认' }], changes: [], report: '未合并，保留来源供复核。' }
+  assert.deepEqual((await validateDomainDreamPlan(f.ws, capture, JSON.stringify(deferred))).writes, [])
+  const changedCapture = structuredClone(capture); changedCapture.input.documents[0].writable = true
+  await assert.rejects(validateDomainDreamPlan(f.ws, changedCapture, JSON.stringify(raw)), /captured input changed/u)
+  assert.equal(git(f.ws, 'status', '--porcelain'), '')
 })
 
 test('domain native candidate upgrade preserves audited v4 history and replaces the tool declaration', { timeout: 30000 }, async t => {

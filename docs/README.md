@@ -8,6 +8,7 @@
 |---|---|
 | [headless 工作流](headless.md) | 独立 run、数据工具、Chief/Worker 调度、tick/归档与 grants |
 | [记忆与 Dreaming](memory.md) | 长期记忆归属、预算、候选、增量续读与回滚 |
+| [独立域 Dreaming](domain-dreaming.md) | 已验证候选取材、隔离请求与写集校验；待接入的持久维护/恢复契约 |
 | [运维](operations.md) | cron、备份、clone 恢复、人工观察及长期验收 |
 | [插件发布检查](plugin-standard-review.md) | 包、版本/标签、兼容矩阵和 CI |
 

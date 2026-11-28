@@ -69,6 +69,13 @@
 - Node 24.9.0 完整回归通过：253 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-candidates-full.log`）。之后补充成功回执与候选文件一致性，类型与 28 项专项全部通过（`/tmp/dsh-mbot-domain-candidates-final-scope2.log`），覆盖删除整文件/单行、旧证明拒绝、真实原生重载与提交中断恢复。首次专项因手工构造的 tool/result 缺少原生 surfaceOp 标记失败，修正夹具后复验，保留 `/tmp/dsh-mbot-domain-candidates-final-scope.log`。
 - 四类实际安装全部通过，覆盖同一内部 Session 的 v4→v5 升级及候选 Git 证明（`/tmp/mbot-plugin-install.4zGtk1`、`/tmp/dsh-mbot-domain-candidates-install.log`）。tarball Chromium 通过预留拒绝、双窗口、收信重试、刷新、SIGKILL 后同 ID 恢复和私人主 Session 续聊，实际截图已检查（`/tmp/mbot-gui-conversations.1aVFqN`、`/tmp/dsh-mbot-domain-candidates-gui.log`）。351 条文档链接、包资源、Bash 语法及 `git diff --check` 通过；本阶段未运行真实 API 或 R5。
 
+### 域 Dreaming 取材与计划校验
+
+- 抽取共用的 `context-restore` 读取器，checkpoint 与域维护复用原生/Git/context/candidate 证明，Git history/batch 读取禁用 replace。域 Dreaming 仅接收已完成回合中有成功工具回执的候选，官方原生 fold 核验来源 cut/Inbox；未结算、缺日志、未审计回合及域身份冲突拒绝。固定 Git 视图、整条候选预算、增量 cursor、当前凭据脱敏均有验证。
+- 新增独立辅助请求构造及结构化计划校验：只声明 system/user 两条消息和无工具的 `mbot-domain-dream` purpose；仅本域已发布且未脱敏的 memory/reference 可提出逐行编辑，共享/协议/SOUL 只读。每项取舍/删除保留来源与依据，检查链接、实际原文预算、Unicode 和凭据；输出冻结写集，不修改工作树或消费 checkpoint。域仍 reserved，模型执行、持久维护、回滚与恢复留在 TODO，详见 [独立域 Dreaming](docs/domain-dreaming.md)。
+- Node 24.9.0 完整回归通过：263 项 Host/Runtime 通过、1 项真实 API 跳过、64 组 Bash（`/tmp/dsh-mbot-domain-dream-full.log`）。补充链接标签和脱敏原文预算检查后，类型与 8 项专项通过（`/tmp/dsh-mbot-domain-dream-final-scope.log`）。早期专项中将展示卡片缺失误判为必须拒绝，以及测试清单重复列入同一文档的问题均已修正；保留 `/tmp/dsh-mbot-domain-dream-scope.log` 和 `scope2.log`。
+- 四类安装全部通过，实际包内执行取材/请求构造/计划校验，并确认没有写入工作树（`/tmp/mbot-plugin-install.LUBZve`、`/tmp/dsh-mbot-domain-dream-install2.log`）。首次 tarball 夹具因局部 `readFile` 遮蔽顶层导入失败，修正测试后重跑矩阵，保留 `/tmp/mbot-plugin-install.kgcsPh`。361 条本地文档链接、包资源、Node/Bash 语法及 `git diff --check` 通过。没有新增 GUI 流程，本阶段未运行 Chromium、真实 API 或 R5。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。
