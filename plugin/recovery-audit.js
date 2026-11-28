@@ -7,6 +7,7 @@ import { nativeReply } from './native-reply.js'
 import { applyRedactions } from './reply-proof.js'
 import { sealContextAudit } from './context-audit.js'
 import { sealCompactionAudit, compactInputType, compactOutputType } from './compaction-data.js'
+import { validateDomainScope } from './domain-contract.js'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const digest = text => createHash('sha256').update(text).digest('hex')
 
@@ -36,7 +37,7 @@ export function computeManagedOutcome(meta, events, version) {
   const actorFault = Array.isArray(meta.runtime?.actors) && meta.runtime.actors.some(actor => actor?.native?.executionFault === true)
   const expectedFault = computeExecutionFault(events) || actorFault
   if (typeof meta.success !== 'boolean') throw new Error('invalid success')
-  if ((version === 2 || version === 3) && meta.runtime?.outcome_schema_version !== 1) throw new Error('versioned journal requires versioned outcome')
+  if ([2, 3, 4].includes(version) && meta.runtime?.outcome_schema_version !== 1) throw new Error('versioned journal requires versioned outcome')
   if ('outcome' in meta || 'failure_count_effect' in meta || meta.runtime?.outcome_schema_version != null) {
     if (meta.runtime?.outcome_schema_version !== 1 || typeof meta.runtime?.execution_fault !== 'boolean' || !Array.isArray(meta.violations)) {
       throw new Error('invalid outcome version')
@@ -44,7 +45,7 @@ export function computeManagedOutcome(meta, events, version) {
     if (meta.runtime.execution_fault !== expectedFault) throw new Error('native execution fault mismatch')
     if (meta.outcome === 'completed' && meta.success === true && meta.failure_count_effect === 'reset' && meta.violations.length === 0) return 'completed'
     if (meta.outcome === 'cancelled' && meta.success === false && meta.failure_count_effect === 'preserve'
-      && (version === 2 || version === 3) && meta.reason?.kind === 'aborted' && meta.reason?.reason?.kind === 'user'
+      && [2, 3, 4].includes(version) && meta.reason?.kind === 'aborted' && meta.reason?.reason?.kind === 'user'
       && meta.violations.length === 0 && meta.runtime.execution_fault === false) return 'cancelled'
     if (meta.outcome === 'failed' && meta.success === false && meta.failure_count_effect === 'increment') return 'failed'
     throw new Error('invalid outcome effect')
@@ -87,8 +88,12 @@ export function verifyRecoveryAudit(workspace, header, events, result, actors, p
       || applyRedactions(text, reply.redactions) !== reply.text || reply.textHash !== digest(reply.text)) throw new Error('Recovered audit reply does not match native evidence')
   }
   const version = meta.runtime.journal_schema_version ?? 2
-  const sealedContext = preloaded?.sealedContext ?? (meta.runtime.context ? sealContextAudit(meta, events, workspace, preloaded?.knowledge) : undefined)
-  if (meta.runtime.context && !isDeepStrictEqual(meta.runtime.context, sealedContext)) throw new Error('Recovered context does not match its native/Git evidence')
+  if (version === 4 || meta.runtime.conversation || header.conversation) {
+    validateDomainScope(meta.runtime.conversation)
+    if (version !== 4 || !isDeepStrictEqual(meta.runtime.conversation, header.conversation)) throw new Error('Recovered audit changed its domain ownership')
+  }
+  const sealedContext = preloaded?.sealedContext ?? (version === 4 || meta.runtime.context ? sealContextAudit(meta, events, workspace, preloaded?.knowledge) : undefined)
+  if ((version === 4 || meta.runtime.context) && !isDeepStrictEqual(meta.runtime.context, sealedContext)) throw new Error('Recovered context does not match its native/Git evidence')
   if ((meta.runtime.compaction_policy_version === 1 || events.some(event => [compactInputType, compactOutputType].includes(event.type)))
     && !isDeepStrictEqual(meta.runtime.compactions, sealCompactionAudit(meta, events))) throw new Error('Recovered compaction does not match native evidence')
   if (version !== 3 && meta.runtime.actors !== undefined) throw new Error('Foreground audit unexpectedly contains Worker ownership')

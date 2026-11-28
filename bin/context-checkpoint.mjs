@@ -5,6 +5,7 @@ import { contextSnapshotType, contextAuditEvent } from '../plugin/context-state.
 import { contextGit, createGitBatchReader, readKnowledge, sealContextAudit } from '../plugin/context-audit.js'
 import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
 import { readJournal } from '../plugin/recovery-proof.js'
+import { validateDomainScope } from '../plugin/domain-contract.js'
 
 try {
   const [mode, workspace, commit, role] = process.argv.slice(2)
@@ -13,9 +14,13 @@ try {
   } else if (mode === '--restore') {
     process.stdin.setEncoding('utf8')
     let text = ''; for await (const chunk of process.stdin) text += chunk
-    const { botId, log } = JSON.parse(text)
+    const { botId, log, conversation } = JSON.parse(text)
+    if (conversation) {
+      validateDomainScope(conversation)
+      if (conversation.botId !== botId || conversation.sessionId !== log.session.id) throw new Error('Context restore changed its domain ownership')
+    }
     const journal = await readJournal(workspace)
-    if (journal && (![1, 2, 3].includes(journal.schemaVersion) || typeof journal.runId !== 'string')) throw new Error('Unknown turn journal while restoring context')
+    if (journal && (![1, 2, 3, 4].includes(journal.schemaVersion) || typeof journal.runId !== 'string')) throw new Error('Unknown turn journal while restoring context')
     // Single-pass index of native events by turn to eliminate O(T * E) scans.
     const snapshots = new Map()
     const turnStarts = new Map()
@@ -63,6 +68,7 @@ try {
         const metaObj = await gitBatch.readBlob(`${head}:${value}`)
         const meta = JSON.parse(metaObj.body.toString('utf8'))
         if (meta.runtime?.bot_id !== botId || meta.runtime.session_id !== log.session.id) continue
+        if (!isDeepStrictEqual(meta.runtime.conversation, conversation)) throw new Error('Context audit changed its registered conversation')
         // Git can have committed before counters/permit settlement. That run's
         // checkpoint stays unpublished until its original journal is resolved.
         if (journal?.runId === meta.run_id) continue
@@ -82,10 +88,10 @@ try {
         if (start && !end) throw Object.assign(new Error('Context observations crossed a turn completion'), { code: 'MBOT_CONTEXT_OBSERVATION_CHANGED' })
         if (!start || !end) throw new Error('Audited context turn is incomplete')
         const events = eventsByTurn.get(meta.runtime.turn) ?? []
-        const knowledge = await gitBatch.readKnowledge(meta.base_head, meta.bot)
+        const knowledge = await gitBatch.readKnowledge(meta.base_head, meta.bot, conversation)
         const sealed = sealContextAudit(meta, events, workspace, knowledge)
         const result = { head, meta: value, runId: meta.run_id, success: meta.success, outcome: meta.outcome, failureCountEffect: meta.failure_count_effect }
-        verifyRecoveryAudit(workspace, { botId, sessionId: log.session.id, turn: meta.runtime.turn,
+        verifyRecoveryAudit(workspace, { botId, sessionId: log.session.id, turn: meta.runtime.turn, ...(conversation ? { conversation } : {}),
           ...(meta.runtime.reply ? { messages: events.filter(event => event.type === 'user/message').map(event => event.data) } : {}) }, events, result, meta.runtime.actors,
           { meta, parentHash, commitBody: commitBody.replace(/\n$/u, '') + '\n\n', knowledge, sealedContext: sealed })
         if (!isDeepStrictEqual(sealed, meta.runtime.context)) throw new Error('Git context seal contradicts its native snapshot')

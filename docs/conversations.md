@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。资料视图尚未接入实际回合、工具、checkpoint、摘要与 Dreaming，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。内部事务桥已接入域快照、只读工具与 checkpoint 恢复；实际模型提示/工具接线、消息、摘要及 Dreaming 仍待完成，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -70,11 +70,24 @@ const historical = await ctx.mbot.inspectConversationView(botId, record.source, 
 
 所有字段显式提供，`memory`/`references` 可为空；协议与角色资料必须分别提供，不能回退到根目录的私人文件。只允许共享目录或本域目录内的明确 `.md` 路径，拒绝其他域、路径穿越、隐藏组件、反斜线、控制字符、重复文件与未知字段。读取以同一个固定 commit 为准，要求全部资料已提交为常规 Git blob；不跟随符号链接、子模块、Git replace 对象或 Markdown 链接，不读取工作树草稿。Bot 重新导入后身份不同，需要人类重新发布对应清单。
 
-清单最多 32 KiB；至多 64 个文件，每个最多 64 KiB，总计最多 256 KiB；内容要求有效 UTF-8 且无 NUL。这些是读取器硬上限，未来运行期仍须落实配置中的提示/记忆预算。超限或缺文件整次拒绝，不静默截断或补读私人资料。
+清单最多 32 KiB；至多 64 个文件，每个最多 64 KiB，总计最多 256 KiB；内容要求有效 UTF-8 且无 NUL。这些是读取器硬上限；内部域事务另外按配置检查合并记忆的行/字符总预算、SOUL 字符数及逐份参考文档行数。超限或缺文件整次拒绝，不静默截断或补读私人资料。
 
-视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。它目前是独立视图格式，**不是已经接入的 turn checkpoint v2**：既有私人主 Session 的知识与审计仍使用原格式，不能把检查结果冒充原生/Git 事务证明。
+视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。内部域事务通过下述 context snapshot v2 将知识版本封存到原生/Git 证明；单独的视图检查仍不构成事务证明。既有私人主 Session 的知识与快照保留 v1。
 
-`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；后续读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。当前没有对模型开放这个工具。域候选写入、Dreaming、正文脱敏、提示隔离、预算与恢复接齐之前，域闸门继续拒绝执行。
+`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；后续读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。当前没有对模型开放这个工具。内部数据桥已提供脱敏/预算检查后的固定快照读取，域候选、Dreaming、模型提示与摘要/维护接齐之前，公开域闸门继续拒绝执行。
+
+## 内部域事务与 checkpoint
+
+内部 `openTurn` 使用独立 `journal.schemaVersion=4` 与 `runtimeOwnership={schemaVersion:3, mode:'domain-foreground', workerDepth:0, tools:['botctl']}`。这一步为后续激活建立数据契约；公开 `ctx.mbot.beginTurn` 拒绝 conversation 参数和 reserved Session，模型闸门也未开放。不得将内部 helper 当作新消息入口。
+
+- 取得 Bot 锁并固定 HEAD 后，从域清单读取资料。上下文只含已发布协议/SOUL/记忆/参考，私人 BOARD、角色记忆等不自动取入；候选写入和 Worker 委派均拒绝。
+- 合并后的全部 memory 受 `MBOT_MEMORY_MAX_LINES`/`MBOT_MEMORY_MAX_CHARS` 限制（含拼接换行），SOUL 受字符预算限制，每份参考受 wiki 行预算限制。超限在发布 active journal 前拒绝；正文使用现行凭据脱敏，知识/域身份 hash 保留原始精确值。
+- 私有 `context.json` 先持久化，其 SHA-256 与 Bot/conversation/Session、来源 key、可见性及权限 hash 一起写入 v4 journal。`boot <本轮角色>` 仅返回固定协议/人格/记忆和参考路径；`view <清单路径>` 只读捕获的脱敏正文。直接持 permit 调用 CLI 也不能读私人任务/看板或执行旧 remember。
+- 初始域契约禁止全部业务工作树写入；guard 恢复越权数据，Host 最后封存审计。成功、失败、干净用户取消沿用统一 outcome 与故障计数规则。
+- 原生 `plugin:mbot/context-snapshot` 的 schemaVersion 2 绑定持久 conversationId、knowledge v2、原生有序来源 cut/Inbox 输入和前序 checkpoint。同一次 Git 审计封存域身份与 context；成功域回合不得没有 snapshot，已捕获的失败/取消回合也不能删掉证明或降为私人 v1。
+- 恢复要求 Host 原生所有权核验及 `recorded-domain-v1` proof，检查 registry 域归属、原 journal/私有 ledger/context hash、原生事件和 Git 审计；使用原始受限 guard，保持单次提交/结算与 PAUSED，不运行模型。Runtime 重载后可恢复 checkpoint，输入继续留在同一 reserved Session 的 Inbox。
+
+当前不支持域 ownerMailbox 收据、IM/peer/outbox、候选/Dreaming、Worker、自动/手动摘要或 sleep/wake。实际域激活必须在这些所需契约及来源准入接齐后验收，不能用旧私人接口代替。
 
 ## 持久化、执行与退役
 
@@ -93,5 +106,6 @@ registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2
 - 独立 Host 子进程在 Session flush 后被 SIGKILL，再从实际持久存储恢复同一 ID，核对 Inbox 字节、域记录和零模型调用。
 - `npm run test:gui-conversations` 使用 tarball 安装后的 Web profile，覆盖双窗口、拒绝反馈、刷新、Host 重启和私人主 Session 续聊。GUI 与恢复全进程检查分开执行。
 - 资料视图测试覆盖私人 canary 不泄露、群/其他用户/peer 隔离、固定 commit 与未提交草稿、权限/正文版本变化、清单越界、符号链接、缺文件、非法 UTF-8/NUL 和字节限额；安装矩阵通过真实 Host API 检查包内 helper，确认只返回元数据且不激活域。
+- 域桥测试覆盖固定快照/只读命令、私人路径拒绝、越权写入回滚、取消计数、正文脱敏、合并记忆预算、原生/Git checkpoint 及中断单次结算；原生 Agent 测试通过公开恢复接口核验重载后的持久域身份、checkpoint 和 Inbox。安装矩阵实际执行包内 v4 桥，公开域执行仍拒绝。
 
-上述验收只证明预留及拒绝边界，不代表已完成群聊、跨域记忆、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。
+上述验收证明预留拒绝边界与内部域事务，不代表已完成实际域模型对话、候选治理、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。

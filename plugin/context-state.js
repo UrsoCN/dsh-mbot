@@ -1,23 +1,10 @@
-import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 
 export const contextSnapshotType = 'plugin:mbot/context-snapshot'
 
-// Stable across JSON serialization, persistence and provider object key order.
-export function canonical(value) {
-  if (Array.isArray(value)) return `[${value.map(item => item === undefined ? 'null' : canonical(item)).join(',')}]`
-  if (value && typeof value === 'object') return `{${Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
-  return JSON.stringify(value)
-}
-export const contextHash = value => createHash('sha256').update(canonical(value)).digest('hex')
-export const contentHash = value => createHash('sha256').update(value).digest('hex')
-export function freezeContext(value) {
-  if (value && typeof value === 'object') {
-    for (const item of Object.values(value)) freezeContext(item)
-    Object.freeze(value)
-  }
-  return value
-}
+export { canonical, contextHash, contentHash, freezeContext } from './context-hash.js'
+import { contextHash } from './context-hash.js'
+import { validateDomainKnowledge } from './domain-contract.js'
 const hash = /^[a-f0-9]{64}$/u
 const gitHash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u
 
@@ -27,6 +14,7 @@ export function knowledgeFiles(role) {
 }
 
 export function validateKnowledge(knowledge, role) {
+  if (knowledge?.schemaVersion === 2) return validateDomainKnowledge(knowledge, role)
   const paths = knowledgeFiles(role)
   if (knowledge?.schemaVersion !== 1 || knowledge.role !== role || !Array.isArray(knowledge.documents)
     || knowledge.documents.length !== paths.length || !hash.test(knowledge.version ?? '')
@@ -47,9 +35,16 @@ export function contextReferences(events) {
 }
 
 export function validateContextSnapshot(data, seq) {
-  if (data?.schemaVersion !== 1 || data.kind !== 'turn-input' || data.visibility !== 'owner-private'
+  const domain = data?.schemaVersion === 2
+  if (domain) {
+    validateDomainKnowledge(data.knowledge, data.role)
+    const scope = data.knowledge.scope
+    if (data.visibility !== scope.visibility || data.botId !== scope.botId || data.sessionId !== scope.sessionId
+      || data.conversationId !== scope.conversationId || data.compactionPolicyVersion !== undefined) throw new Error('Context snapshot changed its conversation scope')
+  }
+  if ((!domain && (data?.schemaVersion !== 1 || data.visibility !== 'owner-private' || data.conversationId !== data.sessionId || data.knowledge?.schemaVersion !== 1)) || data.kind !== 'turn-input'
     || typeof data.botId !== 'string' || !data.botId || typeof data.sessionId !== 'string' || !data.sessionId
-    || data.conversationId !== data.sessionId || !Number.isSafeInteger(data.turn) || data.turn < 1
+    || !Number.isSafeInteger(data.turn) || data.turn < 1
     || data.compactionPolicyVersion !== undefined && data.compactionPolicyVersion !== 1
     || !/^\d{8}T\d{6}Z-turn-[a-f0-9]{16}$/u.test(data.runId ?? '') || !gitHash.test(data.memoryCommit ?? '')
     || !Number.isSafeInteger(data.contextEpoch) || data.contextEpoch < 1

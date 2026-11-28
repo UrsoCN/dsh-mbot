@@ -43,6 +43,10 @@ import * as ipc from '../plugin/ipc.js'
 import { ipcLocation, profileLocation, requestHost, maxFrameBytes } from '../plugin/ipc-protocol.js'
 import { readonlyLegacy } from '../plugin/readonly-migration.js'
 import { recoveryInput } from '../plugin/recovery-proof.js'
+import { openTurn } from '../plugin/turn.js'
+import { domainOwnership } from '../plugin/domain-contract.js'
+import { conversationViewScope } from '../plugin/conversation-view.js'
+import { captureContext } from '../plugin/context-checkpoint.js'
 import { contextSnapshotType, contextHash, contextAuditEvent } from '../plugin/context-state.js'
 import { compactInputType, compactOutputType, summaryPurpose } from '../plugin/compaction-data.js'
 
@@ -193,6 +197,59 @@ async function settle(ctx, agent) { await agent.whenIdle(); await ctx.mbotRuntim
 const conversationAccess = (spaceId = 'group-a') => ({ source: { adapterId: 'test-adapter', platform: 'qq',
   accountId: 'bot-account', spaceId, threadId: null, visibility: 'group', principalId: null },
   allowedSenders: ['alice'], replyRoute: `${spaceId}-route` })
+
+test('Runtime recovers an internal domain v4 turn after reload and keeps native input reserved', { timeout: 30000 }, async t => {
+  const { ctx, ws, bot, owner, requests } = await app(t, () => response('must not execute'), { main: true, persistence: true })
+  const registration = await ctx.mbot.reserveConversation(bot.botId, conversationAccess())
+  const directory = `memory/conversations/${registration.conversationId}`
+  await mkdir(join(ws, directory), { recursive: true })
+  const policy = { schemaVersion: 1, botId: bot.botId, conversationId: registration.conversationId,
+    conversationKey: registration.conversationKey, role: 'chief', protocol: `${directory}/AGENTS.md`,
+    soul: `${directory}/SOUL.md`, memory: [`${directory}/MEMORY.md`], references: [] }
+  for (const path of [policy.protocol, policy.soul, ...policy.memory]) await writeFile(join(ws, path), 'Explicit domain fixture.\n')
+  await writeFile(join(ws, directory, 'VIEW.json'), JSON.stringify(policy))
+  git(ws, 'add', 'memory'); git(ws, 'commit', '-m', 'human: publish recovery domain fixture')
+  const created = await ctx.agents.create({ sessionId: registration.sessionId, meta: { cwd: ws },
+    agentOptions: { provider: 'runtime-test', model: 'scripted' } })
+  const agent = created.agent, scope = conversationViewScope(registration), input = message('pending domain input')
+  agent.inbox.splice('next-turn', 0, 0, [input])
+  // Seed a closed native turn without bypassing the model gate. Only the internal data bridge runs.
+  const start = agent.session.append('turn/start', { turn: 1 })
+  const lease = await openTurn(ctx.mbot, mbot.packageRoot, bot, { sessionId: agent.id, turn: 1,
+    request: 'internal domain recovery fixture', conversation: scope, messages: [input], writerScope: 'agent-runtime',
+    runtimeOwnership: domainOwnership, onExpiry: async () => {}, onCancel: async () => {} })
+  await captureContext(ctx.mbotRuntime.states.get(agent), { lease, turn: 1, messages: [input], signal: new AbortController().signal })
+  agent.session.append('turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  for (const event of agent.session.snapshotEvents().filter(event => event.seq >= start.seq)) await lease.record(event)
+  await ctx.sessions.flush(agent.session)
+  lease.child.terminate()
+  await lease.child.waitForExit()
+  await owner.dispose()
+  await ctx.plugin(runtime, { workers: false })
+  await removalController(ctx, agent)
+  const base = git(ws, 'rev-parse', 'HEAD'), journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const originalJournal = await readFile(journalPath, 'utf8'), journal = JSON.parse(originalJournal)
+  await writeFile(journalPath, JSON.stringify({ ...journal, conversation: { ...scope, accessHash: '0'.repeat(64) } }))
+  await assert.rejects(recoverNativeTurn(ctx, { botId: bot.botId }), /persistent domain ownership/u)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), base)
+  await writeFile(journalPath, originalJournal)
+  const recovered = await recoverNativeTurn(ctx, { botId: bot.botId })
+  assert.equal(recovered.outcome, 'cancelled')
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  const checkpoint = await ctx.mbotRuntime.checkpoint(agent)
+  assert.equal(checkpoint.commit, recovered.head)
+  assert.equal(checkpoint.snapshot.schemaVersion, 2)
+  assert.deepEqual(checkpoint.snapshot.knowledge.scope, scope)
+  assert.equal((await ctx.mbotRuntime.status(agent)).state, 'reserved')
+  assert.equal(agent.inbox.nextTurn[0].id, input.id)
+  assert.equal(requests.length, 0)
+  assert.ok(await lstat(join(ws, '.mbot/PAUSED')))
+  assert.equal((await recoverNativeTurn(ctx, { botId: bot.botId })).needed, false)
+  agent.followup(message('new input after recovery stays reserved'))
+  await settle(ctx, agent)
+  assert.equal(agent.inbox.nextTurn.length, 2)
+  assert.equal(requests.length, 0)
+})
 
 test('reserved conversations retain input across Runtime reload and remain gated after explicit disposal/resume', { timeout: 30000 }, async t => {
   const { ctx, ws, bot, agent: main, owner, requests } = await app(t, () => response('private main response'), { main: true, persistence: true, compaction: 'scoped' })

@@ -29,6 +29,7 @@ case ${1:---help} in
     if [[ ( $command == run || $command == tick || $command == archive || $command == dream ) && -v MBOT_RUN_ID ]]; then mbot_error "nested mbot $command is forbidden (MBOT_RUN_ID is set)"; exit 1; fi
     mbot_load_workspace
     [[ ! -v MBOT_PERMIT_TOKEN ]] || mbot_check_permit 0
+    [[ ! -v MBOT_DOMAIN_SCRATCH ]] || { mbot_error 'domain permits cannot invoke owner controls'; exit 1; }
     "mbot_$command" "$@" ;;
   *) mbot_error "unknown command: $1 (use --help)"; exit 2 ;;
 esac

@@ -40,7 +40,7 @@ mbot_turn_finalize() {
     (mbot_execution_fault($session) or any($journal[0].actors[]?; .native.executionFault==true)) as $execution_fault |
     .success=(.success and ($execution_fault|not)) |
     (if .success then "completed"
-     elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
+     elif ($journal[0].schemaVersion==2 or $journal[0].schemaVersion==3 or $journal[0].schemaVersion==4) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and ($execution_fault|not) then "cancelled"
      else "failed" end) as $outcome |
     . + {outcome:$outcome, failure_count_effect:(if $outcome=="completed" then "reset" elif $outcome=="cancelled" then "preserve" else "increment" end),
       runtime:({kind:"managed-turn",schemaVersion:1, outcome_schema_version:1, execution_fault:$execution_fault,

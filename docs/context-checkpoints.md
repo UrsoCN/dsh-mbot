@@ -40,6 +40,8 @@ Runtime 在模型提示组装前发布 `plugin:mbot/context-snapshot` 原生记�
 
 旧回合没有 snapshot 时保留原审计格式，不合成历史 checkpoint 或回复证明。已经捕获 snapshot 的回合若审计丢掉 context 证明，则拒绝降级。取材失败若发生在取得数据 lease 后，使用真实原生 blocked/cancelled 结果完成审计、释放许可，未执行输入留在原生 Inbox。
 
+开发分支另外实现额外域的 context snapshot v2：conversationId 使用持久域 ID，knowledge v2 绑定明确发布的共享/本域文件与权限，Git 审计必须同时保留 journal v4 和完整域身份。恢复继续核对原生 surface/Inbox 与前序链；已捕获的失败/取消回合也不能删去 context 证明。额外域实际执行仍关闭，详见 [内部域事务](conversations.md#内部域事务与-checkpoint)。
+
 ## 与维护证明的边界
 
 这里保存的是 turn 输入基准；它不等于已经生成摘要。[自动摘要](managed-compaction.md) 已补充原生 compaction ID、摘要输出/hash、摘要范围及来源/可见域证明。没有 MBot 证明的旧原生 replacement 可以被引用为 surface，但不因此成为遵守 MBot 摘要规则的证明；睡眠仍须自己的阶段 journal。

@@ -38,6 +38,8 @@ Runtime 的前台 turn 保存 runtimeOwnership v1：foreground-only、workerDept
 
 旧的无 runtimeOwnership 请求头，只能由仍持有该回合 lease/失败审计记录的原 Host 作静止确认。缺少新 messages 的旧头可继续旧格式审计，不能生成 sealed reply 或虚构已核验回答。没有原 Host 的捕获记录时，已结束且全为核心只读调用的旧回合可用 [只读迁移证明](legacy-migration.md) 恢复；其他旧契约保留 journal，继续走后续迁移/人工核实设计，不通过修改 writerScope 或删除证据放行。
 
+开发分支对内部域 v4 事务增加 `recorded-domain-v1` 证明：恢复前核对 registry 中的不可变域/Session 归属，私有 context 字节 hash 与原 journal 一致；恢复继续限制所有工作树写入，按同一原生/Git context snapshot v2 单次结算。原生 Agent 测试已验证 Runtime 重载、权限冲突拒绝、checkpoint 恢复和 Inbox 保留；额外域仍是 reserved，不因此开放模型执行、消息适配器或摘要。详见 [域事务](conversations.md#内部域事务与-checkpoint)。
+
 ## 结果与边界
 
 恢复返回 kind=recovered；needed=true 包含 runId/head/meta/success/outcome/failureCountEffect 和 alreadyCommitted。completed 归零，干净 user 取消保留原故障链，原生 interrupted 或其他故障递增。原生/Git/journal/flush 一致后 receipt 才释放固定路线的回答；中断且没有完整回答时文本为空，不补造模型回答。

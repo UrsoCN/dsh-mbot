@@ -25,5 +25,6 @@ export declare function conversationViewScope(registration: ConversationRegistra
 export declare function conversationViewPath(registration: ConversationRegistration): string
 export declare function conversationViewPolicy(input: ConversationViewPolicy, registration: ConversationRegistration, role: string): ConversationViewPolicy
 export declare function readConversationView(workspace: string, commit: string | undefined, registration: ConversationRegistration, role: string): ConversationView
+export declare function readDomainView(workspace: string, commit: string | undefined, scope: ConversationViewScope, role: string): ConversationView
 export declare function conversationViewDocument(view: ConversationView, path: string): string
 export declare function inspectConversationView(view: ConversationView): ConversationViewInspection

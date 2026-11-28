@@ -4,7 +4,7 @@ DeepSeek Harness 的 Cordis 插件，以 Markdown/Git 管理任务和长期记�
 
 当前版本 **0.2.0-rc.1**，对应标签 `v0.2.0-rc.1`（2026-11-28）。Bot 实例、主 Session、持久恢复、上下文 checkpoint、自动/手动摘要、sleep/wake 和最小管理面板均已发布。隔离对话域、IM/peer/outbox、Worker Bash/文件/PTC 写工具、完整配置编辑及至少 7 天真实调度观察仍未完成。
 
-开发分支已增加 [conversation 身份与来源权限预留](docs/conversations.md)，registry v3 兼容 v1/v2；显式域资料清单可按固定 Git 版本检查。额外域目前保持 `reserved`，不能运行模型或工具；资料视图与回合、工具、摘要的接入继续开发。
+开发分支已增加 [conversation 身份与来源权限预留](docs/conversations.md)，registry v3 兼容 v1/v2；显式域资料清单可按固定 Git 版本检查。内部域事务已支持隔离资料快照、只读 boot/view、预算/脱敏与 checkpoint 恢复。额外域对外仍保持 `reserved`；模型激活、消息、候选/Dreaming 与摘要/维护继续开发。
 
 | 文档 | 内容 |
 |---|---|

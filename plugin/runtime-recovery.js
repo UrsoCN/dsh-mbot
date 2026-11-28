@@ -8,6 +8,10 @@ import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-p
 import { restoreContext, recoverCompactionCatalog } from './context-checkpoint.js'
 import { contextAuditEvent } from './context-state.js'
 import { sealCompactionAudit, verifyCompactionSources, compactInputType, compactOutputType } from './compaction-data.js'
+import { botSessionIds, conversationForSession } from './conversations.js'
+import { conversationViewScope } from './conversation-view.js'
+import { validateDomainJournal } from './domain-contract.js'
+import { isDeepStrictEqual } from 'node:util'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 
 function awaited(signal, operation) {
@@ -39,7 +43,8 @@ export async function repairNativeReceipt(runtime, bot, options) {
       const workers = await runtime.workerLogs(events)
       const check = runtime.ctx.mbot.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/turn-runtime-recovery.mjs'), '--audit-input'],
         cwd: packageRoot, signal: options.signal, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ workspace: bot.workspacePath,
-          header: { botId: bot.botId, sessionId: state.agent.id, turn: record.turn, writerScope: 'agent-runtime', messages: record.messages },
+          header: { botId: bot.botId, sessionId: state.agent.id, turn: record.turn, writerScope: 'agent-runtime', messages: record.messages,
+            ...(state.domainScope ? { conversation: state.domainScope } : {}) },
           events, workers, result }) },
           stdout: { maxBytes: 8000 }, stderr: { maxBytes: 8000 } } })
       runtime.ctx.mbot.active.add(check)
@@ -82,7 +87,12 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     const controller = runtime.ctx.get('sessionController')
     if (!controller) throw new Error('Runtime recovery requires the native Session Controller')
     if (journal.botId !== bot.botId || journal.workspace !== bot.workspacePath
-      || ![bot.mainSessionId, bot.binding?.pendingSessionId, ...states.map(state => state.agent.id), ...(options.retiredSessionIds ?? [])].includes(journal.sessionId)) throw new Error('Recovery journal does not belong to the selected Bot Session')
+      || ![...botSessionIds(runtime.ctx.mbot.registry(), bot), ...states.map(state => state.agent.id), ...(options.retiredSessionIds ?? [])].includes(journal.sessionId)) throw new Error('Recovery journal does not belong to the selected Bot Session')
+    const conversation = conversationForSession(runtime.ctx.mbot.registry(), journal.sessionId)
+    if (conversation) {
+      validateDomainJournal(journal)
+      if (!isDeepStrictEqual(journal.conversation, conversationViewScope(conversation))) throw new Error('Recovery journal changed its persistent domain ownership')
+    } else if (journal.conversation || journal.schemaVersion === 4) throw new Error('Domain recovery requires persistent conversation ownership')
     const resolved = await awaited(options.signal, controller.resolveAgent(journal.sessionId))
     if ('error' in resolved) throw resolved.error
     const agent = resolved.agent
@@ -96,7 +106,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
       && (journal.bootId === undefined || journal.bootId === bootId)
       && states.some(state => state.current?.lease?.identity.runId === journal.runId || state.failedAuditRunId === journal.runId)
     if (journal.schemaVersion === 3) workerRecoveryContract(journal)
-    if (!captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
+    if (journal.schemaVersion !== 4 && !captured && journal.runtimeOwnership !== undefined) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
     options.signal?.throwIfAborted()
     if (runtime.closed || runtime.ctx.mbot.closed) throw new Error('MBot Runtime closed during recovery')
     await awaited(options.signal, runtime.ctx.sessions.flush(agent.session))
@@ -130,7 +140,7 @@ export async function recoverRuntime(runtime, bot, journal, options) {
     directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
     const proofFile = join(directory, 'proof.json')
     await writeFile(proofFile, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', ownerPid: process.pid, ownerStart, bootId,
-      mode: journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
+      mode: journal.schemaVersion === 4 ? 'recorded-domain-v1' : journal.schemaVersion === 3 ? 'recorded-workers-v2' : captured ? 'captured-runtime' : legacyEvidence ? 'legacy-readonly' : 'recorded-foreground-v1',
       ...(captured ? { capturedRunId: journal.runId } : {}), ...(legacyEvidence ? { evidence: legacyEvidence } : {}),
       journalHash: journalDigest(journal), ...(journal.schemaVersion === 3 ? { workers } : {}), log: { session: log.session, inheritedEventCount: log.inheritedEventCount,
         events: log.events.filter(event => event.seq >= start && event.seq <= end) }, input }), { mode: 0o600, flag: 'wx' })

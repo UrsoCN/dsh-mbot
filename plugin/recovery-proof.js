@@ -7,6 +7,8 @@ import { processStart, validBootId } from './recovery.js'
 import { readonlyLegacy, readonlyDataCut } from './readonly-migration.js'
 import { workerRecoveryContract, workerRecoveryInput } from './worker-recovery-proof.js'
 import { validateTurnScratch } from './turn-state.js'
+import { validateDomainJournal } from './domain-contract.js'
+import { contentHash } from './context-hash.js'
 
 export const journalDigest = journal => {
   const { phase, ...identity } = journal
@@ -39,7 +41,7 @@ export async function readJournal(workspace) {
 
 /** Compare private bridge evidence to an exclusively owned native Session. */
 export async function recoveryInput(journal, log) {
-  if (![1, 2, 3].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
+  if (![1, 2, 3, 4].includes(journal.schemaVersion) || journal.writerScope !== 'agent-runtime'
     || (journal.bootId !== undefined && !validBootId(journal.bootId))
     || !Number.isSafeInteger(journal.turn) || journal.turn < 1 || typeof journal.sessionId !== 'string'
     || log.session.id !== journal.sessionId || log.session.cwd !== journal.workspace || log.session.origin === 'subagent') throw new Error('Runtime recovery identity does not match its native Session')
@@ -53,8 +55,15 @@ export async function recoveryInput(journal, log) {
   const header = JSON.parse(await privateFile(join(journal.scratch, 'header.json')))
   if (header.botId !== journal.botId || header.sessionId !== journal.sessionId || header.turn !== journal.turn
     || header.writerScope !== 'agent-runtime' || !isDeepStrictEqual(header.runtimeOwnership, journal.runtimeOwnership)
-    || header.compactionPolicyVersion !== journal.compactionPolicyVersion) throw new Error('Runtime header does not match its journal')
-  if (journal.runtimeOwnership) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
+    || header.compactionPolicyVersion !== journal.compactionPolicyVersion
+    || !isDeepStrictEqual(header.conversation, journal.conversation)) throw new Error('Runtime header does not match its journal')
+  if (journal.schemaVersion === 4) {
+    validateDomainJournal(journal)
+    if (contentHash(await privateFile(join(journal.scratch, 'context.json'))) !== journal.contextHash) throw new Error('Domain context snapshot changed')
+  } else {
+    if (header.conversation !== undefined || journal.contextHash !== undefined) throw new Error('Domain journal cannot be downgraded')
+    if (journal.runtimeOwnership) validateOwnership(journal.runtimeOwnership, journal.schemaVersion === 3)
+  }
   if (journal.schemaVersion === 3) workerRecoveryContract(journal)
   const starts = log.events.filter(event => event.type === 'turn/start' && event.data.turn === journal.turn)
   if (starts.length !== 1 || starts[0].seq < log.inheritedEventCount) throw new Error('Native recovery turn is missing or inherited')
@@ -98,7 +107,8 @@ export async function validateRecoveryProof(path, journal) {
     if (journal.ownerPid !== proof.ownerPid || journal.ownerStart !== proof.ownerStart
       || (journal.bootId !== undefined && journal.bootId !== proof.bootId)
       || proof.capturedRunId !== journal.runId) throw new Error('Legacy Runtime recovery needs its original live owner')
-  } else if (proof.mode === 'recorded-foreground-v1') validateOwnership(journal.runtimeOwnership)
+  } else if (proof.mode === 'recorded-domain-v1') validateDomainJournal(journal)
+  else if (proof.mode === 'recorded-foreground-v1') validateOwnership(journal.runtimeOwnership)
   else if (proof.mode === 'recorded-workers-v2') { validateOwnership(journal.runtimeOwnership, true); workerRecoveryContract(journal) }
   else if (proof.mode === 'legacy-readonly' && journal.runtimeOwnership === undefined) { /* checked against native facts below */ }
   else throw new Error('Unsupported Runtime recovery ownership proof')

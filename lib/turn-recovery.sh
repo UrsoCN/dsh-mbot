@@ -70,7 +70,7 @@ mbot_turn_recover() {
   if [[ $scope == agent-runtime && -z ${MBOT_RUNTIME_RECOVERY_PROOF:-} ]]; then
     mbot_error 'Agent Runtime recovery needs the live Host and native Session/tool coordination; use /mbot recover or botctl recover'; return 1
   fi
-  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2 or (.schemaVersion==3 and .writerScope=="agent-runtime")) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
+  jq -e --arg workspace "$MBOT_WS" '(.schemaVersion==1 or .schemaVersion==2 or ((.schemaVersion==3 or .schemaVersion==4) and .writerScope=="agent-runtime")) and .workspace==$workspace and (.writerScope=="data-subprocesses" or .writerScope=="agent-runtime")
     and (.runId|type)=="string" and (.runId|test("^[0-9]{8}T[0-9]{6}Z-turn-[a-f0-9]{16}$"))
     and (.token|type)=="string" and (.token|test("^[a-f0-9]{64}$"))
     and (.scratch|type)=="string" and (.scratch|length)>0 and (.scratch|test("[\u0000\r\n]")|not)
@@ -116,6 +116,8 @@ mbot_turn_recover() {
   MBOT_BASE_REF=$(jq -r .baseRef "$ledger")
   MBOT_RUN_ID=$(jq -r .runId "$ledger")
   MBOT_MODE=run
+  MBOT_DOMAIN_TURN=0
+  if [[ $(jq -r .schemaVersion "$ledger") == 4 ]]; then MBOT_DOMAIN_TURN=1; fi
   MBOT_STARTED=$(jq -r .startedAt "$ledger")
   start=$(jq -er .startedMs "$ledger")
   base_failures=$(jq -er .baseFailures "$ledger")

@@ -36,6 +36,13 @@
 - Node 24.9.0 类型检查、全部 59 项 Host 插件测试通过，其中 4 项新测试覆盖资料隔离、权限/内容版本、固定历史快照、未提交草稿、越界与损坏输入。四类安装均通过实际 Host API 检查 helper（`/tmp/mbot-plugin-install.HCDYP8`）；日志 `/tmp/dsh-mbot-conversation-view-plugin.log`、`/tmp/dsh-mbot-conversation-view-install.log`。本阶段没有改动现行 Runtime/GUI/事务桥，未重复其完整回归或真实模型验收。
 - 复核补充 Git replace、字面通配符路径和大 Unicode 许可列表测试，helper 输入上限调整为 2 MiB 以容纳登记格式的完整合法范围；4 项专项及类型复验通过（`/tmp/dsh-mbot-conversation-view-final.log`）。339 条文档链接、包资源及 `git diff --check` 通过。
 
+### 内部域事务与 checkpoint
+
+- 内部域桥新增 journal v4/runtimeOwnership v3：只从显式域清单捕获知识，boot/view 只读固定脱敏快照；检查合并记忆预算和 SOUL/参考预算，禁止私人任务/看板、候选及 Worker 调用，guard 回滚业务写入。公开 beginTurn 与 reserved Agent 继续拒绝域执行。
+- context snapshot v2 绑定持久域身份、knowledge v2、原生来源和 Inbox；私有 context 字节 hash 先持久化再发布 journal，Git 审计封存同一证明。Host 恢复核对登记/原生/私有快照/Git，保留取消计数、PAUSED 与单次结算；拒绝降级、权限变化、快照篡改和已捕获证明丢失。纯 Node/Git helper 与 Host schema 分离，独立 Bash 入口保持可用。契约见 [域事务](docs/conversations.md#内部域事务与-checkpoint)。
+- Node 24.9.0 完整回归通过（212 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash，`/tmp/dsh-mbot-domain-turn-full.log`）。之后补充聚合预算/证明丢失校验，类型及 11 项域专项通过（`/tmp/dsh-mbot-domain-final-scope.log`）；新增原生 Agent 测试经公开 recoverTurn 验证 Runtime 重载、登记冲突拒绝、checkpoint 恢复及 Inbox 保留，零模型调用（`/tmp/dsh-mbot-domain-runtime-recovery.log`）。测试中的域回合从内部桥建立，尚不代表实际域模型流程交付。
+- source/tarball/Git/Web tarball 四类安装实际执行域 v4 helper、快照读取及 Git 封存，保留公开域拒绝与原有私人 Runtime 回归（`/tmp/mbot-plugin-install.a5VImi`、`/tmp/dsh-mbot-domain-turn-install.log`）。tarball Chromium 通过双窗口拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复和私人主 Session 续聊，实际截图已检查（`/tmp/mbot-gui-conversations.5WhvAB`、`/tmp/dsh-mbot-domain-turn-gui.log`）。未调用真实 API或执行 R5；域消息、提示、候选/Dreaming、摘要/维护仍列 P1。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

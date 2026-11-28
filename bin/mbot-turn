@@ -56,6 +56,15 @@ jq -e 'def line: type=="string" and length>0 and (test("[\u0000\r\n]")|not);
   and (.requestIds|type)=="array" and all(.requestIds[]; line)' "$MBOT_SCRATCH/header.json" >/dev/null
 jq -e '(.writerScope // "data-subprocesses") as $scope | $scope=="data-subprocesses" or $scope=="agent-runtime"' "$MBOT_SCRATCH/header.json" >/dev/null
 jq -e '.compactionPolicyVersion==null or (.compactionPolicyVersion==1 and .writerScope=="agent-runtime")' "$MBOT_SCRATCH/header.json" >/dev/null
+if jq -e 'has("conversation") or .runtimeOwnership.schemaVersion==3' "$MBOT_SCRATCH/header.json" >/dev/null; then
+  node "$MBOT_ROOT/bin/turn-domain.mjs" --validate-header "$MBOT_SCRATCH/header.json"
+fi
+MBOT_DOMAIN_TURN=0
+if jq -e 'has("conversation")' "$MBOT_SCRATCH/header.json" >/dev/null; then
+  MBOT_DOMAIN_TURN=1
+  node "$MBOT_ROOT/bin/turn-domain.mjs" --snapshot "$MBOT_SCRATCH/header.json" "$MBOT_WS" "$MBOT_BASE" "$role" \
+    "$MBOT_MEMORY_MAX_LINES" "$MBOT_MEMORY_MAX_CHARS" "$MBOT_SOUL_MAX_CHARS" "$MBOT_WIKI_MAX_LINES" > "$MBOT_SCRATCH/context.json"
+fi
 jq -e '(.finalizationTimeoutMs // 30000) as $ms | ($ms|type)=="number" and $ms>0 and ($ms|floor)==$ms and $ms<=2147483647' "$MBOT_SCRATCH/header.json" >/dev/null
 transport_timeout=$((MBOT_TIMEOUT+($(jq -r '.finalizationTimeoutMs // 30000' "$MBOT_SCRATCH/header.json")+999)/1000))
 mkdir -p -- "$(mbot_path .mbot/runs)"
@@ -71,11 +80,13 @@ jq -n --arg id "$MBOT_RUN_ID" --arg role "$role" --arg base "$MBOT_BASE" --arg r
   --arg started "$MBOT_STARTED" --argjson startedMs "$start" --argjson baseFailures "$base_failures" --arg ownerStart "${MBOT_OWNER_START:-}" --argjson ownerPid "${MBOT_OWNER_PID:-0}" \
   --arg pidStart "$(awk '{print $22}' "/proc/$$/stat")" --arg bootId "$MBOT_BOOT_ID" \
   --arg gitDir "$MBOT_GIT_DIR" --arg gitInode "$MBOT_GIT_INODE" --arg locks "$(stat -c '%d:%i' "$MBOT_WS/.mbot/lock" "$MBOT_WS/.mbot/botctl.lock")" \
-  --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:(if $header[0].runtimeOwnership.schemaVersion==2 then 3 else 2 end),phase:"active",runId:$id,token:$token[0],
+  --arg contextHash "$(if ((MBOT_DOMAIN_TURN)); then sha256sum "$MBOT_SCRATCH/context.json" | cut -d ' ' -f 1; fi)" \
+  --slurpfile header "$MBOT_SCRATCH/header.json" '{schemaVersion:(if $header[0].conversation!=null then 4 elif $header[0].runtimeOwnership.schemaVersion==2 then 3 else 2 end),phase:"active",runId:$id,token:$token[0],
     botId:$header[0].botId,sessionId:$header[0].sessionId,turn:$header[0].turn,role:$role,writerScope:($header[0].writerScope // "data-subprocesses"),
     baseHead:$base,baseRef:$ref,gitDir:$gitDir,gitInode:$gitInode,lockInodes:$locks,scratch:$scratch,scratchFormatVersion:1,bootId:$bootId,workspace:$ws,pid:$pid,pidStart:$pidStart,expiresAt:$expires,startedAt:$started,startedMs:$startedMs,baseFailures:$baseFailures,ownerPid:$ownerPid,ownerStart:$ownerStart}
       + (if $header[0].runtimeOwnership==null then {} else {runtimeOwnership:$header[0].runtimeOwnership} end)
       + (if $header[0].compactionPolicyVersion==null then {} else {compactionPolicyVersion:$header[0].compactionPolicyVersion} end)
+      + (if $header[0].conversation==null then {} else {conversation:$header[0].conversation,contextHash:$contextHash} end)
       + (if $header[0].runtimeOwnership.schemaVersion==2 then {actors:[]} else {} end)' > "$MBOT_SCRATCH/ledger.json"
 : > "$MBOT_SCRATCH/violations.jsonl"
 : > "$MBOT_SCRATCH/session-events.jsonl"
@@ -88,6 +99,7 @@ mbot_turn_save_settings
 # Sync durable private evidence before publishing active-turn.json so a power
 # loss after journal publication never leaves missing/partial private inputs.
 node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/header.json" "$MBOT_SCRATCH/token.json" "$MBOT_SCRATCH/ledger.json" "$MBOT_SCRATCH/ignored.list" "$MBOT_SCRATCH/settings" "$MBOT_SCRATCH/secrets.json" "$MBOT_SCRATCH/grants.json" "$MBOT_SCRATCH/session-events.jsonl" "$MBOT_SCRATCH/violations.jsonl" "$MBOT_SCRATCH/stderr" "$MBOT_SCRATCH"
+if ((MBOT_DOMAIN_TURN)); then node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/context.json"; fi
 mbot_turn_write_ledger active
 open=1
 # Snapshot the newly published active-turn.json into ignored/ so guard recognizes it.
@@ -97,6 +109,7 @@ if ! grep -qzFx '.mbot/runs/active-turn.json' "$MBOT_SCRATCH/ignored.list" 2>/de
   printf '.mbot/runs/active-turn.json\0' >> "$MBOT_SCRATCH/ignored.list"
 fi
 node "$MBOT_ROOT/bin/turn-state.mjs" --sync "$MBOT_SCRATCH/ignored/.mbot/runs/active-turn.json" "$MBOT_SCRATCH/ignored.list" "$MBOT_SCRATCH/ignored/.mbot/runs" "$MBOT_SCRATCH"
+if ((!MBOT_DOMAIN_TURN)); then
 for file in AGENTS.md MEMORY.md BOARD.md "bots/$role/SOUL.md" "bots/$role/MEMORY.md"; do
   mbot_git show "$MBOT_BASE:$file" > "$MBOT_SCRATCH/$(basename "$file").${file//\//_}"
 done
@@ -109,6 +122,7 @@ jq -n --arg head "$MBOT_BASE" --arg role "$role" --arg workspace "$MBOT_WS" \
 node "$MBOT_ROOT/bin/context-checkpoint.mjs" --knowledge "$MBOT_WS" "$MBOT_BASE" "$role" > "$MBOT_SCRATCH/knowledge.json"
 jq --slurpfile knowledge "$MBOT_SCRATCH/knowledge.json" '. + {knowledge:$knowledge[0]}' "$MBOT_SCRATCH/context.json" > "$MBOT_SCRATCH/versioned-context.json"
 mv -- "$MBOT_SCRATCH/versioned-context.json" "$MBOT_SCRATCH/context.json"
+fi
 jq -cn --slurpfile ledger "$MBOT_SCRATCH/ledger.json" --slurpfile context "$MBOT_SCRATCH/context.json" \
   '{kind:"ready",journalSchemaVersion:$ledger[0].schemaVersion,runId:$ledger[0].runId,token:$ledger[0].token,expiresAt:$ledger[0].expiresAt,snapshot:$context[0]}
     + (if $ledger[0].compactionPolicyVersion==null then {} else {compactionPolicyVersion:$ledger[0].compactionPolicyVersion} end)'

@@ -9,12 +9,12 @@ def mbot_execution_fault($events):
 
 def mbot_outcome($journalVersion):
   if (.success|type)!="boolean" then error("invalid success")
-  elif ($journalVersion==2 or $journalVersion==3) and .runtime.outcome_schema_version!=1 then error("versioned journal requires versioned outcome")
+  elif ($journalVersion==2 or $journalVersion==3 or $journalVersion==4) and .runtime.outcome_schema_version!=1 then error("versioned journal requires versioned outcome")
   elif (has("outcome") or has("failure_count_effect") or .runtime.outcome_schema_version!=null) then
     if .runtime.outcome_schema_version!=1 or (.runtime.execution_fault|type)!="boolean" or (.violations|type)!="array" then error("invalid outcome version")
     elif .outcome=="completed" and .success==true and .failure_count_effect=="reset" and (.violations|length)==0 then .outcome
     elif .outcome=="cancelled" and .success==false and .failure_count_effect=="preserve"
-      and ($journalVersion==2 or $journalVersion==3) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and .runtime.execution_fault==false then .outcome
+      and ($journalVersion==2 or $journalVersion==3 or $journalVersion==4) and .reason.kind=="aborted" and .reason.reason.kind=="user" and (.violations|length)==0 and .runtime.execution_fault==false then .outcome
     elif .outcome=="failed" and .success==false and .failure_count_effect=="increment" then .outcome
     else error("invalid outcome effect") end
   elif .success then "completed" else "failed" end;

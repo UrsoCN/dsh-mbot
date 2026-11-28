@@ -326,6 +326,7 @@ export class MBotService extends Service {
 
   beginTurn(options) {
     if (this.closed) return Promise.reject(new Error('mbot plugin is disposed'))
+    if (options.conversation !== undefined) return Promise.reject(new Error('Domain turns require the verified Runtime admission path'))
     if (conversationForSession(this.registry(), options.sessionId)) return Promise.reject(new Error('Reserved conversation requires memory and tool visibility filtering before execution'))
     const bot = this.bot(options)
     if (!bot) return Promise.reject(new Error('Managed turn requires a registered Bot'))

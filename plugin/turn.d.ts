@@ -1,5 +1,6 @@
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { MBotService, ExecuteResult } from './index.js'
+import type { ConversationViewScope, ConversationKnowledge } from './conversation-view.js'
 export interface ContextKnowledge {
   readonly schemaVersion: 1; readonly role: string; readonly version: string
   readonly documents: readonly { readonly path: string; readonly blob: string; readonly contentHash: string }[]
@@ -14,7 +15,9 @@ export interface ContextSnapshot {
   readonly roleMemory: string
   readonly board: string
   /** Version of Git persona/protocol/memory content, independent of task HEAD changes. */
-  readonly knowledge?: ContextKnowledge
+  readonly knowledge?: ContextKnowledge | ConversationKnowledge
+  readonly conversation?: Readonly<ConversationViewScope>
+  readonly documents?: readonly (ConversationKnowledge['documents'][number] & { readonly text: string })[]
 }
 export interface TurnIdentity { readonly botId: string; readonly sessionId: string; readonly turn: number; readonly runId: string }
 export interface TurnOutcome { reason: { kind: string; [key: string]: unknown }; text: string }
@@ -23,6 +26,7 @@ export type FailureCountEffect = 'reset' | 'preserve' | 'increment'
 export interface TurnResult { readonly kind: 'finished'; readonly runId: string; readonly head: string; readonly meta: string; readonly transcript: string; readonly success: boolean; readonly outcome: ManagedOutcome; readonly failureCountEffect: FailureCountEffect }
 export type RuntimeOwnership = { schemaVersion: 1; mode: 'foreground-only'; workerDepth: 0; tools: readonly string[] }
   | { schemaVersion: 2; mode: 'foreground-workers'; workerDepth: 1; maxWorkers: 2; tools: readonly string[]; workerTools: readonly string[] }
+  | { schemaVersion: 3; mode: 'domain-foreground'; workerDepth: 0; tools: readonly ['botctl'] }
 export interface ActorIdentity { readonly botId: string; readonly runId: string; readonly parentSessionId: string; readonly parentTurn: number; readonly sessionId: string; readonly role: string; readonly taskId: string; readonly actorId: string }
 export interface ActorSnapshot extends ContextSnapshot { readonly taskId: string; readonly task: string }
 export interface NativeWorkerProof {
@@ -65,4 +69,5 @@ export declare class TurnLease {
   finish(outcome: TurnOutcome): Promise<TurnResult>
   cancel(message?: string): Promise<TurnResult>
 }
-export declare function openTurn(mbot: MBotService, root: string, bot: import('./instances.js').BotRegistration, options: BeginTurnOptions): Promise<TurnLease>
+/** Internal bridge; the public service still rejects reserved conversation admission. */
+export declare function openTurn(mbot: MBotService, root: string, bot: import('./instances.js').BotRegistration, options: BeginTurnOptions & { conversation?: ConversationViewScope }): Promise<TurnLease>

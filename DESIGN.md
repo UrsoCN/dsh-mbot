@@ -100,7 +100,7 @@ sleep 固定 cutoff，独立 Dreaming 后按需 compact/checkpoint，再持久�
 
 落地顺序：先持久预留来源/权限和不可重定向的 Session 归属，再版本化定义共享/域内记忆视图及工具读取范围；旧 MEMORY/wiki、任务和历史默认属于所有者私人域，不因增加 conversation 自动公开。上下文、boot/读工具、remember 候选、摘要/checkpoint 与 Dreaming 必须使用同一域身份，经过恢复验证后才将预留状态升级为可执行。跨域管理操作继续由所有者入口执行，平台发送者认证由可信适配器负责。
 
-开发分支已提供每域 `memory/conversations/<conversationId>/VIEW.json` 与固定 Git 版本读取器：人类显式发布共享/本域协议、人格、记忆和参考文件，来源与权限共同进入知识 hash；检查只返回文件身份与大小，不激活域。下一步将同一视图接入事务快照、提示与工具读取，并版本化候选/审计/checkpoint/摘要及逐域 Dreaming；不能继承私人主 Session 的系统提示、任务、摘要或旧知识证明。具体格式与限制见 [域资料视图](docs/conversations.md#显式域资料视图)。
+开发分支已提供每域 `memory/conversations/<conversationId>/VIEW.json` 与固定 Git 版本读取器：人类显式发布共享/本域协议、人格、记忆和参考文件，来源与权限共同进入知识 hash；检查只返回文件身份与大小，不激活域。内部数据桥已用 journal v4/runtimeOwnership v3 捕获同一视图，仅允许只读 boot/view，落实合并记忆预算、正文脱敏和上下文 snapshot v2；恢复绑定持久域归属、私有 context hash、原生来源与 Git 审计，拒绝降为私人契约。公开 beginTurn 和原生 reserved 闸门仍关闭。下一步接通实际提示/读工具、逐域来源与回复证明、候选/Dreaming、摘要及维护，最后启用实体；不能继承私人主 Session 的系统提示、任务、摘要或旧知识证明。具体格式与限制见 [域资料视图](docs/conversations.md#显式域资料视图)。
 
 outbox 复用已核验 replyId/replyRoute，区分投递确认与不确定；原生 confirmed 只证明 flush，ended 不证明 Git 成功。独立 Bot 用异步信封与目标授权，A 不持锁等待 B，树内 send_message 仅用于本轮 Worker。外部副作用不承诺跨系统 exactly-once，设计细节见 [Session Runtime](docs/session-runtime.md)。
 

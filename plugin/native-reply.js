@@ -12,6 +12,7 @@ export function nativeReply(header, events, finish) {
   for (const message of [...header.messages, ...events.filter(event => event.type === 'user/message' && event.seq < end.seq).map(event => event.data)]) {
     const source = message.source
     if (source?.kind !== 'user' || !source.mbot) continue
+    if (header.conversation) throw new Error('Domain reply targets require domain message admission')
     if (source.mbot.schemaVersion !== 1 || source.mbot.botId !== header.botId || source.mbot.visibility !== 'owner-private'
       || typeof source.rpcId !== 'string' || typeof message.id !== 'string') throw new Error('Invalid native reply target')
     const target = { rpcId: source.rpcId, messageId: message.id, ...source.mbot }

@@ -160,6 +160,42 @@ async function probe(ctx) {
     const { randomUUID } = await import('node:crypto')
     const fromPackage = createRequire(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
     const { LlmAdapter, createUserMessage } = await import(fromPackage.resolve('@deepseek-ai/dsh-llm'))
+    // Exercise the installed internal v4 bridge while the public domain gate stays closed.
+    const { dirname, join } = await import('node:path')
+    const { pathToFileURL } = await import('node:url')
+    const packageRoot = dirname(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON))
+    const installed = path => import(pathToFileURL(join(packageRoot, path)).href)
+    const { openTurn } = await installed('plugin/turn.js')
+    const { domainOwnership } = await installed('plugin/domain-contract.js')
+    const { contextHash, contextReferences, contextSnapshotType } = await installed('plugin/context-state.js')
+    const { Session, SESSION_FORMAT_VERSION, appendPluginRecord } = await import(fromPackage.resolve('@deepseek-ai/dsh-session'))
+    const session = Session.create(conversation.sessionId, [], { version: SESSION_FORMAT_VERSION, id: conversation.sessionId,
+      createdAt: Date.now(), cwd: bot.workspacePath, isSeeded: false })
+    const domainUser = createUserMessage({ content: [{ type: 'text', text: 'installed domain fixture' }], source: { kind: 'user' } })
+    session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [domainUser] })
+    const domainStart = session.append('turn/start', { turn: 1 })
+    const domainOptions = { sessionId: conversation.sessionId, turn: 1, request: 'installed internal domain bridge',
+      conversation: view.knowledge.scope, writerScope: 'agent-runtime', runtimeOwnership: domainOwnership,
+      messages: [domainUser], onExpiry: async () => {}, onCancel: async () => {} }
+    await assert.rejects(ctx.mbot.beginTurn({ botId: bot.botId, ...domainOptions }), /admission path/u)
+    const domainLease = await openTurn(ctx.mbot, packageRoot, bot, domainOptions)
+    appendPluginRecord(session, contextSnapshotType, { schemaVersion: 2, kind: 'turn-input', visibility: 'group', botId: bot.botId,
+      sessionId: conversation.sessionId, conversationId: conversation.conversationId, turn: 1, runId: domainLease.identity.runId,
+      role: 'chief', memoryCommit: domainLease.snapshot.head, knowledge: domainLease.snapshot.knowledge, contextEpoch: 1, previous: null,
+      sourceCut: { throughSeq: session.seq - 1, events: contextReferences([]) }, input: [{ messageId: domainUser.id, hash: contextHash(domainUser) }] })
+    for (const event of session.snapshotEvents().filter(event => event.seq >= domainStart.seq)) await domainLease.record(event)
+    const domainBoot = await domainLease.execute('botctl', ['boot', 'chief'])
+    assert.equal(domainBoot.exitCode, 0, domainBoot.stderr)
+    assert.ok(domainBoot.stdout.includes('Published installation-only domain content'))
+    assert.equal((await domainLease.execute('botctl', ['view', 'MEMORY.md'])).exitCode, 1)
+    await assert.rejects(domainLease.execute('botctl', ['remember', 'forbidden domain candidate']), /domain data scope/u)
+    await domainLease.record(session.append('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+    const domainResult = await domainLease.finish({ reason: { kind: 'completed' }, text: '' })
+    assert.equal(domainResult.success, true)
+    const domainMeta = JSON.parse(execFileSync('git', ['-C', bot.workspacePath, 'show', `${domainResult.head}:${domainResult.meta}`], { encoding: 'utf8' }))
+    assert.equal(domainMeta.runtime.journal_schema_version, 4)
+    assert.equal(domainMeta.runtime.context.snapshot.knowledge.version, view.knowledge.version)
+    assert.equal(ctx.agents.get(conversation.sessionId), undefined)
     let runtimeCalls = 0
     class InstalledAdapter extends LlmAdapter {
       async *stream(request) {
@@ -213,7 +249,6 @@ async function probe(ctx) {
     const candidateText = (await Promise.all(candidates.filter(name => name.endsWith('.md')).map(name => readFile(`${ctx.mbot.workspace()}/inbox/${name}`, 'utf8')))).join('\n')
     if (!candidateText.includes('installed Runtime native candidate')) throw new Error('installed Runtime data tool did not commit its candidate')
     if (ctx.mbotIpc.status().state !== 'ready') throw new Error('installed private Host IPC missing')
-    const { dirname, join } = await import('node:path')
     const ctl = join(dirname(await realpath(process.env.MBOT_INSTALL_PACKAGE_JSON)), 'bin/botctl')
     const hostCall = async args => {
       const child = ctx.subprocess.spawn({ argv: [ctl, ...args, '--profile', ctx.get('profileContext').name],

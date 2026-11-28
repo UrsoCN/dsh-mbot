@@ -47,6 +47,7 @@ mbot_guard_snapshot() {
 }
 mbot_guard_allowed() {
   local rel=$1
+  [[ ${MBOT_DOMAIN_TURN:-0} != 1 ]] || return 1
   if [[ ${MBOT_MODE:-run} == dream ]]; then
     case $rel in
       wiki/ops-log.md) return 1 ;;

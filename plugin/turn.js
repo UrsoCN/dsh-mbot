@@ -7,6 +7,8 @@ import { redact, redactValue } from './redact.js'
 import { processStart } from './recovery.js'
 import { validateOwnership } from './recovery-proof.js'
 import { freezeContext } from './context-state.js'
+import { validateDomainHeader, validateDomainKnowledge } from './domain-contract.js'
+import { isDeepStrictEqual } from 'node:util'
 
 function write(stream, value) {
   return new Promise((resolve, reject) => stream.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()))
@@ -90,6 +92,7 @@ export class TurnLease {
 
   #execute(program, args, options, token) {
     if (this.#closed) return Promise.reject(new Error('Managed turn is closed'))
+    if (this.snapshot.conversation && (program !== 'botctl' || !['boot', 'view'].includes(args[0]))) return Promise.reject(new Error('Operation is outside the domain data scope'))
     const signal = options.signal ? AbortSignal.any([options.signal, this.#cancel.signal]) : this.#cancel.signal
     const operation = this.mbot.execute(program, args, { workspace: this.snapshot.workspace, signal, input: options.input,
       permit: { runId: this.identity.runId, token } })
@@ -223,6 +226,7 @@ export async function openTurn(mbot, root, bot, options) {
     turn: options.turn, request: options.request, requestIds: [...(options.requestIds ?? [])], writerScope: options.writerScope ?? 'data-subprocesses', finalizationTimeoutMs,
     ...(options.messages === undefined ? {} : { messages: structuredClone(options.messages) }),
     ...(options.compactionPolicyVersion === undefined ? {} : { compactionPolicyVersion: options.compactionPolicyVersion }),
+    ...(options.conversation === undefined ? {} : { conversation: structuredClone(options.conversation) }),
     ...(options.runtimeOwnership === undefined ? {} : { runtimeOwnership: structuredClone(options.runtimeOwnership) }) }
   if (typeof header.sessionId !== 'string' || !header.sessionId || /[\0\r\n]/u.test(header.sessionId)
     || !Number.isSafeInteger(header.turn) || header.turn < 1 || typeof header.request !== 'string' || header.request.includes('\0')
@@ -237,9 +241,11 @@ export async function openTurn(mbot, root, bot, options) {
     || !Number.isSafeInteger(finalizationTimeoutMs) || finalizationTimeoutMs < 1 || finalizationTimeoutMs > 2147483647) throw new Error('Invalid managed turn identity or request')
   if (header.runtimeOwnership !== undefined) {
     if (header.writerScope !== 'agent-runtime') throw new Error('Runtime ownership requires an Agent turn')
-    validateOwnership(header.runtimeOwnership, true)
+    if (header.conversation) validateDomainHeader(header)
+    else validateOwnership(header.runtimeOwnership, true)
     if (header.runtimeOwnership.schemaVersion === 2 && bot.defaultRole !== 'chief') throw new Error('Worker delegation requires a Chief turn')
   }
+  if (header.conversation && !header.runtimeOwnership) validateDomainHeader(header)
   const ownerStart = await processStart()
   options.signal?.throwIfAborted()
   const child = mbot.ctx.subprocess.spawn({ argv: [join(root, 'bin', 'mbot-turn'), '-C', bot.workspacePath, bot.defaultRole],
@@ -262,6 +268,10 @@ export async function openTurn(mbot, root, bot, options) {
       throw new Error('Managed turn did not acquire its transaction')
     }
     const ready = JSON.parse(value)
+    if (header.conversation) {
+      if (ready.journalSchemaVersion !== 4 || !isDeepStrictEqual(ready.snapshot?.conversation, header.conversation)) throw new Error('Installed bridge cannot preserve domain ownership')
+      validateDomainKnowledge(ready.snapshot.knowledge, bot.defaultRole)
+    }
     if (header.compactionPolicyVersion === 1 && ready.compactionPolicyVersion !== 1) throw new Error('Installed turn bridge cannot seal managed compaction')
     if (header.runtimeOwnership?.schemaVersion === 2 && ready.journalSchemaVersion !== 3) throw new Error('Installed turn bridge cannot manage delegated actor permissions')
     if (ready.kind !== 'ready' || !/^[a-f0-9]{64}$/u.test(ready.token) || ready.snapshot?.workspace !== bot.workspacePath

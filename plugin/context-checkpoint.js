@@ -4,6 +4,9 @@ import { packageRoot } from './index.js'
 import { contextSnapshotType, contextHash, contextReferences, verifyContextCut, validateKnowledge } from './context-state.js'
 import { verifyWorkerAudit } from './worker-recovery-proof.js'
 import { verifyCompactionSources, sealCompactionAudit, compactInputType, compactOutputType } from './compaction-data.js'
+import { isDeepStrictEqual } from 'node:util'
+import { conversationForSession } from './conversations.js'
+import { conversationViewScope } from './conversation-view.js'
 class ContextObservationChanged extends Error {
   name = 'ContextObservationChanged'
   code = 'MBOT_CONTEXT_OBSERVATION_CHANGED'
@@ -58,7 +61,8 @@ function contextEvidence(restored, log, botId) {
 export async function recoverCompactionCatalog(runtime, bot, agent, log) {
   if (!runtime.recoveries.has(bot.botId) || runtime.closed || log.session.id !== agent.id || log.session.cwd !== bot.workspacePath) throw new Error('Detached compaction evidence requires its held recovery owner')
   const child = runtime.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/context-checkpoint.mjs'), '--restore', bot.workspacePath],
-    cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ botId: bot.botId, log }) },
+    cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ botId: bot.botId, log,
+      ...(conversationForSession(runtime.ctx.mbot.registry(), agent.id) ? { conversation: conversationViewScope(conversationForSession(runtime.ctx.mbot.registry(), agent.id)) } : {}) }) },
       stdout: { maxBytes: 16 * 1024 * 1024 }, stderr: { maxBytes: 8000 } } })
   runtime.ctx.mbot.active.add(child)
   try {
@@ -80,6 +84,7 @@ export async function recoverCompactionCatalog(runtime, bot, agent, log) {
 export async function captureContext(state, record) {
   const { agent, botId, runtime } = state, snapshot = record.lease.snapshot
   validateKnowledge(snapshot.knowledge, snapshot.role)
+  if (!isDeepStrictEqual(snapshot.conversation, state.domainScope)) throw new Error('Turn context changed its registered domain identity')
   if (state.checkpoint && state.checkpoint.commit !== snapshot.head) await restoreContext(state)
   const prior = state.checkpoint
   const previous = prior ? { schemaVersion: 1, snapshotHash: prior.snapshotHash, knowledgeVersion: prior.snapshot.knowledge.version,
@@ -90,7 +95,7 @@ export async function captureContext(state, record) {
     const throughSeq = surface.capturedThroughSeq ?? -1
     if (throughSeq !== agent.session.seq - 1) continue
     if (surface.session.id !== agent.id || surface.session.cwd !== snapshot.workspace) throw new Error('Context capture Session identity changed')
-    const data = { schemaVersion: 1, kind: 'turn-input', visibility: 'owner-private', botId, sessionId: agent.id, conversationId: agent.id,
+    const data = { schemaVersion: state.domainScope ? 2 : 1, kind: 'turn-input', visibility: state.domainScope?.visibility ?? 'owner-private', botId, sessionId: agent.id, conversationId: state.domainScope?.conversationId ?? agent.id,
       turn: record.turn, runId: record.lease.identity.runId, role: snapshot.role, memoryCommit: snapshot.head, knowledge: snapshot.knowledge,
       ...(record.lease.compactionPolicyVersion ? { compactionPolicyVersion: record.lease.compactionPolicyVersion } : {}),
       contextEpoch: previous === null ? 1 : previous.contextEpoch + (previous.knowledgeVersion === snapshot.knowledge.version ? 0 : 1),
@@ -118,7 +123,7 @@ async function restoreContextNow(state, { update = true } = {}, attempt = 0) {
   const workspace = runtime.ctx.mbot.bot({ botId }).workspacePath
   if (log.session.id !== agent.id || log.session.cwd !== workspace) throw new Error('Context restore Session identity changed')
   const child = runtime.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/context-checkpoint.mjs'), '--restore', workspace],
-    cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ botId, log }) },
+    cwd: packageRoot, graceMs: 5000, stdio: { stdin: { data: JSON.stringify({ botId, log, ...(state.domainScope ? { conversation: state.domainScope } : {}) }) },
       stdout: { maxBytes: 16 * 1024 * 1024 }, stderr: { maxBytes: 8000 } } })
   runtime.ctx.mbot.active.add(child)
   let retry = false

@@ -27,7 +27,7 @@ ctx.mbot.beginTurn({botId, sessionId, turn, request, requestIds?, signal?, final
 
 ## 断连与恢复边界
 
-.mbot/runs/active-turn.json 记录阶段、身份、基准及私有 scratch 引用。普通前台使用 schemaVersion 2（reader 兼容完整 v1）；显式委派契约使用 schemaVersion 3，见 [Worker 数据许可](worker-leases.md)。旧 v1 reader 拒绝新版 journal，不能降级字段绕过。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
+.mbot/runs/active-turn.json 记录阶段、身份、基准及私有 scratch 引用。普通前台使用 schemaVersion 2（reader 兼容完整 v1）；显式委派契约使用 schemaVersion 3，见 [Worker 数据许可](worker-leases.md)。开发分支内部域桥使用 schemaVersion 4/runtimeOwnership v3，仅提供域快照的只读 boot/view；上下文 SHA-256 与域身份写入 journal，恢复仍需 Host proof，见 [域事务](conversations.md#内部域事务与-checkpoint)。公开 beginTurn 尚不接受该域参数。旧 v1 reader 拒绝新版 journal，不能降级字段绕过。EOF、异常退出或完成失败保留 journal/snapshot 并 PAUSED，不在可能仍有写者时贸然回滚/提交。遗留 journal 使新 turn、run/dream/archive、human mutation 和普通 resume 拒绝；只读检查可用。
 
 当前提供 ctx.mbot.recoverTurn({botId?, sessionId?, signal?})、/mbot recover 和 mbot -C <目录> recover。恢复不调用模型，不自动 resume：
 

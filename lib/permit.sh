@@ -6,7 +6,7 @@ mbot_turn_ledger() { mbot_path .mbot/runs/active-turn.json; }
 # New managed callers carry a permit and must never fall back after it expires.
 mbot_check_permit() {
   local mutation=$1 file scratch
-  unset MBOT_ACTOR_ID MBOT_ACTOR_TASK
+  unset MBOT_ACTOR_ID MBOT_ACTOR_TASK MBOT_DOMAIN_SCRATCH
   file=$(mbot_turn_ledger)
   if [[ -v MBOT_PERMIT_TOKEN ]]; then
     [[ -v MBOT_RUN_ID && -f $file && ! -L $file ]] || { mbot_error 'managed turn permit is no longer active'; return 1; }
@@ -21,13 +21,19 @@ mbot_check_permit() {
     local actor
     actor=$(printf '%s\0%s' "$MBOT_RUN_ID" "$MBOT_PERMIT_TOKEN" | jq -Rse --argjson now "$(date +%s%3N)" --slurpfile permit "$file" '
       split("\u0000") as $identity | $permit[0] |
-      select((.schemaVersion==1 or .schemaVersion==2 or .schemaVersion==3) and .phase=="active" and .expiresAt>$now and .runId==$identity[0]) |
+      select((.schemaVersion==1 or .schemaVersion==2 or .schemaVersion==3 or .schemaVersion==4) and .phase=="active" and .expiresAt>$now and .runId==$identity[0]) |
       if .token==$identity[1] then {role:.role}
       elif .schemaVersion==3 and .runtimeOwnership.schemaVersion==2 and .runtimeOwnership.mode=="foreground-workers"
         and .runtimeOwnership.workerDepth==1 and .runtimeOwnership.maxWorkers==2 then
         .actors[] | select(.state=="active" and .token==$identity[1]) | {role,actorId,taskId}
       else empty end') || { mbot_error 'managed turn permit is stale or invalid'; return 1; }
     MBOT_BOT=$(jq -er .role <<< "$actor")
+    if [[ $(jq -r .schemaVersion "$file") == 4 ]]; then
+      node "$MBOT_ROOT/bin/turn-domain.mjs" --validate-header "$file" >/dev/null
+      MBOT_DOMAIN_SCRATCH=$scratch
+    elif jq -e 'has("conversation") or has("contextHash") or .runtimeOwnership.schemaVersion==3' "$file" >/dev/null; then
+      mbot_error 'domain permit cannot be downgraded'; return 1
+    fi
     if jq -e '.actorId!=null' <<< "$actor" >/dev/null; then
       MBOT_ACTOR_ID=$(jq -er .actorId <<< "$actor")
       MBOT_ACTOR_TASK=$(jq -er .taskId <<< "$actor")
@@ -51,6 +57,10 @@ mbot_require_no_turn() {
 
 # Recheck assignment under botctl.lock. A new owner/state invalidates old work.
 mbot_check_command() {
+  if [[ -v MBOT_DOMAIN_SCRATCH ]]; then
+    [[ $# == 2 && ( $1 == view || ( $1 == boot && $2 == "$MBOT_BOT" ) ) ]] || { mbot_error 'operation is outside the domain data scope'; return 1; }
+    return 0
+  fi
   [[ -v MBOT_ACTOR_ID ]] || return 0
   local row
   row=$(mbot_rows | awk -F '|' -v id="$MBOT_ACTOR_TASK" '$1==id')

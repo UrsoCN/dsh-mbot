@@ -8,7 +8,8 @@ import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import Commands from '@deepseek-ai/dsh-commands'
-import { Session } from '@deepseek-ai/dsh-session'
+import { Session, appendPluginRecord, foldSurface, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import * as plugin from '../plugin/index.js'
@@ -18,7 +19,14 @@ import { redact } from '../plugin/redact.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BotRegistry } from '../plugin/instances.js'
 import { conversationKey, conversationSource, conversationAccess, reserveConversationRecord, validateConversation } from '../plugin/conversations.js'
-import { conversationViewPath, conversationViewPolicy, readConversationView, conversationViewDocument, conversationViewLimits } from '../plugin/conversation-view.js'
+import { conversationViewPath, conversationViewPolicy, readConversationView, conversationViewDocument, conversationViewLimits, conversationViewScope } from '../plugin/conversation-view.js'
+import { openTurn } from '../plugin/turn.js'
+import { contextHash, contextSnapshotType, contextReferences, verifyContextCut, validateContextSnapshot } from '../plugin/context-state.js'
+import { domainOwnership } from '../plugin/domain-contract.js'
+import { sealContextAudit } from '../plugin/context-audit.js'
+import { recoveryInput, journalDigest } from '../plugin/recovery-proof.js'
+import { verifyRecoveryAudit } from '../plugin/recovery-audit.js'
+import { processStart, currentBootId } from '../plugin/recovery.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
 process.env.XDG_CONFIG_HOME = join(root, 'config')
@@ -576,6 +584,188 @@ test('conversation Git reader rejects symlinks, missing files, malformed text an
   await writeFile(join(ws, conversationViewPath(record)), ' '.repeat(conversationViewLimits.policyBytes + 1))
   save()
   assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /byte limit/u)
+})
+
+async function domainTurn(t, { failures, prepare } = {}) {
+  const fixture = await app(t), { ctx, ws, owner } = fixture
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const record = await ctx.mbot.reserveConversation(bot.botId, { source: groupSource(), allowedSenders: ['alice'], replyRoute: 'route' })
+  const policy = await publishConversationView(ws, record)
+  if (failures !== undefined) await writeFile(join(ws, '.mbot/failures'), `${failures}\n`)
+  await prepare?.({ ctx, ws, bot, record, policy })
+  const scope = conversationViewScope(record)
+  const user = createUserMessage({ content: [{ type: 'text', text: 'test-only domain transaction input' }], source: { kind: 'user' } })
+  const session = Session.create(record.sessionId, [], { version: SESSION_FORMAT_VERSION, id: record.sessionId, createdAt: Date.now(), cwd: ws, isSeeded: false })
+  session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [user] })
+  const start = session.append('turn/start', { turn: 1 })
+  const options = { botId: bot.botId, sessionId: record.sessionId, turn: 1, request: 'isolated transaction fixture',
+    conversation: scope, messages: [user], writerScope: 'agent-runtime', runtimeOwnership: domainOwnership,
+    onExpiry: async () => {}, onCancel: async () => {} }
+  // Production service rejects reserved activation. Exercise the internal bridge contract directly.
+  const lease = await openTurn(ctx.mbot, plugin.packageRoot, bot, options)
+  const snapshot = { schemaVersion: 2, kind: 'turn-input', visibility: scope.visibility, botId: bot.botId,
+    sessionId: record.sessionId, conversationId: record.conversationId, turn: 1, runId: lease.identity.runId,
+    role: 'chief', memoryCommit: lease.snapshot.head, knowledge: lease.snapshot.knowledge, contextEpoch: 1, previous: null,
+    sourceCut: { throughSeq: session.seq - 1, events: contextReferences([]) }, input: [{ messageId: user.id, hash: contextHash(user) }] }
+  const snapshotSeq = appendPluginRecord(session, contextSnapshotType, snapshot)
+  for (const event of session.snapshotEvents().filter(event => event.seq >= start.seq)) await lease.record(event)
+  const log = () => JSON.parse(JSON.stringify({ session: session.header, inheritedEventCount: 0, events: session.snapshotEvents() }))
+  const end = async (reason = { kind: 'completed' }) => {
+    const event = session.append('turn/end', { turn: 1, reason })
+    await lease.record(event)
+    return { reason, text: '' }
+  }
+  return { ...fixture, bot, record, policy, scope, options, lease, snapshot, snapshotSeq, session, log, end }
+}
+
+test('domain v4 bridge pins filtered context and tools, seals Git audit, and restores a domain checkpoint', async t => {
+  const f = await domainTurn(t), { ctx, ws, bot, record, policy, scope, lease, snapshot, snapshotSeq, log, end } = f
+  const base = git(ws, 'rev-parse', 'HEAD')
+  assert.equal(lease.snapshot.board, '')
+  assert.deepEqual(lease.snapshot.conversation, scope)
+  assert.ok(!JSON.stringify(lease.snapshot).includes('# 全局记忆'))
+  const journal = JSON.parse(await readFile(join(ws, '.mbot/runs/active-turn.json'), 'utf8'))
+  assert.equal(journal.schemaVersion, 4)
+  assert.deepEqual(journal.conversation, scope)
+  const boot = await lease.execute('botctl', ['boot', 'chief'])
+  assert.equal(boot.exitCode, 0, boot.stderr)
+  assert.ok(boot.stdout.includes('Explicitly shared fact'))
+  assert.ok(!boot.stdout.includes('A selected reference'))
+  const view = await lease.execute('botctl', ['view', policy.references[0]])
+  assert.equal(view.exitCode, 0, view.stderr)
+  assert.ok(view.stdout.includes('A selected reference'))
+  for (const args of [['view', 'MEMORY.md'], ['boot', 'coder'], ['boot', 'chief', '--task', '001']]) {
+    assert.equal((await lease.execute('botctl', args)).exitCode, 1)
+  }
+  await assert.rejects(lease.execute('botctl', ['board', 'show']), /domain data scope/u)
+  await assert.rejects(lease.execute('mbot', ['status']), /domain data scope/u)
+  await assert.rejects(lease.delegate({ role: 'coder', taskId: '001', sessionId: 'forbidden-worker' }), /no delegated Worker/u)
+  // Raw Bash capability holders meet the same scope in the data CLI.
+  const { DSH_MBOT_PERMIT_TOKEN: token, DSH_MBOT_RUN_ID: runId } = lease.shellEnvironment()
+  for (const [program, args] of [['botctl', ['board', 'show']], ['botctl', ['remember', 'must not append']], ['mbot', ['status']]]) {
+    const output = await ctx.mbot.execute(program, args, { workspace: ws, permit: { runId, token } })
+    assert.equal(output.exitCode, 1)
+    assert.match(output.stderr, /domain/u)
+  }
+  const outcome = await end()
+  verifyContextCut(snapshot, log().events, foldSurface(log().events.filter(event => event.seq <= snapshot.sourceCut.throughSeq)).nodes)
+  assert.deepEqual((await recoveryInput(journal, log())).finish, outcome)
+  const result = await lease.finish(outcome)
+  assert.equal(result.success, true)
+  assert.equal(git(ws, 'rev-list', '--count', `${base}..HEAD`), '1')
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  const meta = JSON.parse(git(ws, 'show', `${result.head}:${result.meta}`))
+  assert.equal(meta.runtime.journal_schema_version, 4)
+  assert.deepEqual(meta.runtime.conversation, scope)
+  assert.deepEqual(meta.runtime.context.snapshot, snapshot)
+  assert.deepEqual(sealContextAudit(meta, log().events, ws), meta.runtime.context)
+  const restored = JSON.parse(execFileSync(process.execPath, [join(plugin.packageRoot, 'bin/context-checkpoint.mjs'), '--restore', ws],
+    { input: JSON.stringify({ botId: bot.botId, conversation: scope, log: log() }), encoding: 'utf8' }))
+  assert.equal(restored.checkpoint.commit, result.head)
+  assert.equal(restored.checkpoint.snapshotSeq, snapshotSeq)
+  assert.throws(() => sealContextAudit({ ...meta, runtime: { ...meta.runtime, conversation: undefined } }, log().events, ws), /domain/u)
+  assert.throws(() => validateContextSnapshot({ ...snapshot, schemaVersion: 1 }, snapshotSeq), /snapshot/u)
+  assert.throws(() => validateContextSnapshot({ ...snapshot, conversationId: 'foreign-domain' }, snapshotSeq), /scope/u)
+  await assert.rejects(ctx.mbot.beginTurn(f.options), /admission path/u)
+  assert.equal(ctx.mbot.conversation(bot.botId, record.source).state, 'reserved')
+})
+
+test('domain v4 guard rolls back private writes and cancellation preserves failure counters', async t => {
+  const f = await domainTurn(t), { ws, lease, end } = f
+  const files = ['MEMORY.md', 'BOARD.md', f.policy.memory[0]], originals = await Promise.all(files.map(path => readFile(join(ws, path))))
+  for (const path of files) await writeFile(join(ws, path), 'FORBIDDEN DOMAIN WRITE\n')
+  await writeFile(join(ws, 'inbox/domain-unscoped.md'), 'FORBIDDEN CANDIDATE\n')
+  const result = await lease.finish(await end())
+  assert.equal(result.outcome, 'failed')
+  for (const [index, path] of files.entries()) assert.deepEqual(await readFile(join(ws, path)), originals[index])
+  await assert.rejects(access(join(ws, 'inbox/domain-unscoped.md')))
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+  const next = await domainTurn(t, { failures: 2 })
+  const cancelled = await next.lease.finish(await next.end({ kind: 'aborted', reason: { kind: 'user' } }))
+  assert.equal(cancelled.outcome, 'cancelled')
+  assert.equal(cancelled.failureCountEffect, 'preserve')
+  assert.equal(await readFile(join(next.ws, '.mbot/failures'), 'utf8'), '2\n')
+  const cancelledMeta = JSON.parse(git(next.ws, 'show', `${cancelled.head}:${cancelled.meta}`))
+  const events = next.log().events
+  assert.deepEqual(verifyRecoveryAudit(next.ws, next.options, events, cancelled), cancelledMeta)
+  const omitted = structuredClone(cancelledMeta)
+  delete omitted.runtime.context
+  assert.throws(() => verifyRecoveryAudit(next.ws, next.options, events, cancelled, undefined, {
+    meta: omitted, parentHash: omitted.base_head, commitBody: git(next.ws, 'show', '-s', '--format=%B', cancelled.head) + '\n\n',
+  }), /context.*native\/Git/u)
+})
+
+test('interrupted domain v4 data bridge recovers the original snapshot and commits once without model execution', async t => {
+  const f = await domainTurn(t), { ctx, ws, lease, end, log, scope } = f
+  const finish = await end({ kind: 'aborted', reason: { kind: 'user' } })
+  lease.child.terminate()
+  await lease.child.waitForExit()
+  const journalPath = join(ws, '.mbot/runs/active-turn.json')
+  const journal = JSON.parse(await readFile(journalPath, 'utf8'))
+  const input = await recoveryInput(journal, log())
+  assert.deepEqual(input.finish, finish)
+  for (const changes of [{ schemaVersion: 2 }, { conversation: { ...scope, accessHash: '0'.repeat(64) } }, { contextHash: '0'.repeat(64) }]) {
+    await assert.rejects(recoveryInput({ ...journal, ...changes }, log()), /snapshot|journal/u)
+  }
+  const originalContext = await readFile(join(journal.scratch, 'context.json'))
+  await writeFile(join(journal.scratch, 'context.json'), '{}\n')
+  await assert.rejects(recoveryInput(journal, log()), /snapshot changed/u)
+  await writeFile(join(journal.scratch, 'context.json'), originalContext)
+  const directory = await mkdtemp('/tmp/mbot-runtime-recovery.')
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const ownerStart = await processStart(), proof = join(directory, 'proof.json')
+  await writeFile(proof, JSON.stringify({ schemaVersion: 1, kind: 'runtime-quiescent', mode: 'recorded-domain-v1',
+    ownerPid: process.pid, ownerStart, bootId: await currentBootId(), journalHash: journalDigest(journal), log: log(), input }), { mode: 0o600 })
+  const before = git(ws, 'rev-parse', 'HEAD')
+  const output = await ctx.mbot.execute('mbot', ['recover'], { workspace: ws, recoveryOwner: { pid: process.pid, start: ownerStart, runtimeProof: proof } })
+  assert.equal(output.exitCode, 0, output.stderr)
+  const result = JSON.parse(output.stdout)
+  assert.equal(result.outcome, 'cancelled')
+  assert.equal(git(ws, 'rev-list', '--count', `${before}..HEAD`), '1')
+  const meta = JSON.parse(await readFile(join(ws, result.meta), 'utf8'))
+  assert.deepEqual(meta.runtime.conversation, scope)
+  assert.equal(meta.runtime.journal_schema_version, 4)
+  assert.equal(meta.runtime.context.snapshot.schemaVersion, 2)
+  assert.equal((await ctx.mbot.execute('mbot', ['recover'], { workspace: ws })).stdout.trim(), '{"kind":"recovered","needed":false}')
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), result.head)
+  await access(join(ws, '.mbot/PAUSED'))
+  assert.equal(git(ws, 'status', '--porcelain'), '')
+})
+
+test('domain snapshots redact published bodies, preserve hashes, and reject budget overflow before journal publication', async t => {
+  const secret = 'domain-fixture-private-token-445566778899'
+  const f = await domainTurn(t, { prepare: async ({ ws, policy }) => {
+    await writeFile(join(ws, '.env'), `TEST_SECRET=${secret}\n`)
+    await writeFile(join(ws, policy.memory[0]), `Known secret: ${secret}\nBearer abcdefghijklmnopqrst\n`)
+    git(ws, 'add', 'memory'); git(ws, 'commit', '-m', 'human: domain redaction fixture')
+  } })
+  const { ws, lease, policy } = f
+  assert.ok(!JSON.stringify(lease.snapshot).includes(secret))
+  assert.ok(lease.snapshot.memory.includes('[REDACTED]'))
+  const raw = readConversationView(ws, lease.snapshot.head, f.record, 'chief')
+  assert.deepEqual(lease.snapshot.knowledge, raw.knowledge)
+  const view = await lease.execute('botctl', ['view', policy.memory[0]])
+  assert.equal(view.exitCode, 0)
+  assert.ok(!view.stdout.includes(secret))
+  assert.ok(view.stdout.includes('[REDACTED]'))
+  const result = await lease.finish(await f.end())
+  assert.equal(result.success, true)
+  let overflowWorkspace
+  await assert.rejects(domainTurn(t, { prepare: async ({ ws, policy }) => {
+    overflowWorkspace = ws
+    await writeFile(join(ws, policy.memory[0]), 'x'.repeat(3001))
+    git(ws, 'add', 'memory'); git(ws, 'commit', '-m', 'human: oversized domain memory')
+  } }), /configured budget/u)
+  await assert.rejects(access(join(overflowWorkspace, '.mbot/runs/active-turn.json')))
+  assert.equal(git(overflowWorkspace, 'status', '--porcelain'), '')
+  await assert.rejects(domainTurn(t, { prepare: async ({ ws, policy }) => {
+    overflowWorkspace = ws
+    for (const path of policy.memory) await writeFile(join(ws, path), '中'.repeat(1600))
+    git(ws, 'add', 'memory'); git(ws, 'commit', '-m', 'human: aggregate domain memory budget')
+  } }), /configured budget/u)
+  await assert.rejects(access(join(overflowWorkspace, '.mbot/runs/active-turn.json')))
+  assert.equal(git(overflowWorkspace, 'status', '--porcelain'), '')
 })
 
 test('default names remain unique across directories and import errors leave the registry unchanged', async t => {
