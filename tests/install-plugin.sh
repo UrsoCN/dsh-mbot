@@ -51,7 +51,7 @@ git -C "$root/git-source" commit -qm 'fixture: packaged Git plugin source'
 git_commit=$(git -C "$root/git-source" rev-parse HEAD)
 git clone --bare --no-hardlinks "$root/git-source" "$root/plugin.git" > "$root/git-fixture.log" 2>&1
 cat > "$root/probe.mjs" <<'JS'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
@@ -111,6 +111,24 @@ async function probe(ctx) {
       const repeated = await ctx.mbot.ensureBinding(bot.botId)
       if (repeated.mainSessionId !== bound.mainSessionId || repeated.workspaceId !== bound.workspaceId) throw new Error('binding retry minted another entity')
     }
+    const conversation = await ctx.mbot.reserveConversation(bot.botId, { source: { adapterId: 'install-fixture', platform: 'fixture',
+      accountId: 'bot', spaceId: 'group', threadId: null, visibility: 'group', principalId: null },
+      allowedSenders: ['alice'], replyRoute: 'group-route' })
+    const domain = `memory/conversations/${conversation.conversationId}`
+    await mkdir(`${bot.workspacePath}/${domain}`, { recursive: true })
+    const policy = { schemaVersion: 1, botId: bot.botId, conversationId: conversation.conversationId,
+      conversationKey: conversation.conversationKey, role: 'chief', protocol: `${domain}/AGENTS.md`, soul: `${domain}/SOUL.md`,
+      memory: [`${domain}/MEMORY.md`], references: [] }
+    for (const path of [policy.protocol, policy.soul, ...policy.memory]) await writeFile(`${bot.workspacePath}/${path}`, 'Published installation-only domain content.\n')
+    await writeFile(`${bot.workspacePath}/${domain}/VIEW.json`, JSON.stringify(policy))
+    execFileSync('git', ['-C', bot.workspacePath, 'add', 'memory'])
+    execFileSync('git', ['-C', bot.workspacePath, 'commit', '-m', 'human: publish installed conversation view'])
+    const view = await ctx.mbot.inspectConversationView(bot.botId, conversation.source)
+    assert.equal(view.knowledge.scope.conversationId, conversation.conversationId)
+    assert.equal(view.knowledge.schemaVersion, 2)
+    assert.equal(view.documents.length, 3)
+    assert.ok(!JSON.stringify(view).includes('Published installation-only domain content'))
+    assert.equal(ctx.agents.get(conversation.sessionId), undefined)
     const turn = await ctx.mbot.beginTurn({ botId: bot.botId, sessionId: 'installation-turn', turn: 1, request: 'installed transaction bridge' })
     await turn.execute('botctl', ['remember', 'installed managed candidate', '--as', 'chief'])
     const turnResult = await turn.finish({ reason: { kind: 'completed' }, text: 'installed transaction succeeded' })
@@ -264,7 +282,7 @@ for mode in "${modes[@]}"; do
   if [[ $mode == web-tarball ]]; then app_args=(--no-open --host 127.0.0.1 --port 0); fi
   MBOT_INSTALL_RESULT="$root/$mode.result.json" MBOT_INSTALL_PACKAGE_JSON="$DSH_HOME/profiles/$profile/node_modules/dsh-mbot/package.json" run_logged "$root/$mode.runtime.log" timeout --kill-after=5s 30 dsh --profile "$profile" "${app_args[@]}"
   jq -e '.success and .runtimeCalls==(if .native then 3 else 2 end) and (.output|test("^[0-9]{3,9}")) and (.status.text|contains("todo=1"))' "$root/$mode.result.json" >/dev/null
-  jq -e '.registry.schemaVersion==3 and .registry.conversations==[] and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
+  jq -e '.registry.schemaVersion==3 and (.registry.conversations|length)==1 and .registry.conversations[0].state=="reserved" and (.registry.bots|length)==1 and .registry.bots[0].name=="Installed Bot" and .registry.bots[0].botId==.registry.selectedBotId' "$root/$mode.result.json" >/dev/null
   if [[ $mode == web-tarball ]]; then jq -e '.native and .registry.bots[0].binding.state=="ready" and (.registry.bots[0].mainSessionId|startswith("session-"))' "$root/$mode.result.json" >/dev/null; fi
   [[ -z $(git -C "$ws" status --porcelain) ]]
   installed_task_id=$(jq -r '.output | rtrimstr("\n")' "$root/$mode.result.json")

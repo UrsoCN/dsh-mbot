@@ -18,6 +18,7 @@ import { redact } from '../plugin/redact.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BotRegistry } from '../plugin/instances.js'
 import { conversationKey, conversationSource, conversationAccess, reserveConversationRecord, validateConversation } from '../plugin/conversations.js'
+import { conversationViewPath, conversationViewPolicy, readConversationView, conversationViewDocument, conversationViewLimits } from '../plugin/conversation-view.js'
 
 const root = await mkdtemp('/tmp/mbot-plugin-tests.')
 process.env.XDG_CONFIG_HOME = join(root, 'config')
@@ -405,6 +406,176 @@ test('reserved conversation cannot invoke data tools or owner commands without a
   await assert.rejects(ctx.mbot.removeBot(bot.botId), /requires MBot Runtime/u)
   assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
   assert.equal(ctx.mbot.leases.size, 0)
+})
+
+async function publishConversationView(ws, record, role = 'chief') {
+  const own = `memory/conversations/${record.conversationId}`
+  const policy = { schemaVersion: 1, botId: record.botId, conversationId: record.conversationId,
+    conversationKey: record.conversationKey, role, protocol: 'memory/shared/AGENTS.md', soul: `memory/shared/${role}.md`,
+    memory: ['memory/shared/MEMORY.md', `${own}/MEMORY.md`], references: [`${own}/wiki/topic.md`] }
+  for (const [path, text] of [
+    [policy.protocol, 'Use only the declared domain documents.'], [policy.soul, 'Public role description.'],
+    [policy.memory[0], 'Explicitly shared fact.'], [policy.memory[1], `Domain-only fact ${record.conversationId}.`],
+    [policy.references[0], 'A selected reference; private links are not permissions.'],
+    [conversationViewPath(record), JSON.stringify(policy)],
+  ]) {
+    await mkdir(join(ws, path.slice(0, path.lastIndexOf('/'))), { recursive: true })
+    await writeFile(join(ws, path), text)
+  }
+  git(ws, 'add', 'memory')
+  git(ws, 'commit', '-m', 'human: publish conversation knowledge')
+  return policy
+}
+
+test('conversation views read only explicitly published Git documents and inspect without text or activation', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const record = await ctx.mbot.reserveConversation(bot.botId, { source: groupSource(), allowedSenders: ['alice'], replyRoute: 'route' })
+  await assert.rejects(ctx.mbot.inspectConversationView(bot.botId, record.source), /incomplete/u)
+  for (const path of ['AGENTS.md', 'MEMORY.md', 'bots/chief/SOUL.md', 'bots/chief/MEMORY.md', 'BOARD.md']) {
+    await writeFile(join(ws, path), `PRIVATE CANARY ${path}\n`)
+  }
+  git(ws, 'add', 'AGENTS.md', 'MEMORY.md', 'bots', 'BOARD.md')
+  git(ws, 'commit', '-m', 'human: private knowledge')
+  const policy = await publishConversationView(ws, record)
+  const head = git(ws, 'rev-parse', 'HEAD'), view = readConversationView(ws, head, record, 'chief')
+  assert.ok(!JSON.stringify(view).includes('PRIVATE CANARY'))
+  assert.equal(view.knowledge.schemaVersion, 2)
+  assert.equal(view.knowledge.scope.conversationId, record.conversationId)
+  assert.equal(view.documents.length, 5)
+  assert.equal(conversationViewDocument(view, policy.memory[0]), 'Explicitly shared fact.')
+  for (const path of ['MEMORY.md', 'BOARD.md', 'tasks/001.md', 'wiki/index.md', 'memory/shared/unlisted.md', '../MEMORY.md']) {
+    assert.throws(() => conversationViewDocument(view, path), /outside/u)
+  }
+  assert.throws(() => { view.documents[0].text = 'changed' }, TypeError)
+  const forged = structuredClone(view)
+  forged.documents[2].text = 'tampered'
+  assert.throws(() => conversationViewDocument(forged, policy.memory[0]), /contradicts/u)
+  await writeFile(join(ws, policy.memory[0]), 'UNCOMMITTED private draft')
+  assert.equal(conversationViewDocument(readConversationView(ws, undefined, record, 'chief'), policy.memory[0]), 'Explicitly shared fact.')
+  const dirty = git(ws, 'status', '--porcelain')
+  const inspected = await ctx.mbot.inspectConversationView(bot.botId, record.source)
+  assert.deepEqual(inspected.knowledge, view.knowledge)
+  assert.equal(inspected.head, head)
+  assert.ok(!JSON.stringify(inspected).includes('Explicitly shared fact'))
+  assert.ok(inspected.documents.every(file => !Object.hasOwn(file, 'text') && file.bytes > 0))
+  inspected.knowledge.scope.botId = 'mutated response'
+  assert.equal((await ctx.mbot.inspectConversationView(bot.botId, record.source)).knowledge.scope.botId, bot.botId)
+  await assert.rejects(ctx.mbot.inspectConversationView(bot.botId, record.source, { signal: AbortSignal.abort() }))
+  assert.equal(git(ws, 'status', '--porcelain'), dirty)
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), head)
+  assert.equal(ctx.mbot.leases.size, 0)
+  assert.equal(ctx.mbot.active.size, 0)
+  assert.equal(ctx.mbot.conversation(bot.botId, record.source).state, 'reserved')
+  const published = view.knowledge.documents.find(item => item.path === policy.memory[0]).blob
+  const privateBlob = git(ws, 'rev-parse', `${head}:MEMORY.md`)
+  git(ws, 'replace', published, privateBlob)
+  assert.equal(conversationViewDocument(readConversationView(ws, head, record, 'chief'), policy.memory[0]), 'Explicitly shared fact.')
+  git(ws, 'replace', '-d', published)
+  const unicode = { ...record, allowedSenders: Array.from({ length: 256 }, (_, i) => '😀'.repeat(1020) + i) }
+  const request = JSON.stringify({ registration: unicode, role: 'chief', commit: head })
+  assert.ok(Buffer.byteLength(request) > 512 * 1024)
+  const helper = JSON.parse(execFileSync(process.execPath, [new URL('../bin/conversation-view.mjs', import.meta.url).pathname, ws],
+    { input: request, encoding: 'utf8', maxBuffer: 256 * 1024 }))
+  assert.equal(helper.knowledge.scope.accessHash, readConversationView(ws, head, unicode, 'chief').knowledge.scope.accessHash)
+})
+
+test('conversation policies reject implicit, foreign and ambiguous document permissions', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const record = await ctx.mbot.reserveConversation(bot.botId, { source: groupSource(), allowedSenders: ['alice'], replyRoute: 'route' })
+  const other = await ctx.mbot.reserveConversation(bot.botId, { source: { ...groupSource(), spaceId: 'another-group' }, allowedSenders: ['alice'], replyRoute: 'other' })
+  const policy = await publishConversationView(ws, record)
+  for (const path of ['MEMORY.md', 'AGENTS.md', '/tmp/data.md', 'memory/shared/../MEMORY.md', 'memory/shared//data.md',
+    'memory/shared/.env.md', 'memory/shared/dir\\file.md', 'memory/shared/line\nbreak.md', 'memory/shared/data.json',
+    `memory/conversations/${other.conversationId}/MEMORY.md`, 'memory/sharedness/README.md']) {
+    assert.throws(() => conversationViewPolicy({ ...policy, memory: [path] }, record, 'chief'), /document/u)
+  }
+  for (const change of [{ extra: true }, { schemaVersion: 2 }, { botId: other.conversationId }, { role: 'coder' },
+    { conversationId: other.conversationId }, { conversationKey: other.conversationKey }, { memory: null },
+    { references: Array(65).fill('memory/shared/file.md') }, { memory: [policy.protocol] }]) {
+    assert.throws(() => conversationViewPolicy({ ...policy, ...change }, record, 'chief'))
+  }
+  for (const role of ['human', '../chief', 'chief\n', '']) assert.throws(() => conversationViewPolicy(policy, record, role))
+  for (const commit of ['HEAD', '--help', 'HEAD:MEMORY.md', 'x'.repeat(40)]) assert.throws(() => readConversationView(ws, commit, record, 'chief'), /exact Git commit/u)
+  assert.throws(() => readConversationView(ws, git(ws, 'rev-parse', 'HEAD^{tree}'), record, 'chief'), /commit object/u)
+  const literal = 'memory/shared/reference[1]*?.md'
+  await writeFile(join(ws, literal), 'Literal pathspec and Unicode 中文 😀.')
+  await writeFile(join(ws, 'memory/shared/reference1x.md'), 'DO NOT EXPAND GLOBS')
+  const exact = { ...policy, references: [literal] }
+  await writeFile(join(ws, conversationViewPath(record)), JSON.stringify(exact))
+  git(ws, 'add', 'memory')
+  git(ws, 'commit', '-m', 'human: literal document selection')
+  const view = readConversationView(ws, undefined, record, 'chief')
+  assert.equal(conversationViewDocument(view, literal), 'Literal pathspec and Unicode 中文 😀.')
+  assert.ok(!JSON.stringify(view).includes('DO NOT EXPAND GLOBS'))
+})
+
+test('domain knowledge hashes bind visible content and permissions without tracking unrelated Git changes', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const records = []
+  for (const visibility of ['group', 'user-private', 'peer']) {
+    records.push(await ctx.mbot.reserveConversation(bot.botId, { source: { ...groupSource(), visibility,
+      principalId: visibility === 'group' ? null : 'alice' }, allowedSenders: ['alice'], replyRoute: 'route' }))
+  }
+  const policies = []
+  for (const record of records) policies.push(await publishConversationView(ws, record))
+  const views = records.map(record => readConversationView(ws, undefined, record, 'chief'))
+  for (const [index, view] of views.entries()) {
+    assert.equal(view.knowledge.scope.visibility, records[index].source.visibility)
+    for (const [other, record] of records.entries()) if (other !== index) assert.ok(!JSON.stringify(view).includes(record.conversationId))
+  }
+  assert.equal(new Set(views.map(view => view.knowledge.version)).size, 3)
+  await writeFile(join(ws, 'MEMORY.md'), 'Private change has no domain visibility.')
+  await writeFile(join(ws, policies[1].memory[1]), 'Private-domain change does not reach group.')
+  git(ws, 'add', 'MEMORY.md', 'memory')
+  git(ws, 'commit', '-m', 'human: update unrelated knowledge')
+  assert.equal(readConversationView(ws, undefined, records[0], 'chief').knowledge.version, views[0].knowledge.version)
+  assert.notEqual(readConversationView(ws, undefined, records[1], 'chief').knowledge.version, views[1].knowledge.version)
+  const permissionChanged = { ...records[0], allowedSenders: ['alice', 'bob'] }
+  assert.notEqual(readConversationView(ws, undefined, permissionChanged, 'chief').knowledge.version, views[0].knowledge.version)
+  await writeFile(join(ws, policies[0].memory[0]), 'New shared fact.')
+  git(ws, 'add', 'memory')
+  git(ws, 'commit', '-m', 'human: publish shared update')
+  assert.notEqual(readConversationView(ws, undefined, records[0], 'chief').knowledge.version, views[0].knowledge.version)
+  assert.deepEqual(readConversationView(ws, views[0].head, records[0], 'chief'), views[0])
+  assert.equal((await ctx.mbot.inspectConversationView(bot.botId, records[0].source, { commit: views[0].head })).knowledge.version, views[0].knowledge.version)
+})
+
+test('conversation Git reader rejects symlinks, missing files, malformed text and oversized knowledge', async t => {
+  const { ctx, ws, owner } = await app(t)
+  await configEditor(ctx, owner, ws)
+  const bot = await ctx.mbot.importBot(ws)
+  const record = await ctx.mbot.reserveConversation(bot.botId, { source: groupSource(), allowedSenders: ['alice'], replyRoute: 'route' })
+  const policy = await publishConversationView(ws, record), path = policy.memory[0]
+  const save = () => { git(ws, 'add', 'memory'); git(ws, 'commit', '-m', 'human: malformed publication fixture') }
+  await rm(join(ws, path))
+  await symlink('../../MEMORY.md', join(ws, path))
+  save()
+  assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /regular Git blobs/u)
+  await rm(join(ws, path))
+  save()
+  assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /incomplete/u)
+  for (const [bytes, expected] of [[Buffer.from([0xff]), /UTF-8/u], [Buffer.from('a\0b'), /NUL/u],
+    [Buffer.alloc(conversationViewLimits.documentBytes + 1, 'a'), /byte limit/u]]) {
+    await writeFile(join(ws, path), bytes); save()
+    assert.throws(() => readConversationView(ws, undefined, record, 'chief'), expected)
+  }
+  for (const path of [policy.protocol, policy.soul, ...policy.memory, ...policy.references]) {
+    await writeFile(join(ws, path), 'a'.repeat(conversationViewLimits.documentBytes))
+  }
+  save()
+  assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /total byte limit/u)
+  await writeFile(join(ws, conversationViewPath(record)), '{ invalid policy')
+  save()
+  assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /valid JSON/u)
+  await writeFile(join(ws, conversationViewPath(record)), ' '.repeat(conversationViewLimits.policyBytes + 1))
+  save()
+  assert.throws(() => readConversationView(ws, undefined, record, 'chief'), /byte limit/u)
 })
 
 test('default names remain unique across directories and import errors leave the registry unchanged', async t => {

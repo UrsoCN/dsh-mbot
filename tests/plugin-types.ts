@@ -25,6 +25,8 @@ const conversation: Promise<plugin.ConversationRegistration> = ctx.mbot.reserveC
 void conversation
 ctx.mbot.conversation('example', domain.source)
 ctx.mbot.authorizeConversation('example', { ...domain.source, senderId: 'alice', replyRoute: 'chat' })
+const conversationView: Promise<plugin.ConversationViewInspection> = ctx.mbot.inspectConversationView('example', domain.source)
+void conversationView
 ctx.mbot.workspace({ sessionId: 'main-session' })
 ctx.mbot.selectBot('example', { revision: registry.revision })
 const binding: Promise<plugin.BotRegistration> = ctx.mbot.ensureBinding('example', { revision: registry.revision })

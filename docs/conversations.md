@@ -1,6 +1,6 @@
 # Conversation 身份与来源权限
 
-本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。记忆/工具可见域与实际激活属于下一步，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
+本模块是 `0.2.0-rc.1` 之后开发分支的 P1 基础。registry v3 已支持持久预留和来源权限，以及显式域资料清单的 Git 快照读取/检查。额外对话域仍为 `reserved`：不创建原生实体，不运行模型、数据工具或摘要。资料视图尚未接入实际回合、工具、checkpoint、摘要与 Dreaming，路线以 [DESIGN](../DESIGN.md#对话域与外部消息) 为准。
 
 ## 身份与权限
 
@@ -40,6 +40,42 @@ const permitted = ctx.mbot.authorizeConversation(botId, {
 
 `authorizeConversation` 只验证可信适配器提供的身份与现有许可一致；它不是平台认证，也不是执行许可。不能凭它创建 mailbox、启动模型或直接调用 ownerMailbox。主 Session 的所有者入口见 [消息准入](message-admission.md)。
 
+## 显式域资料视图
+
+旧 `AGENTS.md`、SOUL、MEMORY、wiki、BOARD、任务和历史默认属于所有者私人域，不因预留新 conversation 自动公开。人类先将允许分享的资料单独写入 `memory/shared/` 或 `memory/conversations/<conversationId>/`，再在该域的 `VIEW.json` 列明读取范围并提交 Git。`shared` 表示可以被域清单选择，不代表其中所有文件都会被自动加载；Markdown 中的链接也不增加权限。
+
+以下示例中的三个身份值必须取自 `reserveConversation` 的真实返回结果，不使用名称或平台消息中的 ID 替代：
+
+```js
+const policy = {
+  schemaVersion: 1,
+  botId: record.botId,
+  conversationId: record.conversationId,
+  conversationKey: record.conversationKey,
+  role: 'chief', // 必须匹配 Bot 默认角色
+  protocol: 'memory/shared/AGENTS.md',
+  soul: 'memory/shared/chief.md',
+  memory: [
+    'memory/shared/MEMORY.md',
+    `memory/conversations/${record.conversationId}/MEMORY.md`,
+  ],
+  references: [`memory/conversations/${record.conversationId}/wiki/topic.md`],
+}
+// 人类将 policy 保存到 memory/conversations/<conversationId>/VIEW.json，
+// 编写所列文件并提交后，从受信任 Host 代码检查：
+const inspection = await ctx.mbot.inspectConversationView(botId, record.source)
+// 也可检查指定的完整 Git commit SHA：
+const historical = await ctx.mbot.inspectConversationView(botId, record.source, { commit })
+```
+
+所有字段显式提供，`memory`/`references` 可为空；协议与角色资料必须分别提供，不能回退到根目录的私人文件。只允许共享目录或本域目录内的明确 `.md` 路径，拒绝其他域、路径穿越、隐藏组件、反斜线、控制字符、重复文件与未知字段。读取以同一个固定 commit 为准，要求全部资料已提交为常规 Git blob；不跟随符号链接、子模块、Git replace 对象或 Markdown 链接，不读取工作树草稿。Bot 重新导入后身份不同，需要人类重新发布对应清单。
+
+清单最多 32 KiB；至多 64 个文件，每个最多 64 KiB，总计最多 256 KiB；内容要求有效 UTF-8 且无 NUL。这些是读取器硬上限，未来运行期仍须落实配置中的提示/记忆预算。超限或缺文件整次拒绝，不静默截断或补读私人资料。
+
+视图的 `knowledge.schemaVersion=2` 绑定 Bot/conversation/Session、来源 key、可见性与许可 hash、角色、清单 blob/hash，以及按用途和顺序排列的资料 blob/hash。普通 Git HEAD、私人文件或其他域变化不会自行推进本域知识版本；本域正文、清单或许可变化会更新版本。它目前是独立视图格式，**不是已经接入的 turn checkpoint v2**：既有私人主 Session 的知识与审计仍使用原格式，不能把检查结果冒充原生/Git 事务证明。
+
+`inspectConversationView` 只返回 commit、文件身份、hash 和字节数，不返回正文，不创建 Agent、lease 或数据提交，也不改变 `reserved`。内部 `readConversationView` 返回冻结的原始资料；后续读工具通过 `conversationViewDocument` 仅从已捕获的清单取正文，不能自由读取工作树。当前没有对模型开放这个工具。域候选写入、Dreaming、正文脱敏、提示隔离、预算与恢复接齐之前，域闸门继续拒绝执行。
+
 ## 持久化、执行与退役
 
 registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2 时保留 Bot/退役信息并迁移为空域列表；新保存使用 v3。原 conversation 的来源、许可、Session 和创建时间不可被配置重置、降级或编辑覆盖。
@@ -56,5 +92,6 @@ registry v3 增加顶层 `conversations`，记录 schemaVersion 1。读取 v1/v2
 - 原生 Agent 测试覆盖 Runtime 重载、显式销毁后的 resume、预留域无模型/lease/知识快照、私人主 Session 继续工作，以及活跃/冷域随 Bot 退役。
 - 独立 Host 子进程在 Session flush 后被 SIGKILL，再从实际持久存储恢复同一 ID，核对 Inbox 字节、域记录和零模型调用。
 - `npm run test:gui-conversations` 使用 tarball 安装后的 Web profile，覆盖双窗口、拒绝反馈、刷新、Host 重启和私人主 Session 续聊。GUI 与恢复全进程检查分开执行。
+- 资料视图测试覆盖私人 canary 不泄露、群/其他用户/peer 隔离、固定 commit 与未提交草稿、权限/正文版本变化、清单越界、符号链接、缺文件、非法 UTF-8/NUL 和字节限额；安装矩阵通过真实 Host API 检查包内 helper，确认只返回元数据且不激活域。
 
 上述验收只证明预留及拒绝边界，不代表已完成群聊、跨域记忆、IM、peer 或 outbox。具体运行结果记入 [RELEASE_NOTE](../RELEASE_NOTE.md)，剩余执行事项见 [TODO](../TODO.md)。

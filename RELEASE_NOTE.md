@@ -29,6 +29,13 @@
 - Node 24.9.0 完整回归通过：204 项 Host/Runtime、1 项真实 API 跳过、64 组 Bash。随后补充状态与 Unicode 边界校验，类型及 8 项相关测试通过。安装曾发现字符串长度约束不能导出为 DSH JSON Schema，改为字符正则后，源码/tarball/Git/Web tarball 四类安装全部通过（`/tmp/mbot-plugin-install.gzHj4d`）。
 - tarball Web GUI 验收通过双窗口拒绝、所有者命令拒绝、刷新、SIGKILL 后同 ID/Inbox 恢复及私人主 Session 续聊，已检查实际渲染截图（`/tmp/mbot-gui-conversations.aUpXKJ`）。独立子进程测试同时核验持久 Inbox 字节和零模型调用；显式 Agent dispose 会由 DSH 取消队列，不作为崩溃替代。日志见 `/tmp/dsh-mbot-conversations-full.log`、`/tmp/dsh-mbot-conversations-test-final.log`、`/tmp/dsh-mbot-conversations-install-final.log`、`/tmp/dsh-mbot-conversations-gui.log`。
 
+### 显式域资料视图
+
+- 每域 `VIEW.json` 绑定 Bot/conversation/来源 key/角色，只选择人类已发布到共享或本域目录的 Markdown；按单一 Git commit 读取，核验常规 blob、UTF-8、文件数和字节限额，拒绝缺失/越界/符号链接，私人旧资料不自动公开。独立知识 v2 绑定权限、清单与文件 hash，不随其他域或普通 HEAD 变化而失效，详见 [域资料视图](docs/conversations.md#显式域资料视图)。
+- 新增 Host `inspectConversationView` 与包内子进程 helper，返回文件身份/hash/大小，不返回正文、不创建会话或 lease。内部读取器冻结原始快照，并提供仅从清单取文档的函数。此阶段未接入模型提示、botctl、checkpoint、摘要或 Dreaming，域仍为 `reserved`，P1 保持未完成。
+- Node 24.9.0 类型检查、全部 59 项 Host 插件测试通过，其中 4 项新测试覆盖资料隔离、权限/内容版本、固定历史快照、未提交草稿、越界与损坏输入。四类安装均通过实际 Host API 检查 helper（`/tmp/mbot-plugin-install.HCDYP8`）；日志 `/tmp/dsh-mbot-conversation-view-plugin.log`、`/tmp/dsh-mbot-conversation-view-install.log`。本阶段没有改动现行 Runtime/GUI/事务桥，未重复其完整回归或真实模型验收。
+- 复核补充 Git replace、字面通配符路径和大 Unicode 许可列表测试，helper 输入上限调整为 2 MiB 以容纳登记格式的完整合法范围；4 项专项及类型复验通过（`/tmp/dsh-mbot-conversation-view-final.log`）。339 条文档链接、包资源及 `git diff --check` 通过。
+
 ## 0.2.0-rc.1（2026-11-28）
 
 标签 `v0.2.0-rc.1`，单实例持久运行预发布里程碑，包含 R1–R4 和 R5 首批热点优化。

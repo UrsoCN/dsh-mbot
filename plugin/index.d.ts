@@ -3,9 +3,11 @@ import type z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
 import type { ConversationSource, ConversationAccess, ConversationRegistration, ConversationAttestation } from './conversations.js'
+import type { ConversationViewInspection } from './conversation-view.js'
 import type { TurnLease, BeginTurnOptions } from './turn.js'
 export type { BotRegistration, BotRegistrySnapshot, BotRegistryInput, RetiredBot } from './instances.js'
 export type { ConversationSource, ConversationAccess, ConversationRegistration, ConversationAttestation } from './conversations.js'
+export type { ConversationViewInspection, ConversationViewPolicy, ConversationKnowledge } from './conversation-view.js'
 export type { TurnLease, BeginTurnOptions, ContextSnapshot, ContextKnowledge, TurnResult, ManagedOutcome, FailureCountEffect } from './turn.js'
 
 export declare const name: 'mbot'
@@ -33,6 +35,8 @@ export declare class MBotService extends Service {
   reserveConversation(identity: string, input: ConversationAccess, options?: ManagementOptions): Promise<ConversationRegistration>
   conversation(identity: string, source: ConversationSource): ConversationRegistration | undefined
   authorizeConversation(identity: string, source: ConversationAttestation): ConversationRegistration
+  /** Validate committed domain knowledge, returning hashes and sizes without document text. */
+  inspectConversationView(identity: string, source: ConversationSource, options?: { signal?: AbortSignal; commit?: string }): Promise<ConversationViewInspection>
   bot(options?: BotSelection): BotRegistration | undefined
   workspace(options?: BotSelection & { workspace?: string }): string
   importBot(directory: string, options?: ImportOptions): Promise<BotRegistration>

@@ -128,6 +128,28 @@ export class MBotService extends Service {
     return authorizeConversationSource(record, { ...source, senderId, replyRoute })
   }
 
+  /** Read-only Host inspection; does not activate the reserved Session or publish its text. */
+  async inspectConversationView(identity, source, options = {}) {
+    if (this.closed) throw new Error('mbot plugin is disposed')
+    const registry = this.registry(), bot = findBot(registry, identity), key = conversationKey(source)
+    const registration = registry.conversations.find(item => item.botId === bot.botId && item.conversationKey === key)
+    if (!registration) throw new Error('Conversation source has no persistent permission')
+    const signal = AbortSignal.any([AbortSignal.timeout(30000), ...(options.signal ? [options.signal] : [])])
+    signal.throwIfAborted()
+    const child = this.ctx.subprocess.spawn({ argv: [process.execPath, join(packageRoot, 'bin/conversation-view.mjs'), bot.workspacePath],
+      cwd: packageRoot, signal, graceMs: 5000,
+      stdio: { stdin: { data: JSON.stringify({ registration, role: bot.defaultRole, commit: options.commit }) },
+        stdout: { maxBytes: 256 * 1024 }, stderr: { maxBytes: 8000 } } })
+    this.active.add(child)
+    try {
+      const outcome = await child.done, output = child.collected.stdout.readFrom(0)
+      signal.throwIfAborted()
+      if (this.closed) throw new Error('mbot plugin is disposed')
+      if (outcome.exitCode !== 0 || output.lossy) throw new Error(await redact(child.collected.stderr.readFrom(0).text || 'Conversation view inspection failed', bot.workspacePath))
+      return JSON.parse(output.text)
+    } finally { child.terminate(); await child.waitForExit(); this.active.delete(child) }
+  }
+
   async importBot(directory, options = {}) {
     options = { ...options }
     return this.manage(async () => {

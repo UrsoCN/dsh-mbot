@@ -6,7 +6,7 @@
 
 | 内容 | 写者与约束 |
 |---|---|
-| 共享/角色 MEMORY、wiki | 工作 Bot 只读，独立 Dreaming 在验收事务内整理；人类可维护 |
+| 根/角色 MEMORY、wiki | 所有者私人资料；工作 Bot 只读，独立 Dreaming 在验收事务内整理；人类可维护 |
 | inbox 候选 | `remember` 仅追加，保留已有字节前缀和真实角色/任务来源 |
 | SOUL、协议、配置和工具 | 人类维护，工作 Bot/Dreaming 不修改 |
 | `wiki/ops-log.md` | 人类专用，Dreaming 也只读 |
@@ -31,7 +31,9 @@ Dreaming 是独立 fresh Session，按 Analyze → Merge → Rewrite → Report 
 
 `git revert <dream-commit>` 同时回滚记忆和进度，后续可重新处理仍存在的候选；这不是删除全部历史或外部副本。后续 run 冷启动读取当前记忆，主 Session 在下一 turn 按知识内容 hash 更新视图，旧摘要按受管理规则退役。
 
-`/mbot sleep` 在维护屏障内调用同一独立 Dreaming，再推进可选 compact/checkpoint 和 sleeping；不会给工作 Bot 直接写记忆的权限。已提交 Dreaming 的中断只补后续阶段，详见 [sleep/wake](sleep-wake.md)。多域记忆过滤、质量评测、异议/遗忘治理仍按 [DESIGN](../DESIGN.md#远期研究p3) 研究。
+`/mbot sleep` 在维护屏障内调用同一独立 Dreaming，再推进可选 compact/checkpoint 和 sleeping；不会给工作 Bot 直接写记忆的权限。已提交 Dreaming 的中断只补后续阶段，详见 [sleep/wake](sleep-wake.md)。
+
+开发分支已支持 [显式域资料视图](conversations.md#显式域资料视图) 的 Git 读取与检查。旧记忆仍为所有者私人资料；新增 `memory/shared/` 和 `memory/conversations/` 由人类显式发布，现有 Dreaming 不写这些文件。视图接入回合、工具、候选和逐域 Dreaming 属于 P1 剩余工作；质量评测及异议/遗忘治理见 [DESIGN](../DESIGN.md#远期研究p3)。
 
 ## 验证
 
